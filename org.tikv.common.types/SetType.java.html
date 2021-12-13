@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SetType.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.types</a> &gt; <span class="el_source">SetType.java</span></div><h1>SetType.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.types;
+
+import com.pingcap.tidb.tipb.ExprType;
+import org.tikv.common.codec.Codec;
+import org.tikv.common.codec.Codec.IntegerCodec;
+import org.tikv.common.codec.Codec.SetCodec;
+import org.tikv.common.codec.CodecDataInput;
+import org.tikv.common.codec.CodecDataOutput;
+import org.tikv.common.exception.ConvertNotSupportException;
+import org.tikv.common.exception.ConvertOverflowException;
+import org.tikv.common.exception.TypeException;
+import org.tikv.common.exception.UnsupportedTypeException;
+import org.tikv.common.meta.TiColumnInfo;
+
+public class SetType extends DataType {
+<span class="nc" id="L31">  public static final SetType SET = new SetType(MySQLType.TypeSet);</span>
+
+<span class="nc" id="L33">  public static final MySQLType[] subTypes = new MySQLType[] {MySQLType.TypeSet};</span>
+
+  private SetType(MySQLType tp) {
+<span class="nc" id="L36">    super(tp);</span>
+<span class="nc" id="L37">  }</span>
+
+  protected SetType(TiColumnInfo.InternalTypeHolder holder) {
+<span class="nc" id="L40">    super(holder);</span>
+<span class="nc" id="L41">  }</span>
+
+  /** {@inheritDoc} */
+  @Override
+  protected Object decodeNotNull(int flag, CodecDataInput cdi) {
+    long number;
+<span class="nc bnc" id="L47" title="All 3 branches missed.">    switch (flag) {</span>
+      case Codec.UVARINT_FLAG:
+<span class="nc" id="L49">        number = IntegerCodec.readUVarLong(cdi);</span>
+<span class="nc" id="L50">        break;</span>
+      case Codec.UINT_FLAG:
+<span class="nc" id="L52">        number = IntegerCodec.readULong(cdi);</span>
+<span class="nc" id="L53">        break;</span>
+      default:
+<span class="nc" id="L55">        throw new TypeException(&quot;Invalid IntegerType flag: &quot; + flag);</span>
+    }
+
+<span class="nc" id="L58">    return SetCodec.readSetFromLong(number, this.getElems());</span>
+  }
+
+  @Override
+  protected Object doConvertToTiDBType(Object value)
+      throws ConvertNotSupportException, ConvertOverflowException {
+<span class="nc" id="L64">    return new ConvertNotSupportException(value.getClass().getName(), this.getClass().getName());</span>
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  protected void encodeKey(CodecDataOutput cdo, Object value) {
+<span class="nc" id="L70">    throw new UnsupportedTypeException(&quot;Set type cannot be pushed down.&quot;);</span>
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  protected void encodeValue(CodecDataOutput cdo, Object value) {
+<span class="nc" id="L76">    throw new UnsupportedTypeException(&quot;Set type cannot be pushed down.&quot;);</span>
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  protected void encodeProto(CodecDataOutput cdo, Object value) {
+<span class="nc" id="L82">    throw new UnsupportedTypeException(&quot;Set type cannot be pushed down.&quot;);</span>
+  }
+
+  @Override
+  public String getName() {
+<span class="nc" id="L87">    return &quot;SET&quot;;</span>
+  }
+
+  @Override
+  public ExprType getProtoExprType() {
+<span class="nc" id="L92">    return ExprType.MysqlSet;</span>
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public Object getOriginDefaultValueNonNull(String value, long version) {
+<span class="nc" id="L98">    return value;</span>
+  }
+
+  @Override
+  public boolean isPushDownSupported() {
+<span class="nc" id="L103">    return false;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

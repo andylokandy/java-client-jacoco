@@ -1,0 +1,273 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Collation.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.meta</a> &gt; <span class="el_source">Collation.java</span></div><h1>Collation.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.meta;
+
+import com.google.common.collect.ImmutableMap;
+import java.util.Map;
+
+<span class="nc" id="L21">public class Collation {</span>
+  public static final int DEF_COLLATION_CODE = 83;
+  private static final Map&lt;String, Integer&gt; collationMap;
+  private static final Map&lt;Integer, String&gt; collationCodeMap;
+
+  static {
+    collationMap =
+<span class="nc" id="L28">        ImmutableMap.&lt;String, Integer&gt;builder()</span>
+<span class="nc" id="L29">            .put(&quot;big5_chinese_ci&quot;, 1)</span>
+<span class="nc" id="L30">            .put(&quot;latin2_czech_cs&quot;, 2)</span>
+<span class="nc" id="L31">            .put(&quot;dec8_swedish_ci&quot;, 3)</span>
+<span class="nc" id="L32">            .put(&quot;cp850_general_ci&quot;, 4)</span>
+<span class="nc" id="L33">            .put(&quot;latin1_german1_ci&quot;, 5)</span>
+<span class="nc" id="L34">            .put(&quot;hp8_english_ci&quot;, 6)</span>
+<span class="nc" id="L35">            .put(&quot;koi8r_general_ci&quot;, 7)</span>
+<span class="nc" id="L36">            .put(&quot;latin1_swedish_ci&quot;, 8)</span>
+<span class="nc" id="L37">            .put(&quot;latin2_general_ci&quot;, 9)</span>
+<span class="nc" id="L38">            .put(&quot;swe7_swedish_ci&quot;, 10)</span>
+<span class="nc" id="L39">            .put(&quot;ascii_general_ci&quot;, 11)</span>
+<span class="nc" id="L40">            .put(&quot;ujis_japanese_ci&quot;, 12)</span>
+<span class="nc" id="L41">            .put(&quot;sjis_japanese_ci&quot;, 13)</span>
+<span class="nc" id="L42">            .put(&quot;cp1251_bulgarian_ci&quot;, 14)</span>
+<span class="nc" id="L43">            .put(&quot;latin1_danish_ci&quot;, 15)</span>
+<span class="nc" id="L44">            .put(&quot;hebrew_general_ci&quot;, 16)</span>
+<span class="nc" id="L45">            .put(&quot;tis620_thai_ci&quot;, 18)</span>
+<span class="nc" id="L46">            .put(&quot;euckr_korean_ci&quot;, 19)</span>
+<span class="nc" id="L47">            .put(&quot;latin7_estonian_cs&quot;, 20)</span>
+<span class="nc" id="L48">            .put(&quot;latin2_hungarian_ci&quot;, 21)</span>
+<span class="nc" id="L49">            .put(&quot;koi8u_general_ci&quot;, 22)</span>
+<span class="nc" id="L50">            .put(&quot;cp1251_ukrainian_ci&quot;, 23)</span>
+<span class="nc" id="L51">            .put(&quot;gb2312_chinese_ci&quot;, 24)</span>
+<span class="nc" id="L52">            .put(&quot;greek_general_ci&quot;, 25)</span>
+<span class="nc" id="L53">            .put(&quot;cp1250_general_ci&quot;, 26)</span>
+<span class="nc" id="L54">            .put(&quot;latin2_croatian_ci&quot;, 27)</span>
+<span class="nc" id="L55">            .put(&quot;gbk_chinese_ci&quot;, 28)</span>
+<span class="nc" id="L56">            .put(&quot;cp1257_lithuanian_ci&quot;, 29)</span>
+<span class="nc" id="L57">            .put(&quot;latin5_turkish_ci&quot;, 30)</span>
+<span class="nc" id="L58">            .put(&quot;latin1_german2_ci&quot;, 31)</span>
+<span class="nc" id="L59">            .put(&quot;armscii8_general_ci&quot;, 32)</span>
+<span class="nc" id="L60">            .put(&quot;utf8_general_ci&quot;, 33)</span>
+<span class="nc" id="L61">            .put(&quot;cp1250_czech_cs&quot;, 34)</span>
+<span class="nc" id="L62">            .put(&quot;ucs2_general_ci&quot;, 35)</span>
+<span class="nc" id="L63">            .put(&quot;cp866_general_ci&quot;, 36)</span>
+<span class="nc" id="L64">            .put(&quot;keybcs2_general_ci&quot;, 37)</span>
+<span class="nc" id="L65">            .put(&quot;macce_general_ci&quot;, 38)</span>
+<span class="nc" id="L66">            .put(&quot;macroman_general_ci&quot;, 39)</span>
+<span class="nc" id="L67">            .put(&quot;cp852_general_ci&quot;, 40)</span>
+<span class="nc" id="L68">            .put(&quot;latin7_general_ci&quot;, 41)</span>
+<span class="nc" id="L69">            .put(&quot;latin7_general_cs&quot;, 42)</span>
+<span class="nc" id="L70">            .put(&quot;macce_bin&quot;, 43)</span>
+<span class="nc" id="L71">            .put(&quot;cp1250_croatian_ci&quot;, 44)</span>
+<span class="nc" id="L72">            .put(&quot;utf8mb4_general_ci&quot;, 45)</span>
+<span class="nc" id="L73">            .put(&quot;utf8mb4_bin&quot;, 46)</span>
+<span class="nc" id="L74">            .put(&quot;latin1_bin&quot;, 47)</span>
+<span class="nc" id="L75">            .put(&quot;latin1_general_ci&quot;, 48)</span>
+<span class="nc" id="L76">            .put(&quot;latin1_general_cs&quot;, 49)</span>
+<span class="nc" id="L77">            .put(&quot;cp1251_bin&quot;, 50)</span>
+<span class="nc" id="L78">            .put(&quot;cp1251_general_ci&quot;, 51)</span>
+<span class="nc" id="L79">            .put(&quot;cp1251_general_cs&quot;, 52)</span>
+<span class="nc" id="L80">            .put(&quot;macroman_bin&quot;, 53)</span>
+<span class="nc" id="L81">            .put(&quot;utf16_general_ci&quot;, 54)</span>
+<span class="nc" id="L82">            .put(&quot;utf16_bin&quot;, 55)</span>
+<span class="nc" id="L83">            .put(&quot;utf16le_general_ci&quot;, 56)</span>
+<span class="nc" id="L84">            .put(&quot;cp1256_general_ci&quot;, 57)</span>
+<span class="nc" id="L85">            .put(&quot;cp1257_bin&quot;, 58)</span>
+<span class="nc" id="L86">            .put(&quot;cp1257_general_ci&quot;, 59)</span>
+<span class="nc" id="L87">            .put(&quot;utf32_general_ci&quot;, 60)</span>
+<span class="nc" id="L88">            .put(&quot;utf32_bin&quot;, 61)</span>
+<span class="nc" id="L89">            .put(&quot;utf16le_bin&quot;, 62)</span>
+<span class="nc" id="L90">            .put(&quot;binary&quot;, 63)</span>
+<span class="nc" id="L91">            .put(&quot;armscii8_bin&quot;, 64)</span>
+<span class="nc" id="L92">            .put(&quot;ascii_bin&quot;, 65)</span>
+<span class="nc" id="L93">            .put(&quot;cp1250_bin&quot;, 66)</span>
+<span class="nc" id="L94">            .put(&quot;cp1256_bin&quot;, 67)</span>
+<span class="nc" id="L95">            .put(&quot;cp866_bin&quot;, 68)</span>
+<span class="nc" id="L96">            .put(&quot;dec8_bin&quot;, 69)</span>
+<span class="nc" id="L97">            .put(&quot;greek_bin&quot;, 70)</span>
+<span class="nc" id="L98">            .put(&quot;hebrew_bin&quot;, 71)</span>
+<span class="nc" id="L99">            .put(&quot;hp8_bin&quot;, 72)</span>
+<span class="nc" id="L100">            .put(&quot;keybcs2_bin&quot;, 73)</span>
+<span class="nc" id="L101">            .put(&quot;koi8r_bin&quot;, 74)</span>
+<span class="nc" id="L102">            .put(&quot;koi8u_bin&quot;, 75)</span>
+<span class="nc" id="L103">            .put(&quot;latin2_bin&quot;, 77)</span>
+<span class="nc" id="L104">            .put(&quot;latin5_bin&quot;, 78)</span>
+<span class="nc" id="L105">            .put(&quot;latin7_bin&quot;, 79)</span>
+<span class="nc" id="L106">            .put(&quot;cp850_bin&quot;, 80)</span>
+<span class="nc" id="L107">            .put(&quot;cp852_bin&quot;, 81)</span>
+<span class="nc" id="L108">            .put(&quot;swe7_bin&quot;, 82)</span>
+<span class="nc" id="L109">            .put(&quot;utf8_bin&quot;, 83)</span>
+<span class="nc" id="L110">            .put(&quot;big5_bin&quot;, 84)</span>
+<span class="nc" id="L111">            .put(&quot;euckr_bin&quot;, 85)</span>
+<span class="nc" id="L112">            .put(&quot;gb2312_bin&quot;, 86)</span>
+<span class="nc" id="L113">            .put(&quot;gbk_bin&quot;, 87)</span>
+<span class="nc" id="L114">            .put(&quot;sjis_bin&quot;, 88)</span>
+<span class="nc" id="L115">            .put(&quot;tis620_bin&quot;, 89)</span>
+<span class="nc" id="L116">            .put(&quot;ucs2_bin&quot;, 90)</span>
+<span class="nc" id="L117">            .put(&quot;ujis_bin&quot;, 91)</span>
+<span class="nc" id="L118">            .put(&quot;geostd8_general_ci&quot;, 92)</span>
+<span class="nc" id="L119">            .put(&quot;geostd8_bin&quot;, 93)</span>
+<span class="nc" id="L120">            .put(&quot;latin1_spanish_ci&quot;, 94)</span>
+<span class="nc" id="L121">            .put(&quot;cp932_japanese_ci&quot;, 95)</span>
+<span class="nc" id="L122">            .put(&quot;cp932_bin&quot;, 96)</span>
+<span class="nc" id="L123">            .put(&quot;eucjpms_japanese_ci&quot;, 97)</span>
+<span class="nc" id="L124">            .put(&quot;eucjpms_bin&quot;, 98)</span>
+<span class="nc" id="L125">            .put(&quot;cp1250_polish_ci&quot;, 99)</span>
+<span class="nc" id="L126">            .put(&quot;utf16_unicode_ci&quot;, 101)</span>
+<span class="nc" id="L127">            .put(&quot;utf16_icelandic_ci&quot;, 102)</span>
+<span class="nc" id="L128">            .put(&quot;utf16_latvian_ci&quot;, 103)</span>
+<span class="nc" id="L129">            .put(&quot;utf16_romanian_ci&quot;, 104)</span>
+<span class="nc" id="L130">            .put(&quot;utf16_slovenian_ci&quot;, 105)</span>
+<span class="nc" id="L131">            .put(&quot;utf16_polish_ci&quot;, 106)</span>
+<span class="nc" id="L132">            .put(&quot;utf16_estonian_ci&quot;, 107)</span>
+<span class="nc" id="L133">            .put(&quot;utf16_spanish_ci&quot;, 108)</span>
+<span class="nc" id="L134">            .put(&quot;utf16_swedish_ci&quot;, 109)</span>
+<span class="nc" id="L135">            .put(&quot;utf16_turkish_ci&quot;, 110)</span>
+<span class="nc" id="L136">            .put(&quot;utf16_czech_ci&quot;, 111)</span>
+<span class="nc" id="L137">            .put(&quot;utf16_danish_ci&quot;, 112)</span>
+<span class="nc" id="L138">            .put(&quot;utf16_lithuanian_ci&quot;, 113)</span>
+<span class="nc" id="L139">            .put(&quot;utf16_slovak_ci&quot;, 114)</span>
+<span class="nc" id="L140">            .put(&quot;utf16_spanish2_ci&quot;, 115)</span>
+<span class="nc" id="L141">            .put(&quot;utf16_roman_ci&quot;, 116)</span>
+<span class="nc" id="L142">            .put(&quot;utf16_persian_ci&quot;, 117)</span>
+<span class="nc" id="L143">            .put(&quot;utf16_esperanto_ci&quot;, 118)</span>
+<span class="nc" id="L144">            .put(&quot;utf16_hungarian_ci&quot;, 119)</span>
+<span class="nc" id="L145">            .put(&quot;utf16_sinhala_ci&quot;, 120)</span>
+<span class="nc" id="L146">            .put(&quot;utf16_german2_ci&quot;, 121)</span>
+<span class="nc" id="L147">            .put(&quot;utf16_croatian_ci&quot;, 122)</span>
+<span class="nc" id="L148">            .put(&quot;utf16_unicode_520_ci&quot;, 123)</span>
+<span class="nc" id="L149">            .put(&quot;utf16_vietnamese_ci&quot;, 124)</span>
+<span class="nc" id="L150">            .put(&quot;ucs2_unicode_ci&quot;, 128)</span>
+<span class="nc" id="L151">            .put(&quot;ucs2_icelandic_ci&quot;, 129)</span>
+<span class="nc" id="L152">            .put(&quot;ucs2_latvian_ci&quot;, 130)</span>
+<span class="nc" id="L153">            .put(&quot;ucs2_romanian_ci&quot;, 131)</span>
+<span class="nc" id="L154">            .put(&quot;ucs2_slovenian_ci&quot;, 132)</span>
+<span class="nc" id="L155">            .put(&quot;ucs2_polish_ci&quot;, 133)</span>
+<span class="nc" id="L156">            .put(&quot;ucs2_estonian_ci&quot;, 134)</span>
+<span class="nc" id="L157">            .put(&quot;ucs2_spanish_ci&quot;, 135)</span>
+<span class="nc" id="L158">            .put(&quot;ucs2_swedish_ci&quot;, 136)</span>
+<span class="nc" id="L159">            .put(&quot;ucs2_turkish_ci&quot;, 137)</span>
+<span class="nc" id="L160">            .put(&quot;ucs2_czech_ci&quot;, 138)</span>
+<span class="nc" id="L161">            .put(&quot;ucs2_danish_ci&quot;, 139)</span>
+<span class="nc" id="L162">            .put(&quot;ucs2_lithuanian_ci&quot;, 140)</span>
+<span class="nc" id="L163">            .put(&quot;ucs2_slovak_ci&quot;, 141)</span>
+<span class="nc" id="L164">            .put(&quot;ucs2_spanish2_ci&quot;, 142)</span>
+<span class="nc" id="L165">            .put(&quot;ucs2_roman_ci&quot;, 143)</span>
+<span class="nc" id="L166">            .put(&quot;ucs2_persian_ci&quot;, 144)</span>
+<span class="nc" id="L167">            .put(&quot;ucs2_esperanto_ci&quot;, 145)</span>
+<span class="nc" id="L168">            .put(&quot;ucs2_hungarian_ci&quot;, 146)</span>
+<span class="nc" id="L169">            .put(&quot;ucs2_sinhala_ci&quot;, 147)</span>
+<span class="nc" id="L170">            .put(&quot;ucs2_german2_ci&quot;, 148)</span>
+<span class="nc" id="L171">            .put(&quot;ucs2_croatian_ci&quot;, 149)</span>
+<span class="nc" id="L172">            .put(&quot;ucs2_unicode_520_ci&quot;, 150)</span>
+<span class="nc" id="L173">            .put(&quot;ucs2_vietnamese_ci&quot;, 151)</span>
+<span class="nc" id="L174">            .put(&quot;ucs2_general_mysql500_ci&quot;, 159)</span>
+<span class="nc" id="L175">            .put(&quot;utf32_unicode_ci&quot;, 160)</span>
+<span class="nc" id="L176">            .put(&quot;utf32_icelandic_ci&quot;, 161)</span>
+<span class="nc" id="L177">            .put(&quot;utf32_latvian_ci&quot;, 162)</span>
+<span class="nc" id="L178">            .put(&quot;utf32_romanian_ci&quot;, 163)</span>
+<span class="nc" id="L179">            .put(&quot;utf32_slovenian_ci&quot;, 164)</span>
+<span class="nc" id="L180">            .put(&quot;utf32_polish_ci&quot;, 165)</span>
+<span class="nc" id="L181">            .put(&quot;utf32_estonian_ci&quot;, 166)</span>
+<span class="nc" id="L182">            .put(&quot;utf32_spanish_ci&quot;, 167)</span>
+<span class="nc" id="L183">            .put(&quot;utf32_swedish_ci&quot;, 168)</span>
+<span class="nc" id="L184">            .put(&quot;utf32_turkish_ci&quot;, 169)</span>
+<span class="nc" id="L185">            .put(&quot;utf32_czech_ci&quot;, 170)</span>
+<span class="nc" id="L186">            .put(&quot;utf32_danish_ci&quot;, 171)</span>
+<span class="nc" id="L187">            .put(&quot;utf32_lithuanian_ci&quot;, 172)</span>
+<span class="nc" id="L188">            .put(&quot;utf32_slovak_ci&quot;, 173)</span>
+<span class="nc" id="L189">            .put(&quot;utf32_spanish2_ci&quot;, 174)</span>
+<span class="nc" id="L190">            .put(&quot;utf32_roman_ci&quot;, 175)</span>
+<span class="nc" id="L191">            .put(&quot;utf32_persian_ci&quot;, 176)</span>
+<span class="nc" id="L192">            .put(&quot;utf32_esperanto_ci&quot;, 177)</span>
+<span class="nc" id="L193">            .put(&quot;utf32_hungarian_ci&quot;, 178)</span>
+<span class="nc" id="L194">            .put(&quot;utf32_sinhala_ci&quot;, 179)</span>
+<span class="nc" id="L195">            .put(&quot;utf32_german2_ci&quot;, 180)</span>
+<span class="nc" id="L196">            .put(&quot;utf32_croatian_ci&quot;, 181)</span>
+<span class="nc" id="L197">            .put(&quot;utf32_unicode_520_ci&quot;, 182)</span>
+<span class="nc" id="L198">            .put(&quot;utf32_vietnamese_ci&quot;, 183)</span>
+<span class="nc" id="L199">            .put(&quot;utf8_unicode_ci&quot;, 192)</span>
+<span class="nc" id="L200">            .put(&quot;utf8_icelandic_ci&quot;, 193)</span>
+<span class="nc" id="L201">            .put(&quot;utf8_latvian_ci&quot;, 194)</span>
+<span class="nc" id="L202">            .put(&quot;utf8_romanian_ci&quot;, 195)</span>
+<span class="nc" id="L203">            .put(&quot;utf8_slovenian_ci&quot;, 196)</span>
+<span class="nc" id="L204">            .put(&quot;utf8_polish_ci&quot;, 197)</span>
+<span class="nc" id="L205">            .put(&quot;utf8_estonian_ci&quot;, 198)</span>
+<span class="nc" id="L206">            .put(&quot;utf8_spanish_ci&quot;, 199)</span>
+<span class="nc" id="L207">            .put(&quot;utf8_swedish_ci&quot;, 200)</span>
+<span class="nc" id="L208">            .put(&quot;utf8_turkish_ci&quot;, 201)</span>
+<span class="nc" id="L209">            .put(&quot;utf8_czech_ci&quot;, 202)</span>
+<span class="nc" id="L210">            .put(&quot;utf8_danish_ci&quot;, 203)</span>
+<span class="nc" id="L211">            .put(&quot;utf8_lithuanian_ci&quot;, 204)</span>
+<span class="nc" id="L212">            .put(&quot;utf8_slovak_ci&quot;, 205)</span>
+<span class="nc" id="L213">            .put(&quot;utf8_spanish2_ci&quot;, 206)</span>
+<span class="nc" id="L214">            .put(&quot;utf8_roman_ci&quot;, 207)</span>
+<span class="nc" id="L215">            .put(&quot;utf8_persian_ci&quot;, 208)</span>
+<span class="nc" id="L216">            .put(&quot;utf8_esperanto_ci&quot;, 209)</span>
+<span class="nc" id="L217">            .put(&quot;utf8_hungarian_ci&quot;, 210)</span>
+<span class="nc" id="L218">            .put(&quot;utf8_sinhala_ci&quot;, 211)</span>
+<span class="nc" id="L219">            .put(&quot;utf8_german2_ci&quot;, 212)</span>
+<span class="nc" id="L220">            .put(&quot;utf8_croatian_ci&quot;, 213)</span>
+<span class="nc" id="L221">            .put(&quot;utf8_unicode_520_ci&quot;, 214)</span>
+<span class="nc" id="L222">            .put(&quot;utf8_vietnamese_ci&quot;, 215)</span>
+<span class="nc" id="L223">            .put(&quot;utf8_general_mysql500_ci&quot;, 223)</span>
+<span class="nc" id="L224">            .put(&quot;utf8mb4_unicode_ci&quot;, 224)</span>
+<span class="nc" id="L225">            .put(&quot;utf8mb4_icelandic_ci&quot;, 225)</span>
+<span class="nc" id="L226">            .put(&quot;utf8mb4_latvian_ci&quot;, 226)</span>
+<span class="nc" id="L227">            .put(&quot;utf8mb4_romanian_ci&quot;, 227)</span>
+<span class="nc" id="L228">            .put(&quot;utf8mb4_slovenian_ci&quot;, 228)</span>
+<span class="nc" id="L229">            .put(&quot;utf8mb4_polish_ci&quot;, 229)</span>
+<span class="nc" id="L230">            .put(&quot;utf8mb4_estonian_ci&quot;, 230)</span>
+<span class="nc" id="L231">            .put(&quot;utf8mb4_spanish_ci&quot;, 231)</span>
+<span class="nc" id="L232">            .put(&quot;utf8mb4_swedish_ci&quot;, 232)</span>
+<span class="nc" id="L233">            .put(&quot;utf8mb4_turkish_ci&quot;, 233)</span>
+<span class="nc" id="L234">            .put(&quot;utf8mb4_czech_ci&quot;, 234)</span>
+<span class="nc" id="L235">            .put(&quot;utf8mb4_danish_ci&quot;, 235)</span>
+<span class="nc" id="L236">            .put(&quot;utf8mb4_lithuanian_ci&quot;, 236)</span>
+<span class="nc" id="L237">            .put(&quot;utf8mb4_slovak_ci&quot;, 237)</span>
+<span class="nc" id="L238">            .put(&quot;utf8mb4_spanish2_ci&quot;, 238)</span>
+<span class="nc" id="L239">            .put(&quot;utf8mb4_roman_ci&quot;, 239)</span>
+<span class="nc" id="L240">            .put(&quot;utf8mb4_persian_ci&quot;, 240)</span>
+<span class="nc" id="L241">            .put(&quot;utf8mb4_esperanto_ci&quot;, 241)</span>
+<span class="nc" id="L242">            .put(&quot;utf8mb4_hungarian_ci&quot;, 242)</span>
+<span class="nc" id="L243">            .put(&quot;utf8mb4_sinhala_ci&quot;, 243)</span>
+<span class="nc" id="L244">            .put(&quot;utf8mb4_german2_ci&quot;, 244)</span>
+<span class="nc" id="L245">            .put(&quot;utf8mb4_croatian_ci&quot;, 245)</span>
+<span class="nc" id="L246">            .put(&quot;utf8mb4_unicode_520_ci&quot;, 246)</span>
+<span class="nc" id="L247">            .put(&quot;utf8mb4_vietnamese_ci&quot;, 247)</span>
+<span class="nc" id="L248">            .build();</span>
+
+<span class="nc" id="L250">    ImmutableMap.Builder&lt;Integer, String&gt; builder = ImmutableMap.builder();</span>
+<span class="nc bnc" id="L251" title="All 2 branches missed.">    for (String collation : collationMap.keySet()) {</span>
+<span class="nc" id="L252">      builder.put(collationMap.get(collation), collation);</span>
+<span class="nc" id="L253">    }</span>
+<span class="nc" id="L254">    collationCodeMap = builder.build();</span>
+<span class="nc" id="L255">  }</span>
+
+  public static int translate(String collation) {
+<span class="nc" id="L258">    Integer code = collationMap.get(collation);</span>
+<span class="nc bnc" id="L259" title="All 2 branches missed.">    if (code == null) {</span>
+<span class="nc" id="L260">      return DEF_COLLATION_CODE;</span>
+    }
+<span class="nc" id="L262">    return code;</span>
+  }
+
+  public static String translate(int code) {
+<span class="nc" id="L266">    String collation = collationCodeMap.get(code);</span>
+<span class="nc bnc" id="L267" title="All 2 branches missed.">    if (collation == null) {</span>
+<span class="nc" id="L268">      return &quot;&quot;;</span>
+    }
+<span class="nc" id="L270">    return collation;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

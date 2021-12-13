@@ -1,0 +1,1323 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RegionStoreClient.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.region</a> &gt; <span class="el_source">RegionStoreClient.java</span></div><h1>RegionStoreClient.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.region;
+
+import static org.tikv.common.region.RegionStoreClient.RequestTypes.REQ_TYPE_DAG;
+import static org.tikv.common.util.BackOffFunction.BackOffFuncType.*;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.InvalidProtocolBufferException;
+import com.pingcap.tidb.tipb.DAGRequest;
+import com.pingcap.tidb.tipb.SelectResponse;
+import io.grpc.ManagedChannel;
+import io.grpc.Metadata;
+import io.grpc.stub.MetadataUtils;
+import io.prometheus.client.Histogram;
+import java.util.*;
+import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.PDClient;
+import org.tikv.common.StoreVersion;
+import org.tikv.common.TiConfiguration;
+import org.tikv.common.Version;
+import org.tikv.common.exception.*;
+import org.tikv.common.operation.KVErrorHandler;
+import org.tikv.common.operation.RegionErrorHandler;
+import org.tikv.common.streaming.StreamingResponse;
+import org.tikv.common.util.*;
+import org.tikv.kvproto.Coprocessor;
+import org.tikv.kvproto.Errorpb;
+import org.tikv.kvproto.Kvrpcpb.*;
+import org.tikv.kvproto.Metapb;
+import org.tikv.kvproto.TikvGrpc;
+import org.tikv.kvproto.TikvGrpc.TikvBlockingStub;
+import org.tikv.kvproto.TikvGrpc.TikvFutureStub;
+import org.tikv.txn.AbstractLockResolverClient;
+import org.tikv.txn.Lock;
+import org.tikv.txn.ResolveLockResult;
+import org.tikv.txn.exception.LockException;
+
+// TODO:
+//  1. RegionStoreClient will be inaccessible directly.
+//  2. All apis of RegionStoreClient would not provide retry aside from callWithRetry,
+//  if a request needs to be retried because of an un-retryable cause, e.g., keys
+//  need to be re-split across regions/stores, region info outdated, e.t.c., you
+//  should retry it in an upper client logic (KVClient, TxnClient, e.t.c.)
+
+/** Note that RegionStoreClient itself is not thread-safe */
+public class RegionStoreClient extends AbstractRegionStoreClient {
+<span class="fc" id="L66">  private static final Logger logger = LoggerFactory.getLogger(RegionStoreClient.class);</span>
+  @VisibleForTesting public final AbstractLockResolverClient lockResolverClient;
+  private final TiStoreType storeType;
+  /** startTS -&gt; List(locks) */
+<span class="fc" id="L70">  private final Map&lt;Long, Set&lt;Long&gt;&gt; resolvedLocks = new HashMap&lt;&gt;();</span>
+
+  private final PDClient pdClient;
+<span class="fc" id="L73">  private Boolean isV4 = null;</span>
+
+<span class="fc" id="L75">  public static final Histogram GRPC_RAW_REQUEST_LATENCY =</span>
+<span class="fc" id="L76">      Histogram.build()</span>
+<span class="fc" id="L77">          .name(&quot;client_java_grpc_raw_requests_latency&quot;)</span>
+<span class="fc" id="L78">          .help(&quot;grpc raw request latency.&quot;)</span>
+<span class="fc" id="L79">          .labelNames(&quot;type&quot;)</span>
+<span class="fc" id="L80">          .register();</span>
+
+  private synchronized Boolean getIsV4() {
+<span class="pc bpc" id="L83" title="1 of 2 branches missed.">    if (isV4 == null) {</span>
+<span class="fc" id="L84">      isV4 = StoreVersion.minTiKVVersion(Version.RESOLVE_LOCK_V4, pdClient);</span>
+    }
+<span class="fc" id="L86">    return isV4;</span>
+  }
+
+  private RegionStoreClient(
+      TiConfiguration conf,
+      TiRegion region,
+      TiStore store,
+      TiStoreType storeType,
+      ChannelFactory channelFactory,
+      TikvBlockingStub blockingStub,
+      TikvFutureStub asyncStub,
+      RegionManager regionManager,
+      PDClient pdClient,
+      RegionStoreClient.RegionStoreClientBuilder clientBuilder) {
+<span class="fc" id="L100">    super(conf, region, store, channelFactory, blockingStub, asyncStub, regionManager);</span>
+<span class="fc" id="L101">    this.storeType = storeType;</span>
+
+<span class="pc bpc" id="L103" title="1 of 2 branches missed.">    if (this.storeType == TiStoreType.TiKV) {</span>
+<span class="fc" id="L104">      this.lockResolverClient =</span>
+<span class="fc" id="L105">          AbstractLockResolverClient.getInstance(</span>
+              conf,
+              region,
+              store,
+              this.blockingStub,
+              this.asyncStub,
+              channelFactory,
+              regionManager,
+              pdClient,
+              clientBuilder);
+
+    } else {
+<span class="nc" id="L117">      TiStore tikvStore =</span>
+<span class="nc" id="L118">          regionManager.getRegionStorePairByKey(region.getStartKey(), TiStoreType.TiKV).second;</span>
+
+<span class="nc" id="L120">      String addressStr = tikvStore.getStore().getAddress();</span>
+<span class="nc bnc" id="L121" title="All 2 branches missed.">      if (logger.isDebugEnabled()) {</span>
+<span class="nc" id="L122">        logger.debug(String.format(&quot;Create region store client on address %s&quot;, addressStr));</span>
+      }
+<span class="nc" id="L124">      ManagedChannel channel = channelFactory.getChannel(addressStr, pdClient.getHostMapping());</span>
+
+<span class="nc" id="L126">      TikvBlockingStub tikvBlockingStub = TikvGrpc.newBlockingStub(channel);</span>
+<span class="nc" id="L127">      TikvGrpc.TikvFutureStub tikvAsyncStub = TikvGrpc.newFutureStub(channel);</span>
+
+<span class="nc" id="L129">      this.lockResolverClient =</span>
+<span class="nc" id="L130">          AbstractLockResolverClient.getInstance(</span>
+              conf,
+              region,
+              tikvStore,
+              tikvBlockingStub,
+              tikvAsyncStub,
+              channelFactory,
+              regionManager,
+              pdClient,
+              clientBuilder);
+    }
+<span class="fc" id="L141">    this.pdClient = pdClient;</span>
+<span class="fc" id="L142">  }</span>
+
+  public synchronized boolean addResolvedLocks(Long version, Set&lt;Long&gt; locks) {
+<span class="nc" id="L145">    Set&lt;Long&gt; oldList = resolvedLocks.get(version);</span>
+<span class="nc bnc" id="L146" title="All 2 branches missed.">    if (oldList != null) {</span>
+<span class="nc" id="L147">      oldList.addAll(locks);</span>
+    } else {
+<span class="nc" id="L149">      resolvedLocks.put(version, new HashSet&lt;&gt;(locks));</span>
+    }
+<span class="nc" id="L151">    return true;</span>
+  }
+
+  public synchronized Set&lt;Long&gt; getResolvedLocks(Long version) {
+<span class="fc" id="L155">    return resolvedLocks.getOrDefault(version, java.util.Collections.emptySet());</span>
+  }
+
+  /**
+   * Fetch a value according to a key
+   *
+   * @param backOffer backOffer
+   * @param key key to fetch
+   * @param version key version
+   * @return value
+   * @throws TiClientInternalException TiSpark Client exception, unexpected
+   * @throws KeyException Key may be locked
+   */
+  public ByteString get(BackOffer backOffer, ByteString key, long version)
+      throws TiClientInternalException, KeyException {
+<span class="fc" id="L170">    boolean forWrite = false;</span>
+<span class="fc" id="L171">    Supplier&lt;GetRequest&gt; factory =</span>
+        () -&gt;
+<span class="fc" id="L173">            GetRequest.newBuilder()</span>
+<span class="fc" id="L174">                .setContext(makeContext(getResolvedLocks(version), this.storeType))</span>
+<span class="fc" id="L175">                .setKey(key)</span>
+<span class="fc" id="L176">                .setVersion(version)</span>
+<span class="fc" id="L177">                .build();</span>
+
+<span class="fc" id="L179">    KVErrorHandler&lt;GetResponse&gt; handler =</span>
+        new KVErrorHandler&lt;&gt;(
+            regionManager,
+            this,
+            lockResolverClient,
+<span class="pc bpc" id="L184" title="1 of 2 branches missed.">            resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null,</span>
+<span class="fc bfc" id="L185" title="All 2 branches covered.">            resp -&gt; resp.hasError() ? resp.getError() : null,</span>
+<span class="nc" id="L186">            resolveLockResult -&gt; addResolvedLocks(version, resolveLockResult.getResolvedLocks()),</span>
+            version,
+            forWrite);
+
+<span class="fc" id="L190">    GetResponse resp = callWithRetry(backOffer, TikvGrpc.getKvGetMethod(), factory, handler);</span>
+
+<span class="fc" id="L192">    handleGetResponse(resp);</span>
+<span class="fc" id="L193">    return resp.getValue();</span>
+  }
+
+  /**
+   * @param resp GetResponse
+   * @throws TiClientInternalException TiSpark Client exception, unexpected
+   * @throws KeyException Key may be locked
+   */
+  private void handleGetResponse(GetResponse resp) throws TiClientInternalException, KeyException {
+<span class="pc bpc" id="L202" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L203">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L204">      throw new TiClientInternalException(&quot;GetResponse failed without a cause&quot;);</span>
+    }
+<span class="pc bpc" id="L206" title="1 of 2 branches missed.">    if (resp.hasRegionError()) {</span>
+<span class="nc" id="L207">      throw new RegionException(resp.getRegionError());</span>
+    }
+<span class="fc bfc" id="L209" title="All 2 branches covered.">    if (resp.hasError()) {</span>
+<span class="fc" id="L210">      throw new KeyException(resp.getError());</span>
+    }
+<span class="fc" id="L212">  }</span>
+
+  public List&lt;KvPair&gt; batchGet(BackOffer backOffer, Iterable&lt;ByteString&gt; keys, long version) {
+<span class="fc" id="L215">    boolean forWrite = false;</span>
+<span class="fc" id="L216">    Supplier&lt;BatchGetRequest&gt; request =</span>
+        () -&gt;
+<span class="fc" id="L218">            BatchGetRequest.newBuilder()</span>
+<span class="fc" id="L219">                .setContext(makeContext(getResolvedLocks(version), this.storeType))</span>
+<span class="fc" id="L220">                .addAllKeys(keys)</span>
+<span class="fc" id="L221">                .setVersion(version)</span>
+<span class="fc" id="L222">                .build();</span>
+<span class="fc" id="L223">    KVErrorHandler&lt;BatchGetResponse&gt; handler =</span>
+        new KVErrorHandler&lt;&gt;(
+            regionManager,
+            this,
+            lockResolverClient,
+<span class="fc bfc" id="L228" title="All 2 branches covered.">            resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null,</span>
+<span class="fc" id="L229">            resp -&gt; null,</span>
+<span class="nc" id="L230">            resolveLockResult -&gt; addResolvedLocks(version, resolveLockResult.getResolvedLocks()),</span>
+            version,
+            forWrite);
+<span class="fc" id="L233">    BatchGetResponse resp =</span>
+<span class="fc" id="L234">        callWithRetry(backOffer, TikvGrpc.getKvBatchGetMethod(), request, handler);</span>
+<span class="fc" id="L235">    return handleBatchGetResponse(backOffer, resp, version);</span>
+  }
+
+  private List&lt;KvPair&gt; handleBatchGetResponse(
+      BackOffer backOffer, BatchGetResponse resp, long version) {
+<span class="fc" id="L240">    boolean forWrite = false;</span>
+<span class="pc bpc" id="L241" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L242">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L243">      throw new TiClientInternalException(&quot;BatchGetResponse failed without a cause&quot;);</span>
+    }
+<span class="pc bpc" id="L245" title="1 of 2 branches missed.">    if (resp.hasRegionError()) {</span>
+<span class="nc" id="L246">      throw new RegionException(resp.getRegionError());</span>
+    }
+<span class="fc" id="L248">    List&lt;Lock&gt; locks = new ArrayList&lt;&gt;();</span>
+
+<span class="fc bfc" id="L250" title="All 2 branches covered.">    for (KvPair pair : resp.getPairsList()) {</span>
+<span class="pc bpc" id="L251" title="1 of 2 branches missed.">      if (pair.hasError()) {</span>
+<span class="nc bnc" id="L252" title="All 2 branches missed.">        if (pair.getError().hasLocked()) {</span>
+<span class="nc" id="L253">          Lock lock = new Lock(pair.getError().getLocked());</span>
+<span class="nc" id="L254">          locks.add(lock);</span>
+<span class="nc" id="L255">        } else {</span>
+<span class="nc" id="L256">          throw new KeyException(pair.getError());</span>
+        }
+      }
+<span class="fc" id="L259">    }</span>
+
+<span class="pc bpc" id="L261" title="1 of 2 branches missed.">    if (!locks.isEmpty()) {</span>
+<span class="nc" id="L262">      ResolveLockResult resolveLockResult =</span>
+<span class="nc" id="L263">          lockResolverClient.resolveLocks(backOffer, version, locks, forWrite);</span>
+<span class="nc" id="L264">      addResolvedLocks(version, resolveLockResult.getResolvedLocks());</span>
+      // resolveLocks already retried, just throw error to upper logic.
+<span class="nc" id="L266">      throw new TiKVException(&quot;locks not resolved, retry&quot;);</span>
+    } else {
+<span class="fc" id="L268">      return resp.getPairsList();</span>
+    }
+  }
+
+  public List&lt;KvPair&gt; scan(
+      BackOffer backOffer, ByteString startKey, long version, boolean keyOnly) {
+<span class="fc" id="L274">    boolean forWrite = false;</span>
+    while (true) {
+      // we should refresh region
+<span class="fc" id="L277">      region = regionManager.getRegionByKey(startKey);</span>
+
+<span class="fc" id="L279">      Supplier&lt;ScanRequest&gt; request =</span>
+          () -&gt;
+<span class="fc" id="L281">              ScanRequest.newBuilder()</span>
+<span class="fc" id="L282">                  .setContext(makeContext(getResolvedLocks(version), this.storeType))</span>
+<span class="fc" id="L283">                  .setStartKey(startKey)</span>
+<span class="fc" id="L284">                  .setVersion(version)</span>
+<span class="fc" id="L285">                  .setKeyOnly(keyOnly)</span>
+<span class="fc" id="L286">                  .setLimit(getConf().getScanBatchSize())</span>
+<span class="fc" id="L287">                  .build();</span>
+
+<span class="fc" id="L289">      KVErrorHandler&lt;ScanResponse&gt; handler =</span>
+          new KVErrorHandler&lt;&gt;(
+              regionManager,
+              this,
+              lockResolverClient,
+<span class="fc bfc" id="L294" title="All 2 branches covered.">              resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null,</span>
+<span class="fc" id="L295">              resp -&gt; null,</span>
+<span class="nc" id="L296">              resolveLockResult -&gt; addResolvedLocks(version, resolveLockResult.getResolvedLocks()),</span>
+              version,
+              forWrite);
+<span class="fc" id="L299">      ScanResponse resp = callWithRetry(backOffer, TikvGrpc.getKvScanMethod(), request, handler);</span>
+<span class="pc bpc" id="L300" title="1 of 2 branches missed.">      if (isScanSuccess(backOffer, resp)) {</span>
+<span class="fc" id="L301">        return doScan(resp);</span>
+      }
+<span class="nc" id="L303">    }</span>
+  }
+
+  private boolean isScanSuccess(BackOffer backOffer, ScanResponse resp) {
+<span class="pc bpc" id="L307" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L308">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L309">      throw new TiClientInternalException(&quot;ScanResponse failed without a cause&quot;);</span>
+    }
+<span class="pc bpc" id="L311" title="1 of 2 branches missed.">    if (resp.hasRegionError()) {</span>
+<span class="nc" id="L312">      backOffer.doBackOff(BoRegionMiss, new RegionException(resp.getRegionError()));</span>
+<span class="nc" id="L313">      return false;</span>
+    }
+<span class="fc" id="L315">    return true;</span>
+  }
+
+  // TODO: resolve locks after scan
+  private List&lt;KvPair&gt; doScan(ScanResponse resp) {
+    // Check if kvPair contains error, it should be a Lock if hasError is true.
+<span class="fc" id="L321">    List&lt;KvPair&gt; kvPairs = resp.getPairsList();</span>
+<span class="fc" id="L322">    List&lt;KvPair&gt; newKvPairs = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L323" title="All 2 branches covered.">    for (KvPair kvPair : kvPairs) {</span>
+<span class="pc bpc" id="L324" title="1 of 2 branches missed.">      if (kvPair.hasError()) {</span>
+<span class="nc" id="L325">        Lock lock = AbstractLockResolverClient.extractLockFromKeyErr(kvPair.getError());</span>
+<span class="nc" id="L326">        newKvPairs.add(</span>
+<span class="nc" id="L327">            KvPair.newBuilder()</span>
+<span class="nc" id="L328">                .setError(kvPair.getError())</span>
+<span class="nc" id="L329">                .setValue(kvPair.getValue())</span>
+<span class="nc" id="L330">                .setKey(lock.getKey())</span>
+<span class="nc" id="L331">                .build());</span>
+<span class="nc" id="L332">      } else {</span>
+<span class="fc" id="L333">        newKvPairs.add(kvPair);</span>
+      }
+<span class="fc" id="L335">    }</span>
+<span class="fc" id="L336">    return Collections.unmodifiableList(newKvPairs);</span>
+  }
+
+  public List&lt;KvPair&gt; scan(BackOffer backOffer, ByteString startKey, long version) {
+<span class="fc" id="L340">    return scan(backOffer, startKey, version, false);</span>
+  }
+
+  /**
+   * Prewrite batch keys
+   *
+   * @param backOffer backOffer
+   * @param primary primary lock of keys
+   * @param mutations batch key-values as mutations
+   * @param startTs startTs of prewrite
+   * @param lockTTL lock ttl
+   * @throws TiClientInternalException TiSpark Client exception, unexpected
+   * @throws KeyException Key may be locked
+   * @throws RegionException region error occurs
+   */
+  public void prewrite(
+      BackOffer backOffer,
+      ByteString primary,
+      Iterable&lt;Mutation&gt; mutations,
+      long startTs,
+      long lockTTL)
+      throws TiClientInternalException, KeyException, RegionException {
+<span class="nc" id="L362">    this.prewrite(backOffer, primary, mutations, startTs, lockTTL, false);</span>
+<span class="nc" id="L363">  }</span>
+
+  /**
+   * Prewrite batch keys
+   *
+   * @param skipConstraintCheck whether to skip constraint check
+   */
+  public void prewrite(
+      BackOffer bo,
+      ByteString primaryLock,
+      Iterable&lt;Mutation&gt; mutations,
+      long startTs,
+      long ttl,
+      boolean skipConstraintCheck)
+      throws TiClientInternalException, KeyException, RegionException {
+<span class="fc" id="L378">    boolean forWrite = true;</span>
+    while (true) {
+<span class="fc" id="L380">      Supplier&lt;PrewriteRequest&gt; factory =</span>
+          () -&gt;
+<span class="pc bpc" id="L382" title="1 of 2 branches missed.">              getIsV4()</span>
+<span class="fc" id="L383">                  ? PrewriteRequest.newBuilder()</span>
+<span class="fc" id="L384">                      .setContext(makeContext(storeType))</span>
+<span class="fc" id="L385">                      .setStartVersion(startTs)</span>
+<span class="fc" id="L386">                      .setPrimaryLock(primaryLock)</span>
+<span class="fc" id="L387">                      .addAllMutations(mutations)</span>
+<span class="fc" id="L388">                      .setLockTtl(ttl)</span>
+<span class="fc" id="L389">                      .setSkipConstraintCheck(skipConstraintCheck)</span>
+<span class="fc" id="L390">                      .setMinCommitTs(startTs)</span>
+<span class="fc" id="L391">                      .setTxnSize(16)</span>
+<span class="fc" id="L392">                      .build()</span>
+<span class="nc" id="L393">                  : PrewriteRequest.newBuilder()</span>
+<span class="nc" id="L394">                      .setContext(makeContext(storeType))</span>
+<span class="nc" id="L395">                      .setStartVersion(startTs)</span>
+<span class="nc" id="L396">                      .setPrimaryLock(primaryLock)</span>
+<span class="nc" id="L397">                      .addAllMutations(mutations)</span>
+<span class="nc" id="L398">                      .setLockTtl(ttl)</span>
+<span class="nc" id="L399">                      .setSkipConstraintCheck(skipConstraintCheck)</span>
+                      // v3 does not support setMinCommitTs(startTs)
+<span class="nc" id="L401">                      .setTxnSize(16)</span>
+<span class="nc" id="L402">                      .build();</span>
+<span class="fc" id="L403">      KVErrorHandler&lt;PrewriteResponse&gt; handler =</span>
+          new KVErrorHandler&lt;&gt;(
+              regionManager,
+              this,
+              lockResolverClient,
+<span class="pc bpc" id="L408" title="1 of 2 branches missed.">              resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null,</span>
+<span class="fc" id="L409">              resp -&gt; null,</span>
+<span class="nc" id="L410">              resolveLockResult -&gt; null,</span>
+              startTs,
+              forWrite);
+<span class="fc" id="L413">      PrewriteResponse resp = callWithRetry(bo, TikvGrpc.getKvPrewriteMethod(), factory, handler);</span>
+<span class="pc bpc" id="L414" title="1 of 2 branches missed.">      if (isPrewriteSuccess(bo, resp, startTs)) {</span>
+<span class="fc" id="L415">        return;</span>
+      }
+<span class="nc" id="L417">    }</span>
+  }
+
+  /**
+   * @param backOffer backOffer
+   * @param resp response
+   * @return Return true means the rpc call success. Return false means the rpc call fail,
+   *     RegionStoreClient should retry. Throw an Exception means the rpc call fail,
+   *     RegionStoreClient cannot handle this kind of error
+   * @throws TiClientInternalException
+   * @throws RegionException
+   * @throws KeyException
+   */
+  private boolean isPrewriteSuccess(BackOffer backOffer, PrewriteResponse resp, long startTs)
+      throws TiClientInternalException, KeyException, RegionException {
+<span class="fc" id="L432">    boolean forWrite = true;</span>
+<span class="pc bpc" id="L433" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L434">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L435">      throw new TiClientInternalException(&quot;Prewrite Response failed without a cause&quot;);</span>
+    }
+<span class="pc bpc" id="L437" title="1 of 2 branches missed.">    if (resp.hasRegionError()) {</span>
+<span class="nc" id="L438">      throw new RegionException(resp.getRegionError());</span>
+    }
+
+<span class="fc" id="L441">    boolean isSuccess = true;</span>
+<span class="fc" id="L442">    List&lt;Lock&gt; locks = new ArrayList&lt;&gt;();</span>
+<span class="pc bpc" id="L443" title="1 of 2 branches missed.">    for (KeyError err : resp.getErrorsList()) {</span>
+<span class="nc bnc" id="L444" title="All 2 branches missed.">      if (err.hasLocked()) {</span>
+<span class="nc" id="L445">        isSuccess = false;</span>
+<span class="nc" id="L446">        Lock lock = new Lock(err.getLocked());</span>
+<span class="nc" id="L447">        locks.add(lock);</span>
+<span class="nc" id="L448">      } else {</span>
+<span class="nc" id="L449">        throw new KeyException(err.toString());</span>
+      }
+<span class="nc" id="L451">    }</span>
+<span class="pc bpc" id="L452" title="1 of 2 branches missed.">    if (isSuccess) {</span>
+<span class="fc" id="L453">      return true;</span>
+    }
+
+<span class="nc" id="L456">    ResolveLockResult resolveLockResult =</span>
+<span class="nc" id="L457">        lockResolverClient.resolveLocks(backOffer, startTs, locks, forWrite);</span>
+<span class="nc" id="L458">    addResolvedLocks(startTs, resolveLockResult.getResolvedLocks());</span>
+<span class="nc" id="L459">    long msBeforeExpired = resolveLockResult.getMsBeforeTxnExpired();</span>
+<span class="nc bnc" id="L460" title="All 2 branches missed.">    if (msBeforeExpired &gt; 0) {</span>
+<span class="nc" id="L461">      backOffer.doBackOffWithMaxSleep(</span>
+<span class="nc" id="L462">          BoTxnLock, msBeforeExpired, new KeyException(resp.getErrorsList().get(0)));</span>
+    }
+<span class="nc" id="L464">    return false;</span>
+  }
+
+  /** TXN Heart Beat: update primary key ttl */
+  public void txnHeartBeat(BackOffer bo, ByteString primaryLock, long startTs, long ttl) {
+<span class="nc" id="L469">    boolean forWrite = false;</span>
+    while (true) {
+<span class="nc" id="L471">      Supplier&lt;TxnHeartBeatRequest&gt; factory =</span>
+          () -&gt;
+<span class="nc" id="L473">              TxnHeartBeatRequest.newBuilder()</span>
+<span class="nc" id="L474">                  .setContext(makeContext(storeType))</span>
+<span class="nc" id="L475">                  .setStartVersion(startTs)</span>
+<span class="nc" id="L476">                  .setPrimaryLock(primaryLock)</span>
+<span class="nc" id="L477">                  .setAdviseLockTtl(ttl)</span>
+<span class="nc" id="L478">                  .build();</span>
+<span class="nc" id="L479">      KVErrorHandler&lt;TxnHeartBeatResponse&gt; handler =</span>
+          new KVErrorHandler&lt;&gt;(
+              regionManager,
+              this,
+              lockResolverClient,
+<span class="nc bnc" id="L484" title="All 2 branches missed.">              resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null,</span>
+<span class="nc bnc" id="L485" title="All 2 branches missed.">              resp -&gt; resp.hasError() ? resp.getError() : null,</span>
+<span class="nc" id="L486">              resolveLockResult -&gt; null,</span>
+              startTs,
+              forWrite);
+<span class="nc" id="L489">      TxnHeartBeatResponse resp =</span>
+<span class="nc" id="L490">          callWithRetry(bo, TikvGrpc.getKvTxnHeartBeatMethod(), factory, handler);</span>
+<span class="nc bnc" id="L491" title="All 2 branches missed.">      if (isTxnHeartBeatSuccess(resp)) {</span>
+<span class="nc" id="L492">        return;</span>
+      }
+<span class="nc" id="L494">    }</span>
+  }
+
+  private boolean isTxnHeartBeatSuccess(TxnHeartBeatResponse resp)
+      throws TiClientInternalException, RegionException {
+<span class="nc bnc" id="L499" title="All 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L500">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L501">      throw new TiClientInternalException(&quot;TxnHeartBeat Response failed without a cause&quot;);</span>
+    }
+
+<span class="nc bnc" id="L504" title="All 2 branches missed.">    if (resp.hasRegionError()) {</span>
+<span class="nc" id="L505">      throw new RegionException(resp.getRegionError());</span>
+    }
+
+<span class="nc bnc" id="L508" title="All 2 branches missed.">    if (resp.hasError()) {</span>
+<span class="nc" id="L509">      throw new TiClientInternalException(&quot;TxnHeartBeat fail, &quot; + resp.getError().getAbort());</span>
+    }
+
+<span class="nc" id="L512">    return true;</span>
+  }
+
+  /**
+   * Commit batch keys
+   *
+   * @param backOffer backOffer
+   * @param keys keys to commit
+   * @param startTs start version
+   * @param commitTs commit version
+   */
+  public void commit(BackOffer backOffer, Iterable&lt;ByteString&gt; keys, long startTs, long commitTs)
+      throws KeyException {
+<span class="fc" id="L525">    boolean forWrite = true;</span>
+<span class="fc" id="L526">    Supplier&lt;CommitRequest&gt; factory =</span>
+        () -&gt;
+<span class="fc" id="L528">            CommitRequest.newBuilder()</span>
+<span class="fc" id="L529">                .setStartVersion(startTs)</span>
+<span class="fc" id="L530">                .setCommitVersion(commitTs)</span>
+<span class="fc" id="L531">                .addAllKeys(keys)</span>
+<span class="fc" id="L532">                .setContext(makeContext(storeType))</span>
+<span class="fc" id="L533">                .build();</span>
+<span class="fc" id="L534">    KVErrorHandler&lt;CommitResponse&gt; handler =</span>
+        new KVErrorHandler&lt;&gt;(
+            regionManager,
+            this,
+            lockResolverClient,
+<span class="pc bpc" id="L539" title="1 of 2 branches missed.">            resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null,</span>
+<span class="pc bpc" id="L540" title="1 of 2 branches missed.">            resp -&gt; resp.hasError() ? resp.getError() : null,</span>
+<span class="nc" id="L541">            resolveLockResult -&gt; null,</span>
+            startTs,
+            forWrite);
+<span class="fc" id="L544">    CommitResponse resp = callWithRetry(backOffer, TikvGrpc.getKvCommitMethod(), factory, handler);</span>
+<span class="fc" id="L545">    handleCommitResponse(resp);</span>
+<span class="fc" id="L546">  }</span>
+
+  /**
+   * @param resp CommitResponse
+   * @throws TiClientInternalException
+   * @throws RegionException
+   * @throws KeyException
+   */
+  private void handleCommitResponse(CommitResponse resp)
+      throws TiClientInternalException, RegionException, KeyException {
+<span class="pc bpc" id="L556" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L557">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L558">      throw new TiClientInternalException(&quot;CommitResponse failed without a cause&quot;);</span>
+    }
+<span class="pc bpc" id="L560" title="1 of 2 branches missed.">    if (resp.hasRegionError()) {</span>
+      // bo.doBackOff(BoRegionMiss, new RegionException(resp.getRegionError()));
+      // return false;
+      // Caller method should restart commit
+<span class="nc" id="L564">      throw new RegionException(resp.getRegionError());</span>
+    }
+    // If we find locks, we first resolve and let its caller retry.
+<span class="pc bpc" id="L567" title="1 of 2 branches missed.">    if (resp.hasError()) {</span>
+<span class="nc" id="L568">      throw new KeyException(resp.getError());</span>
+    }
+<span class="fc" id="L570">  }</span>
+
+  /**
+   * Execute and retrieve the response from TiKV server.
+   *
+   * @param req Select request to process
+   * @param ranges Key range list
+   * @return Remaining tasks of this request, if task split happens, null otherwise
+   */
+  public List&lt;RangeSplitter.RegionTask&gt; coprocess(
+      BackOffer backOffer,
+      DAGRequest req,
+      List&lt;Coprocessor.KeyRange&gt; ranges,
+      Queue&lt;SelectResponse&gt; responseQueue,
+      long startTs) {
+<span class="nc" id="L585">    boolean forWrite = false;</span>
+<span class="nc bnc" id="L586" title="All 6 branches missed.">    if (req == null || ranges == null || req.getExecutorsCount() &lt; 1) {</span>
+<span class="nc" id="L587">      throw new IllegalArgumentException(&quot;Invalid coprocessor argument!&quot;);</span>
+    }
+
+<span class="nc" id="L590">    Supplier&lt;Coprocessor.Request&gt; reqToSend =</span>
+        () -&gt;
+<span class="nc" id="L592">            Coprocessor.Request.newBuilder()</span>
+<span class="nc" id="L593">                .setContext(makeContext(getResolvedLocks(startTs), this.storeType))</span>
+<span class="nc" id="L594">                .setTp(REQ_TYPE_DAG.getValue())</span>
+<span class="nc" id="L595">                .setStartTs(startTs)</span>
+<span class="nc" id="L596">                .setData(req.toByteString())</span>
+<span class="nc" id="L597">                .addAllRanges(ranges)</span>
+<span class="nc" id="L598">                .build();</span>
+
+    // we should handle the region error ourselves
+<span class="nc" id="L601">    KVErrorHandler&lt;Coprocessor.Response&gt; handler =</span>
+        new KVErrorHandler&lt;&gt;(
+            regionManager,
+            this,
+            lockResolverClient,
+<span class="nc bnc" id="L606" title="All 2 branches missed.">            resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null,</span>
+<span class="nc" id="L607">            resp -&gt; null,</span>
+<span class="nc" id="L608">            resolveLockResult -&gt; addResolvedLocks(startTs, resolveLockResult.getResolvedLocks()),</span>
+            startTs,
+            forWrite);
+<span class="nc" id="L611">    Coprocessor.Response resp =</span>
+<span class="nc" id="L612">        callWithRetry(backOffer, TikvGrpc.getCoprocessorMethod(), reqToSend, handler);</span>
+<span class="nc" id="L613">    return handleCopResponse(backOffer, resp, ranges, responseQueue, startTs);</span>
+  }
+
+  // handleCopResponse checks coprocessor Response for region split and lock,
+  // returns more tasks when that happens, or handles the response if no error.
+  // if we're handling streaming coprocessor response, lastRange is the range of last
+  // successful response, otherwise it's nil.
+  private List&lt;RangeSplitter.RegionTask&gt; handleCopResponse(
+      BackOffer backOffer,
+      Coprocessor.Response response,
+      List&lt;Coprocessor.KeyRange&gt; ranges,
+      Queue&lt;SelectResponse&gt; responseQueue,
+      long startTs) {
+<span class="nc" id="L626">    boolean forWrite = false;</span>
+<span class="nc bnc" id="L627" title="All 2 branches missed.">    if (response == null) {</span>
+      // Send request failed, reasons may:
+      // 1. TiKV down
+      // 2. Network partition
+<span class="nc" id="L631">      backOffer.doBackOff(</span>
+          BackOffFunction.BackOffFuncType.BoRegionMiss,
+          new GrpcException(&quot;TiKV down or Network partition&quot;));
+<span class="nc" id="L634">      logger.warn(&quot;Re-splitting region task due to region error: TiKV down or Network partition&quot;);</span>
+      // Split ranges
+<span class="nc" id="L636">      return RangeSplitter.newSplitter(this.regionManager).splitRangeByRegion(ranges, storeType);</span>
+    }
+
+<span class="nc bnc" id="L639" title="All 2 branches missed.">    if (response.hasRegionError()) {</span>
+<span class="nc" id="L640">      Errorpb.Error regionError = response.getRegionError();</span>
+<span class="nc" id="L641">      backOffer.doBackOff(</span>
+<span class="nc" id="L642">          BackOffFunction.BackOffFuncType.BoRegionMiss, new GrpcException(regionError.toString()));</span>
+<span class="nc" id="L643">      logger.warn(&quot;Re-splitting region task due to region error:&quot; + regionError.getMessage());</span>
+      // Split ranges
+<span class="nc" id="L645">      return RangeSplitter.newSplitter(this.regionManager).splitRangeByRegion(ranges, storeType);</span>
+    }
+
+<span class="nc bnc" id="L648" title="All 2 branches missed.">    if (response.hasLocked()) {</span>
+<span class="nc" id="L649">      Lock lock = new Lock(response.getLocked());</span>
+<span class="nc" id="L650">      logger.debug(String.format(&quot;coprocessor encounters locks: %s&quot;, lock));</span>
+<span class="nc" id="L651">      ResolveLockResult resolveLockResult =</span>
+<span class="nc" id="L652">          lockResolverClient.resolveLocks(</span>
+<span class="nc" id="L653">              backOffer, startTs, Collections.singletonList(lock), forWrite);</span>
+<span class="nc" id="L654">      addResolvedLocks(startTs, resolveLockResult.getResolvedLocks());</span>
+<span class="nc" id="L655">      long msBeforeExpired = resolveLockResult.getMsBeforeTxnExpired();</span>
+<span class="nc bnc" id="L656" title="All 2 branches missed.">      if (msBeforeExpired &gt; 0) {</span>
+<span class="nc" id="L657">        backOffer.doBackOffWithMaxSleep(BoTxnLockFast, msBeforeExpired, new LockException(lock));</span>
+      }
+      // Split ranges
+<span class="nc" id="L660">      return RangeSplitter.newSplitter(this.regionManager).splitRangeByRegion(ranges, storeType);</span>
+    }
+
+<span class="nc" id="L663">    String otherError = response.getOtherError();</span>
+<span class="nc bnc" id="L664" title="All 2 branches missed.">    if (!otherError.isEmpty()) {</span>
+<span class="nc" id="L665">      logger.warn(String.format(&quot;Other error occurred, message: %s&quot;, otherError));</span>
+<span class="nc" id="L666">      throw new GrpcException(otherError);</span>
+    }
+
+<span class="nc" id="L669">    responseQueue.offer(doCoprocessor(response));</span>
+<span class="nc" id="L670">    return null;</span>
+  }
+
+  private Iterator&lt;SelectResponse&gt; doCoprocessor(StreamingResponse response) {
+<span class="nc" id="L674">    Iterator&lt;Coprocessor.Response&gt; responseIterator = response.iterator();</span>
+    // If we got nothing to handle, return null
+<span class="nc bnc" id="L676" title="All 2 branches missed.">    if (!responseIterator.hasNext()) {</span>
+<span class="nc" id="L677">      return null;</span>
+    }
+
+    // Simply wrap it
+<span class="nc" id="L681">    return new Iterator&lt;SelectResponse&gt;() {</span>
+      @Override
+      public boolean hasNext() {
+<span class="nc" id="L684">        return responseIterator.hasNext();</span>
+      }
+
+      @Override
+      public SelectResponse next() {
+<span class="nc" id="L689">        return doCoprocessor(responseIterator.next());</span>
+      }
+    };
+  }
+
+  private SelectResponse doCoprocessor(Coprocessor.Response resp) {
+    try {
+<span class="nc" id="L696">      SelectResponse selectResp = SelectResponse.parseFrom(resp.getData());</span>
+<span class="nc bnc" id="L697" title="All 2 branches missed.">      if (selectResp.hasError()) {</span>
+<span class="nc" id="L698">        throw new SelectException(selectResp.getError(), selectResp.getError().getMsg());</span>
+      }
+<span class="nc" id="L700">      return selectResp;</span>
+<span class="nc" id="L701">    } catch (InvalidProtocolBufferException e) {</span>
+<span class="nc" id="L702">      throw new TiClientInternalException(&quot;Error parsing protobuf for coprocessor response.&quot;, e);</span>
+    }
+  }
+
+  // TODO: wait for future fix
+  // coprocessStreaming doesn't handle split error
+  // future work should handle it and do the resolve
+  // locks correspondingly
+  public Iterator&lt;SelectResponse&gt; coprocessStreaming(
+      DAGRequest req, List&lt;Coprocessor.KeyRange&gt; ranges, long startTs) {
+<span class="nc" id="L712">    boolean forWrite = false;</span>
+<span class="nc" id="L713">    Supplier&lt;Coprocessor.Request&gt; reqToSend =</span>
+        () -&gt;
+<span class="nc" id="L715">            Coprocessor.Request.newBuilder()</span>
+<span class="nc" id="L716">                .setContext(makeContext(getResolvedLocks(startTs), this.storeType))</span>
+                // TODO: If no executors...?
+<span class="nc" id="L718">                .setTp(REQ_TYPE_DAG.getValue())</span>
+<span class="nc" id="L719">                .setData(req.toByteString())</span>
+<span class="nc" id="L720">                .addAllRanges(ranges)</span>
+<span class="nc" id="L721">                .build();</span>
+
+<span class="nc" id="L723">    KVErrorHandler&lt;StreamingResponse&gt; handler =</span>
+        new KVErrorHandler&lt;&gt;(
+            regionManager,
+            this,
+            lockResolverClient,
+            StreamingResponse::getFirstRegionError, // TODO: handle all errors in streaming response
+<span class="nc" id="L729">            resp -&gt; null,</span>
+<span class="nc" id="L730">            resolveLockResult -&gt; addResolvedLocks(startTs, resolveLockResult.getResolvedLocks()),</span>
+            startTs,
+            forWrite);
+
+<span class="nc" id="L734">    StreamingResponse responseIterator =</span>
+<span class="nc" id="L735">        this.callServerStreamingWithRetry(</span>
+<span class="nc" id="L736">            ConcreteBackOffer.newCopNextMaxBackOff(),</span>
+<span class="nc" id="L737">            TikvGrpc.getCoprocessorStreamMethod(),</span>
+            reqToSend,
+            handler);
+<span class="nc" id="L740">    return doCoprocessor(responseIterator);</span>
+  }
+
+  /**
+   * Send SplitRegion request to tikv split a region at splitKey. splitKey must between current
+   * region's start key and end key.
+   *
+   * @param splitKeys is the split points for a specific region.
+   * @return a split region info.
+   */
+  public List&lt;Metapb.Region&gt; splitRegion(Iterable&lt;ByteString&gt; splitKeys) {
+<span class="nc" id="L751">    Supplier&lt;SplitRegionRequest&gt; request =</span>
+        () -&gt;
+<span class="nc" id="L753">            SplitRegionRequest.newBuilder()</span>
+<span class="nc" id="L754">                .setContext(makeContext(storeType))</span>
+<span class="nc" id="L755">                .addAllSplitKeys(splitKeys)</span>
+<span class="nc" id="L756">                .build();</span>
+
+<span class="nc" id="L758">    KVErrorHandler&lt;SplitRegionResponse&gt; handler =</span>
+        new KVErrorHandler&lt;&gt;(
+            regionManager,
+            this,
+            null,
+<span class="nc bnc" id="L763" title="All 2 branches missed.">            resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null,</span>
+<span class="nc" id="L764">            resp -&gt; null,</span>
+<span class="nc" id="L765">            resolveLockResult -&gt; null,</span>
+            0L,
+            false);
+
+<span class="nc" id="L769">    SplitRegionResponse resp =</span>
+<span class="nc" id="L770">        callWithRetry(</span>
+<span class="nc" id="L771">            ConcreteBackOffer.newGetBackOff(), TikvGrpc.getSplitRegionMethod(), request, handler);</span>
+
+<span class="nc bnc" id="L773" title="All 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L774">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L775">      throw new TiClientInternalException(&quot;SplitRegion Response failed without a cause&quot;);</span>
+    }
+
+<span class="nc bnc" id="L778" title="All 2 branches missed.">    if (resp.hasRegionError()) {</span>
+<span class="nc" id="L779">      throw new TiClientInternalException(</span>
+<span class="nc" id="L780">          String.format(</span>
+              &quot;failed to split region %d because %s&quot;,
+<span class="nc" id="L782">              region.getId(), resp.getRegionError().toString()));</span>
+    }
+
+<span class="nc" id="L785">    return resp.getRegionsList();</span>
+  }
+
+  // APIs for Raw Scan/Put/Get/Delete
+
+  public ByteString rawGet(BackOffer backOffer, ByteString key) {
+<span class="fc" id="L791">    Histogram.Timer requestTimer =</span>
+<span class="fc" id="L792">        GRPC_RAW_REQUEST_LATENCY.labels(&quot;client_grpc_raw_get&quot;).startTimer();</span>
+    try {
+<span class="fc" id="L794">      Supplier&lt;RawGetRequest&gt; factory =</span>
+<span class="fc" id="L795">          () -&gt; RawGetRequest.newBuilder().setContext(makeContext(storeType)).setKey(key).build();</span>
+<span class="fc" id="L796">      RegionErrorHandler&lt;RawGetResponse&gt; handler =</span>
+          new RegionErrorHandler&lt;RawGetResponse&gt;(
+<span class="fc bfc" id="L798" title="All 2 branches covered.">              regionManager, this, resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null);</span>
+<span class="fc" id="L799">      RawGetResponse resp = callWithRetry(backOffer, TikvGrpc.getRawGetMethod(), factory, handler);</span>
+<span class="fc" id="L800">      return rawGetHelper(resp);</span>
+    } finally {
+<span class="fc" id="L802">      requestTimer.observeDuration();</span>
+    }
+  }
+
+  private ByteString rawGetHelper(RawGetResponse resp) {
+<span class="pc bpc" id="L807" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L808">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L809">      throw new TiClientInternalException(&quot;RawGetResponse failed without a cause&quot;);</span>
+    }
+<span class="fc" id="L811">    String error = resp.getError();</span>
+<span class="pc bpc" id="L812" title="1 of 2 branches missed.">    if (!error.isEmpty()) {</span>
+<span class="nc" id="L813">      throw new KeyException(resp.getError());</span>
+    }
+<span class="fc bfc" id="L815" title="All 2 branches covered.">    if (resp.hasRegionError()) {</span>
+<span class="fc" id="L816">      throw new RegionException(resp.getRegionError());</span>
+    }
+<span class="fc" id="L818">    return resp.getValue();</span>
+  }
+
+  public Long rawGetKeyTTL(BackOffer backOffer, ByteString key) {
+<span class="nc" id="L822">    Histogram.Timer requestTimer =</span>
+<span class="nc" id="L823">        GRPC_RAW_REQUEST_LATENCY.labels(&quot;client_grpc_raw_get_key_ttl&quot;).startTimer();</span>
+    try {
+<span class="nc" id="L825">      Supplier&lt;RawGetKeyTTLRequest&gt; factory =</span>
+          () -&gt;
+<span class="nc" id="L827">              RawGetKeyTTLRequest.newBuilder()</span>
+<span class="nc" id="L828">                  .setContext(makeContext(storeType))</span>
+<span class="nc" id="L829">                  .setKey(key)</span>
+<span class="nc" id="L830">                  .build();</span>
+<span class="nc" id="L831">      RegionErrorHandler&lt;RawGetKeyTTLResponse&gt; handler =</span>
+          new RegionErrorHandler&lt;RawGetKeyTTLResponse&gt;(
+<span class="nc bnc" id="L833" title="All 2 branches missed.">              regionManager, this, resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null);</span>
+<span class="nc" id="L834">      RawGetKeyTTLResponse resp =</span>
+<span class="nc" id="L835">          callWithRetry(backOffer, TikvGrpc.getRawGetKeyTTLMethod(), factory, handler);</span>
+<span class="nc" id="L836">      return rawGetKeyTTLHelper(resp);</span>
+    } finally {
+<span class="nc" id="L838">      requestTimer.observeDuration();</span>
+    }
+  }
+
+  private Long rawGetKeyTTLHelper(RawGetKeyTTLResponse resp) {
+<span class="nc bnc" id="L843" title="All 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L844">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L845">      throw new TiClientInternalException(&quot;RawGetResponse failed without a cause&quot;);</span>
+    }
+<span class="nc" id="L847">    String error = resp.getError();</span>
+<span class="nc bnc" id="L848" title="All 2 branches missed.">    if (!error.isEmpty()) {</span>
+<span class="nc" id="L849">      throw new KeyException(resp.getError());</span>
+    }
+<span class="nc bnc" id="L851" title="All 2 branches missed.">    if (resp.hasRegionError()) {</span>
+<span class="nc" id="L852">      throw new RegionException(resp.getRegionError());</span>
+    }
+<span class="nc bnc" id="L854" title="All 2 branches missed.">    if (resp.getNotFound()) {</span>
+<span class="nc" id="L855">      return null;</span>
+    }
+<span class="nc" id="L857">    return resp.getTtl();</span>
+  }
+
+  public void rawDelete(BackOffer backOffer, ByteString key, boolean atomic) {
+<span class="fc" id="L861">    Histogram.Timer requestTimer =</span>
+<span class="fc" id="L862">        GRPC_RAW_REQUEST_LATENCY.labels(&quot;client_grpc_raw_delete&quot;).startTimer();</span>
+    try {
+<span class="fc" id="L864">      Supplier&lt;RawDeleteRequest&gt; factory =</span>
+          () -&gt;
+<span class="fc" id="L866">              RawDeleteRequest.newBuilder()</span>
+<span class="fc" id="L867">                  .setContext(makeContext(storeType))</span>
+<span class="fc" id="L868">                  .setKey(key)</span>
+<span class="fc" id="L869">                  .setForCas(atomic)</span>
+<span class="fc" id="L870">                  .build();</span>
+
+<span class="fc" id="L872">      RegionErrorHandler&lt;RawDeleteResponse&gt; handler =</span>
+          new RegionErrorHandler&lt;RawDeleteResponse&gt;(
+<span class="pc bpc" id="L874" title="1 of 2 branches missed.">              regionManager, this, resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null);</span>
+<span class="fc" id="L875">      RawDeleteResponse resp =</span>
+<span class="fc" id="L876">          callWithRetry(backOffer, TikvGrpc.getRawDeleteMethod(), factory, handler);</span>
+<span class="fc" id="L877">      rawDeleteHelper(resp, region);</span>
+    } finally {
+<span class="fc" id="L879">      requestTimer.observeDuration();</span>
+    }
+<span class="fc" id="L881">  }</span>
+
+  private void rawDeleteHelper(RawDeleteResponse resp, TiRegion region) {
+<span class="pc bpc" id="L884" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L885">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L886">      throw new TiClientInternalException(&quot;RawDeleteResponse failed without a cause&quot;);</span>
+    }
+<span class="fc" id="L888">    String error = resp.getError();</span>
+<span class="pc bpc" id="L889" title="1 of 2 branches missed.">    if (!error.isEmpty()) {</span>
+<span class="nc" id="L890">      throw new KeyException(resp.getError());</span>
+    }
+<span class="pc bpc" id="L892" title="1 of 2 branches missed.">    if (resp.hasRegionError()) {</span>
+<span class="nc" id="L893">      throw new RegionException(resp.getRegionError());</span>
+    }
+<span class="fc" id="L895">  }</span>
+
+  public void rawPut(
+      BackOffer backOffer, ByteString key, ByteString value, long ttl, boolean atomic) {
+<span class="fc" id="L899">    Histogram.Timer requestTimer =</span>
+<span class="fc" id="L900">        GRPC_RAW_REQUEST_LATENCY.labels(&quot;client_grpc_raw_put&quot;).startTimer();</span>
+    try {
+<span class="fc" id="L902">      Supplier&lt;RawPutRequest&gt; factory =</span>
+          () -&gt;
+<span class="fc" id="L904">              RawPutRequest.newBuilder()</span>
+<span class="fc" id="L905">                  .setContext(makeContext(storeType))</span>
+<span class="fc" id="L906">                  .setKey(key)</span>
+<span class="fc" id="L907">                  .setValue(value)</span>
+<span class="fc" id="L908">                  .setTtl(ttl)</span>
+<span class="fc" id="L909">                  .setForCas(atomic)</span>
+<span class="fc" id="L910">                  .build();</span>
+
+<span class="fc" id="L912">      RegionErrorHandler&lt;RawPutResponse&gt; handler =</span>
+          new RegionErrorHandler&lt;RawPutResponse&gt;(
+<span class="pc bpc" id="L914" title="1 of 2 branches missed.">              regionManager, this, resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null);</span>
+<span class="fc" id="L915">      RawPutResponse resp = callWithRetry(backOffer, TikvGrpc.getRawPutMethod(), factory, handler);</span>
+<span class="fc" id="L916">      rawPutHelper(resp);</span>
+    } finally {
+<span class="fc" id="L918">      requestTimer.observeDuration();</span>
+    }
+<span class="fc" id="L920">  }</span>
+
+  private void rawPutHelper(RawPutResponse resp) {
+<span class="pc bpc" id="L923" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L924">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L925">      throw new TiClientInternalException(&quot;RawPutResponse failed without a cause&quot;);</span>
+    }
+<span class="fc" id="L927">    String error = resp.getError();</span>
+<span class="pc bpc" id="L928" title="1 of 2 branches missed.">    if (!error.isEmpty()) {</span>
+<span class="nc" id="L929">      throw new KeyException(resp.getError());</span>
+    }
+<span class="pc bpc" id="L931" title="1 of 2 branches missed.">    if (resp.hasRegionError()) {</span>
+<span class="nc" id="L932">      throw new RegionException(resp.getRegionError());</span>
+    }
+<span class="fc" id="L934">  }</span>
+
+  public ByteString rawPutIfAbsent(
+      BackOffer backOffer, ByteString key, ByteString value, long ttl) {
+<span class="fc" id="L938">    Histogram.Timer requestTimer =</span>
+<span class="fc" id="L939">        GRPC_RAW_REQUEST_LATENCY.labels(&quot;client_grpc_raw_put_if_absent&quot;).startTimer();</span>
+    try {
+<span class="fc" id="L941">      Supplier&lt;RawCASRequest&gt; factory =</span>
+          () -&gt;
+<span class="fc" id="L943">              RawCASRequest.newBuilder()</span>
+<span class="fc" id="L944">                  .setContext(makeContext(storeType))</span>
+<span class="fc" id="L945">                  .setKey(key)</span>
+<span class="fc" id="L946">                  .setValue(value)</span>
+<span class="fc" id="L947">                  .setPreviousNotExist(true)</span>
+<span class="fc" id="L948">                  .setTtl(ttl)</span>
+<span class="fc" id="L949">                  .build();</span>
+
+<span class="fc" id="L951">      RegionErrorHandler&lt;RawCASResponse&gt; handler =</span>
+          new RegionErrorHandler&lt;RawCASResponse&gt;(
+<span class="pc bpc" id="L953" title="1 of 2 branches missed.">              regionManager, this, resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null);</span>
+<span class="fc" id="L954">      RawCASResponse resp =</span>
+<span class="fc" id="L955">          callWithRetry(backOffer, TikvGrpc.getRawCompareAndSwapMethod(), factory, handler);</span>
+<span class="fc" id="L956">      return rawPutIfAbsentHelper(resp);</span>
+    } finally {
+<span class="fc" id="L958">      requestTimer.observeDuration();</span>
+    }
+  }
+
+  private ByteString rawPutIfAbsentHelper(RawCASResponse resp) {
+<span class="pc bpc" id="L963" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L964">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L965">      throw new TiClientInternalException(&quot;RawCASResponse failed without a cause&quot;);</span>
+    }
+<span class="fc" id="L967">    String error = resp.getError();</span>
+<span class="pc bpc" id="L968" title="1 of 2 branches missed.">    if (!error.isEmpty()) {</span>
+<span class="nc" id="L969">      throw new KeyException(resp.getError());</span>
+    }
+<span class="pc bpc" id="L971" title="1 of 2 branches missed.">    if (resp.hasRegionError()) {</span>
+<span class="nc" id="L972">      throw new RegionException(resp.getRegionError());</span>
+    }
+<span class="pc bpc" id="L974" title="1 of 2 branches missed.">    if (resp.getSucceed()) {</span>
+<span class="fc" id="L975">      return ByteString.EMPTY;</span>
+    }
+<span class="nc" id="L977">    return resp.getPreviousValue();</span>
+  }
+
+  public List&lt;KvPair&gt; rawBatchGet(BackOffer backoffer, List&lt;ByteString&gt; keys) {
+<span class="fc" id="L981">    Histogram.Timer requestTimer =</span>
+<span class="fc" id="L982">        GRPC_RAW_REQUEST_LATENCY.labels(&quot;client_grpc_raw_batch_get&quot;).startTimer();</span>
+    try {
+<span class="pc bpc" id="L984" title="1 of 2 branches missed.">      if (keys.isEmpty()) {</span>
+<span class="nc" id="L985">        return new ArrayList&lt;&gt;();</span>
+      }
+<span class="fc" id="L987">      Supplier&lt;RawBatchGetRequest&gt; factory =</span>
+          () -&gt;
+<span class="fc" id="L989">              RawBatchGetRequest.newBuilder()</span>
+<span class="fc" id="L990">                  .setContext(makeContext(storeType))</span>
+<span class="fc" id="L991">                  .addAllKeys(keys)</span>
+<span class="fc" id="L992">                  .build();</span>
+<span class="fc" id="L993">      RegionErrorHandler&lt;RawBatchGetResponse&gt; handler =</span>
+          new RegionErrorHandler&lt;RawBatchGetResponse&gt;(
+<span class="pc bpc" id="L995" title="1 of 2 branches missed.">              regionManager, this, resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null);</span>
+<span class="fc" id="L996">      RawBatchGetResponse resp =</span>
+<span class="fc" id="L997">          callWithRetry(backoffer, TikvGrpc.getRawBatchGetMethod(), factory, handler);</span>
+<span class="fc" id="L998">      return handleRawBatchGet(resp);</span>
+    } finally {
+<span class="fc" id="L1000">      requestTimer.observeDuration();</span>
+    }
+  }
+
+  private List&lt;KvPair&gt; handleRawBatchGet(RawBatchGetResponse resp) {
+<span class="pc bpc" id="L1005" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L1006">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L1007">      throw new TiClientInternalException(&quot;RawBatchPutResponse failed without a cause&quot;);</span>
+    }
+<span class="pc bpc" id="L1009" title="1 of 2 branches missed.">    if (resp.hasRegionError()) {</span>
+<span class="nc" id="L1010">      throw new RegionException(resp.getRegionError());</span>
+    }
+<span class="fc" id="L1012">    return resp.getPairsList();</span>
+  }
+
+  public void rawBatchPut(BackOffer backOffer, List&lt;KvPair&gt; kvPairs, long ttl, boolean atomic) {
+<span class="fc" id="L1016">    Histogram.Timer requestTimer =</span>
+<span class="fc" id="L1017">        GRPC_RAW_REQUEST_LATENCY.labels(&quot;client_grpc_raw_batch_put&quot;).startTimer();</span>
+    try {
+<span class="pc bpc" id="L1019" title="1 of 2 branches missed.">      if (kvPairs.isEmpty()) {</span>
+<span class="nc" id="L1020">        return;</span>
+      }
+<span class="fc" id="L1022">      Supplier&lt;RawBatchPutRequest&gt; factory =</span>
+          () -&gt;
+<span class="fc" id="L1024">              RawBatchPutRequest.newBuilder()</span>
+<span class="fc" id="L1025">                  .setContext(makeContext(storeType))</span>
+<span class="fc" id="L1026">                  .addAllPairs(kvPairs)</span>
+<span class="fc" id="L1027">                  .setTtl(ttl)</span>
+<span class="fc" id="L1028">                  .setForCas(atomic)</span>
+<span class="fc" id="L1029">                  .build();</span>
+<span class="fc" id="L1030">      RegionErrorHandler&lt;RawBatchPutResponse&gt; handler =</span>
+          new RegionErrorHandler&lt;RawBatchPutResponse&gt;(
+<span class="pc bpc" id="L1032" title="1 of 2 branches missed.">              regionManager, this, resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null);</span>
+<span class="fc" id="L1033">      RawBatchPutResponse resp =</span>
+<span class="fc" id="L1034">          callWithRetry(backOffer, TikvGrpc.getRawBatchPutMethod(), factory, handler);</span>
+<span class="fc" id="L1035">      handleRawBatchPut(resp);</span>
+    } finally {
+<span class="fc" id="L1037">      requestTimer.observeDuration();</span>
+    }
+<span class="fc" id="L1039">  }</span>
+
+  public void rawBatchPut(BackOffer backOffer, Batch batch, long ttl, boolean atomic) {
+<span class="fc" id="L1042">    List&lt;KvPair&gt; pairs = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L1043" title="All 2 branches covered.">    for (int i = 0; i &lt; batch.getKeys().size(); i++) {</span>
+<span class="fc" id="L1044">      pairs.add(</span>
+<span class="fc" id="L1045">          KvPair.newBuilder()</span>
+<span class="fc" id="L1046">              .setKey(batch.getKeys().get(i))</span>
+<span class="fc" id="L1047">              .setValue(batch.getValues().get(i))</span>
+<span class="fc" id="L1048">              .build());</span>
+    }
+<span class="fc" id="L1050">    rawBatchPut(backOffer, pairs, ttl, atomic);</span>
+<span class="fc" id="L1051">  }</span>
+
+  private void handleRawBatchPut(RawBatchPutResponse resp) {
+<span class="pc bpc" id="L1054" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L1055">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L1056">      throw new TiClientInternalException(&quot;RawBatchPutResponse failed without a cause&quot;);</span>
+    }
+<span class="fc" id="L1058">    String error = resp.getError();</span>
+<span class="pc bpc" id="L1059" title="1 of 2 branches missed.">    if (!error.isEmpty()) {</span>
+<span class="nc" id="L1060">      throw new KeyException(resp.getError());</span>
+    }
+<span class="pc bpc" id="L1062" title="1 of 2 branches missed.">    if (resp.hasRegionError()) {</span>
+<span class="nc" id="L1063">      throw new RegionException(resp.getRegionError());</span>
+    }
+<span class="fc" id="L1065">  }</span>
+
+  public void rawBatchDelete(BackOffer backoffer, List&lt;ByteString&gt; keys, boolean atomic) {
+<span class="nc" id="L1068">    Histogram.Timer requestTimer =</span>
+<span class="nc" id="L1069">        GRPC_RAW_REQUEST_LATENCY.labels(&quot;client_grpc_raw_batch_delete&quot;).startTimer();</span>
+    try {
+<span class="nc bnc" id="L1071" title="All 2 branches missed.">      if (keys.isEmpty()) {</span>
+<span class="nc" id="L1072">        return;</span>
+      }
+<span class="nc" id="L1074">      Supplier&lt;RawBatchDeleteRequest&gt; factory =</span>
+          () -&gt;
+<span class="nc" id="L1076">              RawBatchDeleteRequest.newBuilder()</span>
+<span class="nc" id="L1077">                  .setContext(makeContext(storeType))</span>
+<span class="nc" id="L1078">                  .addAllKeys(keys)</span>
+<span class="nc" id="L1079">                  .setForCas(atomic)</span>
+<span class="nc" id="L1080">                  .build();</span>
+<span class="nc" id="L1081">      RegionErrorHandler&lt;RawBatchDeleteResponse&gt; handler =</span>
+          new RegionErrorHandler&lt;RawBatchDeleteResponse&gt;(
+<span class="nc bnc" id="L1083" title="All 2 branches missed.">              regionManager, this, resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null);</span>
+<span class="nc" id="L1084">      RawBatchDeleteResponse resp =</span>
+<span class="nc" id="L1085">          callWithRetry(backoffer, TikvGrpc.getRawBatchDeleteMethod(), factory, handler);</span>
+<span class="nc" id="L1086">      handleRawBatchDelete(resp);</span>
+    } finally {
+<span class="nc" id="L1088">      requestTimer.observeDuration();</span>
+    }
+<span class="nc" id="L1090">  }</span>
+
+  private void handleRawBatchDelete(RawBatchDeleteResponse resp) {
+<span class="nc bnc" id="L1093" title="All 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L1094">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L1095">      throw new TiClientInternalException(&quot;RawBatchDeleteResponse failed without a cause&quot;);</span>
+    }
+<span class="nc" id="L1097">    String error = resp.getError();</span>
+<span class="nc bnc" id="L1098" title="All 2 branches missed.">    if (!error.isEmpty()) {</span>
+<span class="nc" id="L1099">      throw new KeyException(resp.getError());</span>
+    }
+<span class="nc bnc" id="L1101" title="All 2 branches missed.">    if (resp.hasRegionError()) {</span>
+<span class="nc" id="L1102">      throw new RegionException(resp.getRegionError());</span>
+    }
+<span class="nc" id="L1104">  }</span>
+
+  /**
+   * Return a batch KvPair list containing limited key-value pairs starting from `key`, which are in
+   * the same region
+   *
+   * @param backOffer BackOffer
+   * @param key startKey
+   * @param keyOnly true if value of KvPair is not needed
+   * @return KvPair list
+   */
+  public List&lt;KvPair&gt; rawScan(BackOffer backOffer, ByteString key, int limit, boolean keyOnly) {
+<span class="fc" id="L1116">    Histogram.Timer requestTimer =</span>
+<span class="fc" id="L1117">        GRPC_RAW_REQUEST_LATENCY.labels(&quot;client_grpc_raw_scan&quot;).startTimer();</span>
+    try {
+<span class="fc" id="L1119">      Supplier&lt;RawScanRequest&gt; factory =</span>
+          () -&gt;
+<span class="fc" id="L1121">              RawScanRequest.newBuilder()</span>
+<span class="fc" id="L1122">                  .setContext(makeContext(storeType))</span>
+<span class="fc" id="L1123">                  .setStartKey(key)</span>
+<span class="fc" id="L1124">                  .setKeyOnly(keyOnly)</span>
+<span class="fc" id="L1125">                  .setLimit(limit)</span>
+<span class="fc" id="L1126">                  .build();</span>
+
+<span class="fc" id="L1128">      RegionErrorHandler&lt;RawScanResponse&gt; handler =</span>
+          new RegionErrorHandler&lt;RawScanResponse&gt;(
+<span class="pc bpc" id="L1130" title="1 of 2 branches missed.">              regionManager, this, resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null);</span>
+<span class="fc" id="L1131">      RawScanResponse resp =</span>
+<span class="fc" id="L1132">          callWithRetry(backOffer, TikvGrpc.getRawScanMethod(), factory, handler);</span>
+<span class="fc" id="L1133">      return rawScanHelper(resp);</span>
+    } finally {
+<span class="fc" id="L1135">      requestTimer.observeDuration();</span>
+    }
+  }
+
+  public List&lt;KvPair&gt; rawScan(BackOffer backOffer, ByteString key, boolean keyOnly) {
+<span class="nc" id="L1140">    return rawScan(backOffer, key, getConf().getScanBatchSize(), keyOnly);</span>
+  }
+
+  private List&lt;KvPair&gt; rawScanHelper(RawScanResponse resp) {
+<span class="pc bpc" id="L1144" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L1145">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L1146">      throw new TiClientInternalException(&quot;RawScanResponse failed without a cause&quot;);</span>
+    }
+<span class="pc bpc" id="L1148" title="1 of 2 branches missed.">    if (resp.hasRegionError()) {</span>
+<span class="nc" id="L1149">      throw new RegionException(resp.getRegionError());</span>
+    }
+<span class="fc" id="L1151">    return resp.getKvsList();</span>
+  }
+
+  /**
+   * Delete raw keys in the range of [startKey, endKey)
+   *
+   * @param backOffer BackOffer
+   * @param startKey startKey
+   * @param endKey endKey
+   */
+  public void rawDeleteRange(BackOffer backOffer, ByteString startKey, ByteString endKey) {
+<span class="fc" id="L1162">    Histogram.Timer requestTimer =</span>
+<span class="fc" id="L1163">        GRPC_RAW_REQUEST_LATENCY.labels(&quot;client_grpc_raw_delete_range&quot;).startTimer();</span>
+    try {
+<span class="fc" id="L1165">      Supplier&lt;RawDeleteRangeRequest&gt; factory =</span>
+          () -&gt;
+<span class="fc" id="L1167">              RawDeleteRangeRequest.newBuilder()</span>
+<span class="fc" id="L1168">                  .setContext(makeContext(storeType))</span>
+<span class="fc" id="L1169">                  .setStartKey(startKey)</span>
+<span class="fc" id="L1170">                  .setEndKey(endKey)</span>
+<span class="fc" id="L1171">                  .build();</span>
+
+<span class="fc" id="L1173">      RegionErrorHandler&lt;RawDeleteRangeResponse&gt; handler =</span>
+          new RegionErrorHandler&lt;RawDeleteRangeResponse&gt;(
+<span class="pc bpc" id="L1175" title="1 of 2 branches missed.">              regionManager, this, resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null);</span>
+<span class="fc" id="L1176">      RawDeleteRangeResponse resp =</span>
+<span class="fc" id="L1177">          callWithRetry(backOffer, TikvGrpc.getRawDeleteRangeMethod(), factory, handler);</span>
+<span class="fc" id="L1178">      rawDeleteRangeHelper(resp);</span>
+    } finally {
+<span class="fc" id="L1180">      requestTimer.observeDuration();</span>
+    }
+<span class="fc" id="L1182">  }</span>
+
+  private void rawDeleteRangeHelper(RawDeleteRangeResponse resp) {
+<span class="pc bpc" id="L1185" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L1186">      this.regionManager.onRequestFail(region);</span>
+<span class="nc" id="L1187">      throw new TiClientInternalException(&quot;RawDeleteRangeResponse failed without a cause&quot;);</span>
+    }
+<span class="fc" id="L1189">    String error = resp.getError();</span>
+<span class="pc bpc" id="L1190" title="1 of 2 branches missed.">    if (!error.isEmpty()) {</span>
+<span class="nc" id="L1191">      throw new KeyException(resp.getError());</span>
+    }
+<span class="pc bpc" id="L1193" title="1 of 2 branches missed.">    if (resp.hasRegionError()) {</span>
+<span class="nc" id="L1194">      throw new RegionException(resp.getRegionError());</span>
+    }
+<span class="fc" id="L1196">  }</span>
+
+<span class="nc" id="L1198">  public enum RequestTypes {</span>
+<span class="nc" id="L1199">    REQ_TYPE_SELECT(101),</span>
+<span class="nc" id="L1200">    REQ_TYPE_INDEX(102),</span>
+<span class="nc" id="L1201">    REQ_TYPE_DAG(103),</span>
+<span class="nc" id="L1202">    REQ_TYPE_ANALYZE(104),</span>
+<span class="nc" id="L1203">    BATCH_ROW_COUNT(64);</span>
+
+    private final int value;
+
+<span class="nc" id="L1207">    RequestTypes(int value) {</span>
+<span class="nc" id="L1208">      this.value = value;</span>
+<span class="nc" id="L1209">    }</span>
+
+    public int getValue() {
+<span class="nc" id="L1212">      return value;</span>
+    }
+  }
+
+  public static class RegionStoreClientBuilder {
+    private final TiConfiguration conf;
+    private final ChannelFactory channelFactory;
+    private final RegionManager regionManager;
+    private final PDClient pdClient;
+
+    public RegionStoreClientBuilder(
+        TiConfiguration conf,
+        ChannelFactory channelFactory,
+        RegionManager regionManager,
+<span class="fc" id="L1226">        PDClient pdClient) {</span>
+<span class="fc" id="L1227">      Objects.requireNonNull(conf, &quot;conf is null&quot;);</span>
+<span class="fc" id="L1228">      Objects.requireNonNull(channelFactory, &quot;channelFactory is null&quot;);</span>
+<span class="fc" id="L1229">      Objects.requireNonNull(regionManager, &quot;regionManager is null&quot;);</span>
+<span class="fc" id="L1230">      this.conf = conf;</span>
+<span class="fc" id="L1231">      this.channelFactory = channelFactory;</span>
+<span class="fc" id="L1232">      this.regionManager = regionManager;</span>
+<span class="fc" id="L1233">      this.pdClient = pdClient;</span>
+<span class="fc" id="L1234">    }</span>
+
+    public RegionStoreClient build(TiRegion region, TiStore store, TiStoreType storeType)
+        throws GrpcException {
+<span class="fc" id="L1238">      Objects.requireNonNull(region, &quot;region is null&quot;);</span>
+<span class="fc" id="L1239">      Objects.requireNonNull(store, &quot;store is null&quot;);</span>
+<span class="fc" id="L1240">      Objects.requireNonNull(storeType, &quot;storeType is null&quot;);</span>
+
+<span class="fc" id="L1242">      String addressStr = store.getStore().getAddress();</span>
+<span class="pc bpc" id="L1243" title="1 of 2 branches missed.">      if (logger.isDebugEnabled()) {</span>
+<span class="nc" id="L1244">        logger.debug(String.format(&quot;Create region store client on address %s&quot;, addressStr));</span>
+      }
+<span class="fc" id="L1246">      ManagedChannel channel = null;</span>
+
+<span class="fc" id="L1248">      TikvBlockingStub blockingStub = null;</span>
+<span class="fc" id="L1249">      TikvFutureStub asyncStub = null;</span>
+
+<span class="pc bpc" id="L1251" title="4 of 6 branches missed.">      if (conf.getEnableGrpcForward() &amp;&amp; store.getProxyStore() != null &amp;&amp; !store.isReachable()) {</span>
+<span class="nc" id="L1252">        addressStr = store.getProxyStore().getAddress();</span>
+<span class="nc" id="L1253">        channel =</span>
+<span class="nc" id="L1254">            channelFactory.getChannel(addressStr, regionManager.getPDClient().getHostMapping());</span>
+<span class="nc" id="L1255">        Metadata header = new Metadata();</span>
+<span class="nc" id="L1256">        header.put(TiConfiguration.FORWARD_META_DATA_KEY, store.getStore().getAddress());</span>
+<span class="nc" id="L1257">        blockingStub = MetadataUtils.attachHeaders(TikvGrpc.newBlockingStub(channel), header);</span>
+<span class="nc" id="L1258">        asyncStub = MetadataUtils.attachHeaders(TikvGrpc.newFutureStub(channel), header);</span>
+<span class="nc" id="L1259">      } else {</span>
+<span class="fc" id="L1260">        channel = channelFactory.getChannel(addressStr, pdClient.getHostMapping());</span>
+<span class="fc" id="L1261">        blockingStub = TikvGrpc.newBlockingStub(channel);</span>
+<span class="fc" id="L1262">        asyncStub = TikvGrpc.newFutureStub(channel);</span>
+      }
+
+<span class="fc" id="L1265">      return new RegionStoreClient(</span>
+          conf,
+          region,
+          store,
+          storeType,
+          channelFactory,
+          blockingStub,
+          asyncStub,
+          regionManager,
+          pdClient,
+          this);
+    }
+
+    public synchronized RegionStoreClient build(TiRegion region, TiStore store)
+        throws GrpcException {
+<span class="fc" id="L1280">      return build(region, store, TiStoreType.TiKV);</span>
+    }
+
+    public synchronized RegionStoreClient build(ByteString key) throws GrpcException {
+<span class="fc" id="L1284">      return build(key, TiStoreType.TiKV);</span>
+    }
+
+    public synchronized RegionStoreClient build(ByteString key, BackOffer backOffer)
+        throws GrpcException {
+<span class="fc" id="L1289">      return build(key, TiStoreType.TiKV, backOffer);</span>
+    }
+
+    public synchronized RegionStoreClient build(ByteString key, TiStoreType storeType)
+        throws GrpcException {
+<span class="fc" id="L1294">      return build(key, storeType, defaultBackOff());</span>
+    }
+
+    public synchronized RegionStoreClient build(
+        ByteString key, TiStoreType storeType, BackOffer backOffer) throws GrpcException {
+<span class="fc" id="L1299">      Pair&lt;TiRegion, TiStore&gt; pair =</span>
+<span class="fc" id="L1300">          regionManager.getRegionStorePairByKey(key, storeType, backOffer);</span>
+<span class="fc" id="L1301">      return build(pair.first, pair.second, storeType);</span>
+    }
+
+    public synchronized RegionStoreClient build(TiRegion region) throws GrpcException {
+<span class="fc" id="L1305">      return build(region, defaultBackOff());</span>
+    }
+
+    public synchronized RegionStoreClient build(TiRegion region, BackOffer backOffer)
+        throws GrpcException {
+<span class="fc" id="L1310">      TiStore store = regionManager.getStoreById(region.getLeader().getStoreId(), backOffer);</span>
+<span class="fc" id="L1311">      return build(region, store, TiStoreType.TiKV);</span>
+    }
+
+    public RegionManager getRegionManager() {
+<span class="fc" id="L1315">      return regionManager;</span>
+    }
+
+    private BackOffer defaultBackOff() {
+<span class="fc" id="L1319">      return ConcreteBackOffer.newCustomBackOff(conf.getRawKVDefaultBackoffInMS());</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

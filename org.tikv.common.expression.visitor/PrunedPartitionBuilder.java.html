@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PrunedPartitionBuilder.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.expression.visitor</a> &gt; <span class="el_source">PrunedPartitionBuilder.java</span></div><h1>PrunedPartitionBuilder.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2019 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.expression.visitor;
+
+import com.google.common.collect.RangeSet;
+import com.google.common.collect.TreeRangeSet;
+import java.util.Set;
+import org.tikv.common.expression.ColumnRef;
+import org.tikv.common.expression.ComparisonBinaryExpression;
+import org.tikv.common.expression.ComparisonBinaryExpression.NormalizedPredicate;
+import org.tikv.common.expression.Constant;
+import org.tikv.common.expression.Expression;
+import org.tikv.common.key.TypedKey;
+
+/**
+ * Apply partition pruning rule on filter condition. Partition pruning is based on a simple idea and
+ * can be described as &quot;Do not scan partitions where there can be no matching values&quot;. Currently
+ * only range partition pruning is supported(range column on multiple columns is not supported at
+ * TiDB side, so we can't optimize this yet).
+ */
+@SuppressWarnings(&quot;UnstableApiUsage&quot;)
+public class PrunedPartitionBuilder extends RangeSetBuilder&lt;TypedKey&gt; {
+  private final Set&lt;ColumnRef&gt; partExprColRefs;
+
+<span class="nc" id="L38">  public PrunedPartitionBuilder(Set&lt;ColumnRef&gt; partExprColRefs) {</span>
+<span class="nc" id="L39">    this.partExprColRefs = partExprColRefs;</span>
+<span class="nc" id="L40">  }</span>
+
+  protected RangeSet&lt;TypedKey&gt; process(Expression node, Void context) {
+<span class="nc" id="L43">    throwOnError(node);</span>
+<span class="nc" id="L44">    return null;</span>
+  }
+
+  @Override
+  // This deals with partition definition's 'lessthan' is &quot;maxvalue&quot;.
+  protected RangeSet&lt;TypedKey&gt; visit(Constant node, Void context) {
+<span class="nc" id="L50">    RangeSet&lt;TypedKey&gt; ranges = TreeRangeSet.create();</span>
+<span class="nc bnc" id="L51" title="All 2 branches missed.">    if (node.getValue() instanceof Number) {</span>
+<span class="nc" id="L52">      long val = ((Number) node.getValue()).longValue();</span>
+<span class="nc bnc" id="L53" title="All 2 branches missed.">      if (val == 1) {</span>
+<span class="nc" id="L54">        return ranges.complement();</span>
+      }
+<span class="nc" id="L56">      return ranges;</span>
+    }
+<span class="nc" id="L58">    return ranges;</span>
+  }
+
+  @Override
+  protected RangeSet&lt;TypedKey&gt; visit(ComparisonBinaryExpression node, Void context) {
+<span class="nc" id="L63">    NormalizedPredicate predicate = node.normalize();</span>
+    // when meet a comparison binary expression cannot be normalized
+    // which indicates it cannot be pruned such as a &gt; b + 1
+<span class="nc bnc" id="L66" title="All 2 branches missed.">    if (predicate == null) return TreeRangeSet.&lt;TypedKey&gt;create().complement();</span>
+<span class="nc bnc" id="L67" title="All 2 branches missed.">    if (!partExprColRefs.contains(predicate.getColumnRef()))</span>
+<span class="nc" id="L68">      return TreeRangeSet.&lt;TypedKey&gt;create().complement();</span>
+    TypedKey literal;
+<span class="nc" id="L70">    literal = predicate.getTypedLiteral(-1);</span>
+<span class="nc" id="L71">    return visitComparisonBinaryExpr(node, context, literal, false);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

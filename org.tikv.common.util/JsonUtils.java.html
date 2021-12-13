@@ -1,0 +1,345 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>JsonUtils.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.util</a> &gt; <span class="el_source">JsonUtils.java</span></div><h1>JsonUtils.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.util;
+
+import com.google.common.io.ByteArrayDataInput;
+import com.google.common.io.ByteStreams;
+import com.google.gson.*;
+import java.io.DataInput;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import javax.annotation.Nullable;
+
+<span class="nc" id="L27">public class JsonUtils {</span>
+  private static final int KEY_ENTRY_LENGTH = 6;
+  private static final int VALUE_ENTRY_SIZE = 5;
+
+  // TypeCodeObject indicates the JSON is an object.
+  private static final byte TYPE_CODE_OBJECT = 0x01;
+  // TypeCodeArray indicates the JSON is an array.
+  private static final byte TYPE_CODE_ARRAY = 0x03;
+  // TypeCodeLiteral indicates the JSON is a literal.
+  private static final byte TYPE_CODE_LITERAL = 0x04;
+  // TypeCodeInt64 indicates the JSON is a signed integer.
+  private static final byte TYPE_CODE_INT64 = 0x09;
+  // TypeCodeUint64 indicates the JSON is a unsigned integer.
+  private static final byte TYPE_CODE_UINT64 = 0x0a;
+  // TypeCodeFloat64 indicates the JSON is a double float number.
+  private static final byte TYPE_CODE_FLOAT64 = 0x0b;
+  // TypeCodeString indicates the JSON is a string.
+  private static final byte TYPE_CODE_STRING = 0x0c;
+
+  // LiteralNil represents JSON null.
+  private static final byte LITERAL_NIL = 0x00;
+  // LiteralTrue represents JSON true.
+  private static final byte LITERAL_TRUE = 0x01;
+  // LiteralFalse represents JSON false.
+  private static final byte LITERAL_FALSE = 0x02;
+<span class="nc" id="L52">  private static final JsonPrimitive JSON_FALSE = new JsonPrimitive(false);</span>
+<span class="nc" id="L53">  private static final JsonPrimitive JSON_TRUE = new JsonPrimitive(true);</span>
+
+  public static JsonElement parseJson(DataInput di) {
+<span class="nc" id="L56">    return parseValue(readByte(di), di);</span>
+  }
+  /**
+   * The binary JSON format from MySQL 5.7 is as follows:
+   *
+   * &lt;pre&gt;{@code
+   * JsonFormat {
+   *      JSON doc ::= type value
+   *      type ::=
+   *          0x01 |       // large JSON object
+   *          0x03 |       // large JSON array
+   *          0x04 |       // literal (true/false/null)
+   *          0x05 |       // int16
+   *          0x06 |       // uint16
+   *          0x07 |       // int32
+   *          0x08 |       // uint32
+   *          0x09 |       // int64
+   *          0x0a |       // uint64
+   *          0x0b |       // double
+   *          0x0c |       // utf8mb4 string
+   *      value ::=
+   *          object  |
+   *          array   |
+   *          literal |
+   *          number  |
+   *          string  |
+   *      object ::= element-count size key-entry* value-entry* key* value*
+   *      array ::= element-count size value-entry* value*
+   *      // number of members in object or number of elements in array
+   *      element-count ::= uint32
+   *      // number of bytes in the binary representation of the object or array
+   *      size ::= uint32
+   *      key-entry ::= key-offset key-length
+   *      key-offset ::= uint32
+   *      key-length ::= uint16    // key length must be less than 64KB
+   *      value-entry ::= type offset-or-inlined-value
+   *      // This field holds either the offset to where the value is stored,
+   *      // or the value itself if it is small enough to be inlined (that is,
+   *      // if it is a JSON literal or a small enough [u]int).
+   *      offset-or-inlined-value ::= uint32
+   *      key ::= utf8mb4-data
+   *      literal ::=
+   *          0x00 |   // JSON null literal
+   *          0x01 |   // JSON true literal
+   *          0x02 |   // JSON false literal
+   *      number ::=  ....    // little-endian format for [u]int(16|32|64), whereas
+   *                          // double is stored in a platform-independent, eight-byte
+   *                          // format using float8store()
+   *      string ::= data-length utf8mb4-data
+   *      data-length ::= uint8*    // If the high bit of a byte is 1, the length
+   *                                // field is continued in the next byte,
+   *                                // otherwise it is the last byte of the length
+   *                                // field. So we need 1 byte to represent
+   *                                // lengths up to 127, 2 bytes to represent
+   *                                // lengths up to 16383, and so on...
+   * }
+   * }&lt;/pre&gt;
+   *
+   * @param type type byte
+   * @param di codec data input
+   * @return Json element parsed
+   */
+  private static JsonElement parseValue(byte type, DataInput di) {
+<span class="nc bnc" id="L119" title="All 8 branches missed.">    switch (type) {</span>
+      case TYPE_CODE_OBJECT:
+<span class="nc" id="L121">        return parseObject(di);</span>
+      case TYPE_CODE_ARRAY:
+<span class="nc" id="L123">        return parseArray(di);</span>
+      case TYPE_CODE_LITERAL:
+<span class="nc" id="L125">        return parseLiteralJson(di);</span>
+      case TYPE_CODE_INT64:
+<span class="nc" id="L127">        return new JsonPrimitive(parseInt64(di));</span>
+      case TYPE_CODE_UINT64:
+<span class="nc" id="L129">        return new JsonPrimitive(parseUint64(di));</span>
+      case TYPE_CODE_FLOAT64:
+<span class="nc" id="L131">        return new JsonPrimitive(parseDouble(di));</span>
+      case TYPE_CODE_STRING:
+<span class="nc" id="L133">        long length = parseDataLength(di);</span>
+<span class="nc" id="L134">        return new JsonPrimitive(parseString(di, length));</span>
+      default:
+<span class="nc" id="L136">        throw new AssertionError(&quot;error type|type=&quot; + (int) type);</span>
+    }
+  }
+
+  // * notice use this as a unsigned long
+  private static long parseUint64(DataInput cdi) {
+<span class="nc" id="L142">    byte[] readBuffer = new byte[8];</span>
+<span class="nc" id="L143">    readFully(cdi, readBuffer, 0, 8);</span>
+
+<span class="nc" id="L145">    return ((long) (readBuffer[7]) &lt;&lt; 56)</span>
+        + ((long) (readBuffer[6] &amp; 255) &lt;&lt; 48)
+        + ((long) (readBuffer[5] &amp; 255) &lt;&lt; 40)
+        + ((long) (readBuffer[4] &amp; 255) &lt;&lt; 32)
+        + ((long) (readBuffer[3] &amp; 255) &lt;&lt; 24)
+        + ((readBuffer[2] &amp; 255) &lt;&lt; 16)
+        + ((readBuffer[1] &amp; 255) &lt;&lt; 8)
+        + ((readBuffer[0] &amp; 255));
+  }
+
+  private static void readFully(DataInput di, byte[] buffer) {
+    try {
+<span class="nc" id="L157">      di.readFully(buffer);</span>
+<span class="nc" id="L158">    } catch (IOException e) {</span>
+<span class="nc" id="L159">      throw new UncheckedIOException(e);</span>
+<span class="nc" id="L160">    }</span>
+<span class="nc" id="L161">  }</span>
+
+  private static void readFully(DataInput cdi, byte[] readBuffer, final int off, final int len) {
+    try {
+<span class="nc" id="L165">      cdi.readFully(readBuffer, off, len);</span>
+<span class="nc" id="L166">    } catch (IOException e) {</span>
+<span class="nc" id="L167">      throw new UncheckedIOException(e);</span>
+<span class="nc" id="L168">    }</span>
+<span class="nc" id="L169">  }</span>
+
+  private static long parseInt64(DataInput cdi) {
+<span class="nc" id="L172">    byte[] readBuffer = new byte[8];</span>
+<span class="nc" id="L173">    readFully(cdi, readBuffer);</span>
+<span class="nc" id="L174">    return bytesToLong(readBuffer);</span>
+  }
+
+  private static long parseUint32(DataInput cdi) {
+<span class="nc" id="L178">    byte[] readBuffer = new byte[4];</span>
+<span class="nc" id="L179">    readFully(cdi, readBuffer);</span>
+
+<span class="nc" id="L181">    return ((long) (readBuffer[3] &amp; 255) &lt;&lt; 24)</span>
+        + ((readBuffer[2] &amp; 255) &lt;&lt; 16)
+        + ((readBuffer[1] &amp; 255) &lt;&lt; 8)
+        + ((readBuffer[0] &amp; 255));
+  }
+
+  private static long bytesToLong(byte[] readBuffer) {
+<span class="nc" id="L188">    return ((long) readBuffer[7] &lt;&lt; 56)</span>
+        + ((long) (readBuffer[6] &amp; 255) &lt;&lt; 48)
+        + ((long) (readBuffer[5] &amp; 255) &lt;&lt; 40)
+        + ((long) (readBuffer[4] &amp; 255) &lt;&lt; 32)
+        + ((long) (readBuffer[3] &amp; 255) &lt;&lt; 24)
+        + ((readBuffer[2] &amp; 255) &lt;&lt; 16)
+        + ((readBuffer[1] &amp; 255) &lt;&lt; 8)
+        + ((readBuffer[0] &amp; 255));
+  }
+
+  private static double parseDouble(DataInput cdi) {
+<span class="nc" id="L199">    byte[] readBuffer = new byte[8];</span>
+<span class="nc" id="L200">    readFully(cdi, readBuffer);</span>
+<span class="nc" id="L201">    return Double.longBitsToDouble(bytesToLong(readBuffer));</span>
+  }
+
+  private static int parseUint16(DataInput cdi) {
+<span class="nc" id="L205">    byte[] readBuffer = new byte[2];</span>
+<span class="nc" id="L206">    readFully(cdi, readBuffer);</span>
+
+<span class="nc" id="L208">    return ((readBuffer[1] &amp; 255) &lt;&lt; 8) + ((readBuffer[0] &amp; 255));</span>
+  }
+
+  private static String parseString(DataInput di, long length) {
+
+<span class="nc" id="L213">    byte[] buffer = new byte[Math.toIntExact(length)];</span>
+<span class="nc" id="L214">    readFully(di, buffer);</span>
+<span class="nc" id="L215">    return new String(buffer, StandardCharsets.UTF_8);</span>
+  }
+
+  /**
+   * @param di data input
+   * @return length of data.
+   */
+  private static long parseDataLength(DataInput di) {
+<span class="nc" id="L223">    long x = 0;</span>
+    byte b;
+<span class="nc" id="L225">    int i = 0;</span>
+<span class="nc" id="L226">    int s = 0;</span>
+<span class="nc bnc" id="L227" title="All 2 branches missed.">    while ((b = readByte(di)) &lt; 0) {</span>
+<span class="nc bnc" id="L228" title="All 2 branches missed.">      if (i == 9) {</span>
+<span class="nc" id="L229">        throw new IllegalArgumentException(&quot;overflow: found &gt;=9 leading bytes&quot;);</span>
+      }
+<span class="nc" id="L231">      x |= ((long) (b &amp; 0x7f)) &lt;&lt; s;</span>
+<span class="nc" id="L232">      s += 7;</span>
+<span class="nc" id="L233">      i++;</span>
+    }
+
+<span class="nc bnc" id="L236" title="All 4 branches missed.">    if (i == 9 &amp;&amp; b &gt; 1) {</span>
+<span class="nc" id="L237">      throw new IllegalArgumentException(&quot;overflow: 8 leading byte and last one &gt; 1&quot;);</span>
+    }
+<span class="nc" id="L239">    x |= ((long) b) &lt;&lt; s;</span>
+<span class="nc" id="L240">    return x;</span>
+  }
+
+  private @Nullable static Boolean parseLiteral(DataInput cdi) {
+    byte type;
+<span class="nc" id="L245">    type = readByte(cdi);</span>
+<span class="nc bnc" id="L246" title="All 4 branches missed.">    switch (type) {</span>
+      case LITERAL_FALSE:
+<span class="nc" id="L248">        return Boolean.FALSE;</span>
+      case LITERAL_NIL:
+<span class="nc" id="L250">        return null;</span>
+      case LITERAL_TRUE:
+<span class="nc" id="L252">        return Boolean.TRUE;</span>
+      default:
+<span class="nc" id="L254">        throw new AssertionError(&quot;unknown literal type|&quot; + (int) type);</span>
+    }
+  }
+
+  private static byte readByte(DataInput cdi) {
+    byte type;
+    try {
+<span class="nc" id="L261">      type = cdi.readByte();</span>
+<span class="nc" id="L262">    } catch (IOException e) {</span>
+<span class="nc" id="L263">      throw new UncheckedIOException(e);</span>
+<span class="nc" id="L264">    }</span>
+<span class="nc" id="L265">    return type;</span>
+  }
+
+  private static JsonArray parseArray(DataInput di) {
+<span class="nc" id="L269">    long elementCount = parseUint32(di);</span>
+<span class="nc" id="L270">    long size = parseUint32(di);</span>
+<span class="nc" id="L271">    byte[] buffer = new byte[Math.toIntExact(size - 8)];</span>
+<span class="nc" id="L272">    readFully(di, buffer);</span>
+<span class="nc" id="L273">    JsonArray jsonArray = new JsonArray();</span>
+<span class="nc bnc" id="L274" title="All 2 branches missed.">    for (int i = 0; i &lt; elementCount; i++) {</span>
+<span class="nc" id="L275">      JsonElement value = parseValueEntry(buffer, VALUE_ENTRY_SIZE * i);</span>
+<span class="nc" id="L276">      jsonArray.add(value);</span>
+    }
+<span class="nc" id="L278">    return jsonArray;</span>
+  }
+
+  private static JsonObject parseObject(DataInput di) {
+<span class="nc" id="L282">    long elementCount = parseUint32(di);</span>
+<span class="nc" id="L283">    long size = parseUint32(di);</span>
+
+<span class="nc" id="L285">    byte[] buffer = new byte[Math.toIntExact(size - 8)];</span>
+<span class="nc" id="L286">    readFully(di, buffer);</span>
+<span class="nc" id="L287">    JsonObject jsonObject = new JsonObject();</span>
+<span class="nc bnc" id="L288" title="All 2 branches missed.">    for (int i = 0; i &lt; elementCount; i++) {</span>
+<span class="nc" id="L289">      KeyEntry keyEntry = parseKeyEntry(ByteStreams.newDataInput(buffer, i * KEY_ENTRY_LENGTH));</span>
+<span class="nc" id="L290">      String key =</span>
+<span class="nc" id="L291">          parseString(</span>
+<span class="nc" id="L292">              ByteStreams.newDataInput(buffer, Math.toIntExact(keyEntry.keyOffset - 8)),</span>
+              keyEntry.keyLength);
+<span class="nc" id="L294">      long valueEntryOffset = elementCount * KEY_ENTRY_LENGTH + i * VALUE_ENTRY_SIZE;</span>
+<span class="nc" id="L295">      JsonElement value = parseValueEntry(buffer, valueEntryOffset);</span>
+<span class="nc" id="L296">      jsonObject.add(key, value);</span>
+    }
+<span class="nc" id="L298">    return jsonObject;</span>
+  }
+
+  private static JsonElement parseValueEntry(byte[] buffer, long valueEntryOffset) {
+<span class="nc" id="L302">    byte valueType = buffer[Math.toIntExact(valueEntryOffset)];</span>
+    JsonElement value;
+<span class="nc" id="L304">    ByteArrayDataInput bs = ByteStreams.newDataInput(buffer, Math.toIntExact(valueEntryOffset + 1));</span>
+<span class="nc bnc" id="L305" title="All 2 branches missed.">    switch (valueType) {</span>
+      case TYPE_CODE_LITERAL:
+<span class="nc" id="L307">        value = parseLiteralJson(bs);</span>
+<span class="nc" id="L308">        break;</span>
+      default:
+<span class="nc" id="L310">        long valueOffset = parseUint32(bs);</span>
+<span class="nc" id="L311">        value =</span>
+<span class="nc" id="L312">            parseValue(</span>
+<span class="nc" id="L313">                valueType, ByteStreams.newDataInput(buffer, Math.toIntExact(valueOffset - 8)));</span>
+    }
+<span class="nc" id="L315">    return value;</span>
+  }
+
+  private static JsonElement parseLiteralJson(DataInput di) {
+    JsonElement value;
+<span class="nc" id="L320">    Boolean bool = parseLiteral(di);</span>
+<span class="nc bnc" id="L321" title="All 2 branches missed.">    if (bool == null) {</span>
+<span class="nc" id="L322">      value = JsonNull.INSTANCE;</span>
+<span class="nc bnc" id="L323" title="All 2 branches missed.">    } else if (bool) {</span>
+<span class="nc" id="L324">      value = JSON_TRUE;</span>
+    } else {
+<span class="nc" id="L326">      value = JSON_FALSE;</span>
+    }
+<span class="nc" id="L328">    return value;</span>
+  }
+
+  private static KeyEntry parseKeyEntry(DataInput di) {
+<span class="nc" id="L332">    return new KeyEntry(parseUint32(di), parseUint16(di));</span>
+  }
+
+  static class KeyEntry {
+    long keyOffset;
+    int keyLength;
+
+<span class="nc" id="L339">    KeyEntry(long keyOffset, int keyLength) {</span>
+<span class="nc" id="L340">      this.keyOffset = keyOffset;</span>
+<span class="nc" id="L341">      this.keyLength = keyLength;</span>
+<span class="nc" id="L342">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>GroupKeyResult.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.txn.type</a> &gt; <span class="el_source">GroupKeyResult.java</span></div><h1>GroupKeyResult.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.txn.type;
+
+import com.google.protobuf.ByteString;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import org.tikv.common.region.TiRegion;
+import org.tikv.common.region.TiStore;
+import org.tikv.common.util.Pair;
+
+public class GroupKeyResult {
+
+  private Map&lt;Pair&lt;TiRegion, TiStore&gt;, List&lt;ByteString&gt;&gt; groupsResult;
+
+<span class="nc" id="L30">  public GroupKeyResult() {</span>
+<span class="nc" id="L31">    this.groupsResult = new HashMap&lt;&gt;();</span>
+<span class="nc" id="L32">  }</span>
+
+  public Map&lt;Pair&lt;TiRegion, TiStore&gt;, List&lt;ByteString&gt;&gt; getGroupsResult() {
+<span class="nc" id="L35">    return groupsResult;</span>
+  }
+
+  public void setGroupsResult(Map&lt;Pair&lt;TiRegion, TiStore&gt;, List&lt;ByteString&gt;&gt; groupsResult) {
+<span class="nc" id="L39">    this.groupsResult = groupsResult;</span>
+<span class="nc" id="L40">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

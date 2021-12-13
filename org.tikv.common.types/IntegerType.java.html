@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>IntegerType.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.types</a> &gt; <span class="el_source">IntegerType.java</span></div><h1>IntegerType.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.types;
+
+import com.google.common.primitives.UnsignedLong;
+import com.pingcap.tidb.tipb.ExprType;
+import java.math.BigDecimal;
+import org.tikv.common.codec.Codec;
+import org.tikv.common.codec.Codec.IntegerCodec;
+import org.tikv.common.codec.CodecDataInput;
+import org.tikv.common.codec.CodecDataOutput;
+import org.tikv.common.exception.ConvertNotSupportException;
+import org.tikv.common.exception.ConvertOverflowException;
+import org.tikv.common.exception.TypeException;
+import org.tikv.common.meta.Collation;
+import org.tikv.common.meta.TiColumnInfo;
+
+public class IntegerType extends DataType {
+<span class="nc" id="L34">  public static final IntegerType TINYINT = new IntegerType(MySQLType.TypeTiny);</span>
+<span class="nc" id="L35">  public static final IntegerType SMALLINT = new IntegerType(MySQLType.TypeShort);</span>
+<span class="nc" id="L36">  public static final IntegerType MEDIUMINT = new IntegerType(MySQLType.TypeInt24);</span>
+<span class="nc" id="L37">  public static final IntegerType INT = new IntegerType(MySQLType.TypeLong);</span>
+<span class="nc" id="L38">  public static final IntegerType BIGINT = new IntegerType(MySQLType.TypeLonglong);</span>
+<span class="nc" id="L39">  public static final IntegerType BOOLEAN = TINYINT;</span>
+<span class="nc" id="L40">  public static final IntegerType YEAR = new IntegerType(MySQLType.TypeYear);</span>
+
+<span class="nc" id="L42">  public static final IntegerType ROW_ID_TYPE =</span>
+      new IntegerType(MySQLType.TypeLonglong, PriKeyFlag, 20, 0);
+
+<span class="nc" id="L45">  public static final MySQLType[] subTypes =</span>
+      new MySQLType[] {
+        MySQLType.TypeTiny,
+        MySQLType.TypeShort,
+        MySQLType.TypeInt24,
+        MySQLType.TypeLong,
+        MySQLType.TypeLonglong,
+        MySQLType.TypeYear
+      };
+
+  protected IntegerType(MySQLType type, int flag, int len, int decimal) {
+<span class="nc" id="L56">    super(type, flag, len, decimal, &quot;&quot;, Collation.DEF_COLLATION_CODE);</span>
+<span class="nc" id="L57">  }</span>
+
+  protected IntegerType(MySQLType tp) {
+<span class="nc" id="L60">    super(tp);</span>
+<span class="nc" id="L61">  }</span>
+
+  protected IntegerType(TiColumnInfo.InternalTypeHolder holder) {
+<span class="nc" id="L64">    super(holder);</span>
+<span class="nc" id="L65">  }</span>
+
+  private static BigDecimal unsignedValueOf(long x) {
+<span class="nc" id="L68">    return new BigDecimal(UnsignedLong.fromLongBits(x).bigIntegerValue());</span>
+  }
+
+  @Override
+  protected Object doConvertToTiDBType(Object value)
+      throws ConvertNotSupportException, ConvertOverflowException {
+    // TODO: support write to YEAR
+<span class="nc bnc" id="L75" title="All 2 branches missed.">    if (this.getType() == MySQLType.TypeYear) {</span>
+<span class="nc" id="L76">      throw new ConvertNotSupportException(value.getClass().getName(), this.getClass().getName());</span>
+    }
+
+    Long result;
+<span class="nc bnc" id="L80" title="All 2 branches missed.">    if (this.isUnsigned()) {</span>
+<span class="nc" id="L81">      result = Converter.safeConvertToUnsigned(value, this.unsignedUpperBound());</span>
+    } else {
+<span class="nc" id="L83">      result =</span>
+<span class="nc" id="L84">          Converter.safeConvertToSigned(value, this.signedLowerBound(), this.signedUpperBound());</span>
+    }
+
+<span class="nc" id="L87">    return result;</span>
+  }
+
+  public boolean isSameCatalog(DataType other) {
+<span class="nc" id="L91">    return other instanceof IntegerType;</span>
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  protected Object decodeNotNull(int flag, CodecDataInput cdi) {
+    long ret;
+<span class="nc bnc" id="L98" title="All 5 branches missed.">    switch (flag) {</span>
+      case Codec.UVARINT_FLAG:
+<span class="nc" id="L100">        ret = IntegerCodec.readUVarLong(cdi);</span>
+<span class="nc" id="L101">        break;</span>
+      case Codec.UINT_FLAG:
+<span class="nc" id="L103">        ret = IntegerCodec.readULong(cdi);</span>
+<span class="nc" id="L104">        break;</span>
+      case Codec.VARINT_FLAG:
+<span class="nc" id="L106">        ret = IntegerCodec.readVarLong(cdi);</span>
+<span class="nc" id="L107">        break;</span>
+      case Codec.INT_FLAG:
+<span class="nc" id="L109">        ret = IntegerCodec.readLong(cdi);</span>
+<span class="nc" id="L110">        break;</span>
+      default:
+<span class="nc" id="L112">        throw new TypeException(&quot;Invalid IntegerType flag: &quot; + flag);</span>
+    }
+<span class="nc bnc" id="L114" title="All 2 branches missed.">    if (isUnsignedLong()) {</span>
+<span class="nc" id="L115">      return unsignedValueOf(ret);</span>
+    }
+<span class="nc" id="L117">    return ret;</span>
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  protected void encodeKey(CodecDataOutput cdo, Object value) {
+<span class="nc" id="L123">    long longVal = Converter.convertToLong(value);</span>
+<span class="nc bnc" id="L124" title="All 2 branches missed.">    if (isUnsigned()) {</span>
+<span class="nc" id="L125">      IntegerCodec.writeULongFully(cdo, longVal, true);</span>
+    } else {
+<span class="nc" id="L127">      IntegerCodec.writeLongFully(cdo, longVal, true);</span>
+    }
+<span class="nc" id="L129">  }</span>
+
+  /** {@inheritDoc} */
+  @Override
+  protected void encodeValue(CodecDataOutput cdo, Object value) {
+<span class="nc" id="L134">    long longVal = Converter.convertToLong(value);</span>
+<span class="nc bnc" id="L135" title="All 2 branches missed.">    if (isUnsigned()) {</span>
+<span class="nc" id="L136">      IntegerCodec.writeULongFully(cdo, longVal, false);</span>
+    } else {
+<span class="nc" id="L138">      IntegerCodec.writeLongFully(cdo, longVal, false);</span>
+    }
+<span class="nc" id="L140">  }</span>
+
+  /** {@inheritDoc} */
+  @Override
+  protected void encodeProto(CodecDataOutput cdo, Object value) {
+<span class="nc" id="L145">    long longVal = Converter.convertToLong(value);</span>
+<span class="nc bnc" id="L146" title="All 2 branches missed.">    if (isUnsigned()) {</span>
+<span class="nc" id="L147">      IntegerCodec.writeULong(cdo, longVal);</span>
+    } else {
+<span class="nc" id="L149">      IntegerCodec.writeLong(cdo, longVal);</span>
+    }
+<span class="nc" id="L151">  }</span>
+
+  @Override
+  public String getName() {
+<span class="nc bnc" id="L155" title="All 2 branches missed.">    if (isUnsigned()) {</span>
+<span class="nc" id="L156">      return &quot;UNSIGNED LONG&quot;;</span>
+    }
+<span class="nc" id="L158">    return &quot;LONG&quot;;</span>
+  }
+
+  @Override
+  public ExprType getProtoExprType() {
+<span class="nc bnc" id="L163" title="All 2 branches missed.">    return isUnsigned() ? ExprType.Uint64 : ExprType.Int64;</span>
+  }
+
+  public boolean isUnsignedLong() {
+<span class="nc bnc" id="L167" title="All 4 branches missed.">    return tp == MySQLType.TypeLonglong &amp;&amp; isUnsigned();</span>
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  public Object getOriginDefaultValueNonNull(String value, long version) {
+<span class="nc" id="L173">    return Long.parseLong(value);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

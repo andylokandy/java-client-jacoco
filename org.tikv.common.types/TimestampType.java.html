@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TimestampType.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.types</a> &gt; <span class="el_source">TimestampType.java</span></div><h1>TimestampType.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.types;
+
+import static org.tikv.common.types.Converter.UTC_TIME_FORMATTER;
+
+import java.sql.Timestamp;
+import org.joda.time.DateTime;
+import org.joda.time.DateTimeZone;
+import org.joda.time.LocalDateTime;
+import org.tikv.common.ExtendedDateTime;
+import org.tikv.common.codec.Codec.DateTimeCodec;
+import org.tikv.common.codec.CodecDataInput;
+import org.tikv.common.codec.CodecDataOutput;
+import org.tikv.common.exception.ConvertNotSupportException;
+import org.tikv.common.exception.ConvertOverflowException;
+import org.tikv.common.meta.TiColumnInfo;
+
+/**
+ * Timestamp in TiDB is represented as packed long including year/month and etc. When stored, it is
+ * converted into UTC and when read it should be interpreted as UTC and convert to local When
+ * encoded as coprocessor request 1. all date time in key should be converted to UTC 2. all date
+ * time in proto should be converted into local timezone 3. all incoming data should be regarded as
+ * local timezone if no timezone indicated
+ *
+ * &lt;p&gt;For example, Encoding: If incoming literal is a string '2000-01-01 00:00:00' which has no
+ * timezone, it interpreted as text in local timezone and encoded with UTC; If incoming literal is a
+ * epoch millisecond, it interpreted as UTC epoch and encode with UTC if index / key or local
+ * timezone if proto
+ */
+public class TimestampType extends AbstractDateTimeType {
+<span class="nc" id="L47">  public static final TimestampType TIMESTAMP = new TimestampType(MySQLType.TypeTimestamp);</span>
+
+<span class="nc" id="L49">  public static final MySQLType[] subTypes = new MySQLType[] {MySQLType.TypeTimestamp};</span>
+
+  TimestampType(MySQLType tp) {
+<span class="nc" id="L52">    super(tp);</span>
+<span class="nc" id="L53">  }</span>
+
+  TimestampType(TiColumnInfo.InternalTypeHolder holder) {
+<span class="nc" id="L56">    super(holder);</span>
+<span class="nc" id="L57">  }</span>
+
+  public DateTimeZone getTimezone() {
+<span class="nc" id="L60">    return DateTimeZone.UTC;</span>
+  }
+
+  @Override
+  protected Object doConvertToTiDBType(Object value)
+      throws ConvertNotSupportException, ConvertOverflowException {
+<span class="nc" id="L66">    return convertToMysqlLocalTimestamp(value);</span>
+  }
+
+  private Timestamp convertToMysqlLocalTimestamp(Object value) throws ConvertNotSupportException {
+    Timestamp result;
+<span class="nc bnc" id="L71" title="All 2 branches missed.">    if (value instanceof Long) {</span>
+<span class="nc" id="L72">      throw new ConvertNotSupportException(value.getClass().getName(), this.getClass().getName());</span>
+      // result = new java.sql.Timestamp((Long) value);
+    } else {
+<span class="nc" id="L75">      return convertToMysqlDateTime(value);</span>
+    }
+  }
+
+  /**
+   * Decode timestamp from packed long value In TiDB / MySQL, timestamp type is converted to UTC and
+   * stored
+   */
+  @Override
+  protected Long decodeNotNull(int flag, CodecDataInput cdi) {
+<span class="nc" id="L85">    return decodeDateTime(flag, cdi);</span>
+  }
+
+  @Override
+  protected Timestamp decodeNotNullForBatchWrite(int flag, CodecDataInput cdi) {
+<span class="nc" id="L90">    return decodeDateTimeForBatchWrite(flag, cdi);</span>
+  }
+
+  @Override
+  public DateTime getOriginDefaultValueNonNull(String value, long version) {
+<span class="nc bnc" id="L95" title="All 2 branches missed.">    if (version &gt;= DataType.COLUMN_VERSION_FLAG) {</span>
+<span class="nc" id="L96">      LocalDateTime localDateTime =</span>
+<span class="nc" id="L97">          Converter.strToDateTime(value, UTC_TIME_FORMATTER)</span>
+<span class="nc" id="L98">              .withZone(DateTimeZone.getDefault())</span>
+<span class="nc" id="L99">              .toLocalDateTime();</span>
+<span class="nc" id="L100">      return localDateTime.toDateTime();</span>
+    }
+<span class="nc" id="L102">    return Converter.convertToDateTime(value).getDateTime();</span>
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  protected void encodeProto(CodecDataOutput cdo, Object value) {
+<span class="nc" id="L108">    ExtendedDateTime localExtendedDateTime = Converter.convertToDateTime(value);</span>
+<span class="nc" id="L109">    DateTime utcDateTime = localExtendedDateTime.getDateTime().toDateTime(DateTimeZone.UTC);</span>
+<span class="nc" id="L110">    ExtendedDateTime utcExtendedDateTime =</span>
+<span class="nc" id="L111">        new ExtendedDateTime(utcDateTime, localExtendedDateTime.getMicrosOfMillis());</span>
+<span class="nc" id="L112">    DateTimeCodec.writeDateTimeProto(cdo, utcExtendedDateTime, Converter.getLocalTimezone());</span>
+<span class="nc" id="L113">  }</span>
+
+  @Override
+  public String getName() {
+<span class="nc" id="L117">    return &quot;TIMESTAMP&quot;;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

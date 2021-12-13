@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PartitionPruner.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.expression</a> &gt; <span class="el_source">PartitionPruner.java</span></div><h1>PartitionPruner.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.expression;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import org.tikv.common.meta.TiPartitionDef;
+import org.tikv.common.meta.TiPartitionInfo;
+import org.tikv.common.meta.TiPartitionInfo.PartitionType;
+import org.tikv.common.meta.TiTableInfo;
+import org.tikv.common.parser.TiParser;
+
+<span class="nc" id="L27">public class PartitionPruner {</span>
+  public static List&lt;Expression&gt; extractLogicalOrComparisonExpr(List&lt;Expression&gt; filters) {
+<span class="nc" id="L29">    List&lt;Expression&gt; filteredFilters = new ArrayList&lt;&gt;();</span>
+<span class="nc bnc" id="L30" title="All 2 branches missed.">    for (Expression expr : filters) {</span>
+<span class="nc bnc" id="L31" title="All 4 branches missed.">      if (expr instanceof LogicalBinaryExpression || expr instanceof ComparisonBinaryExpression) {</span>
+<span class="nc" id="L32">        filteredFilters.add(expr);</span>
+      }
+<span class="nc" id="L34">    }</span>
+<span class="nc" id="L35">    return filteredFilters;</span>
+  }
+
+  public static List&lt;TiPartitionDef&gt; prune(TiTableInfo tableInfo, List&lt;Expression&gt; filters) {
+<span class="nc" id="L39">    PartitionType type = tableInfo.getPartitionInfo().getType();</span>
+<span class="nc bnc" id="L40" title="All 2 branches missed.">    if (!tableInfo.isPartitionEnabled()) {</span>
+<span class="nc" id="L41">      return tableInfo.getPartitionInfo().getDefs();</span>
+    }
+
+<span class="nc" id="L44">    boolean isRangeCol =</span>
+<span class="nc bnc" id="L45" title="All 2 branches missed.">        Objects.requireNonNull(tableInfo.getPartitionInfo().getColumns()).size() &gt; 0;</span>
+
+<span class="nc bnc" id="L47" title="All 3 branches missed.">    switch (type) {</span>
+      case RangePartition:
+<span class="nc bnc" id="L49" title="All 2 branches missed.">        if (!isRangeCol) {</span>
+          // TiDB only supports partition pruning on range partition on single column
+          // If we meet range partition on multiple columns, we simply return all parts.
+<span class="nc bnc" id="L52" title="All 2 branches missed.">          if (tableInfo.getPartitionInfo().getColumns().size() &gt; 1) {</span>
+<span class="nc" id="L53">            return tableInfo.getPartitionInfo().getDefs();</span>
+          }
+<span class="nc" id="L55">          RangePartitionPruner prunner = new RangePartitionPruner(tableInfo);</span>
+<span class="nc" id="L56">          return prunner.prune(filters);</span>
+        } else {
+<span class="nc" id="L58">          RangeColumnPartitionPruner pruner = new RangeColumnPartitionPruner(tableInfo);</span>
+<span class="nc" id="L59">          return pruner.prune(filters);</span>
+        }
+      case ListPartition:
+      case HashPartition:
+<span class="nc" id="L63">        return tableInfo.getPartitionInfo().getDefs();</span>
+    }
+
+<span class="nc" id="L66">    throw new UnsupportedOperationException(&quot;cannot prune under invalid partition table&quot;);</span>
+  }
+
+  static void generateRangeExprs(
+      TiPartitionInfo partInfo,
+      List&lt;Expression&gt; partExprs,
+      TiParser parser,
+      String partExprStr,
+      int lessThanIdx) {
+    // partExprColRefs.addAll(PredicateUtils.extractColumnRefFromExpression(partExpr));
+<span class="nc bnc" id="L76" title="All 2 branches missed.">    for (int i = 0; i &lt; partInfo.getDefs().size(); i++) {</span>
+<span class="nc" id="L77">      TiPartitionDef pDef = partInfo.getDefs().get(i);</span>
+<span class="nc" id="L78">      String current = pDef.getLessThan().get(lessThanIdx);</span>
+      String leftHand;
+<span class="nc bnc" id="L80" title="All 2 branches missed.">      if (current.equals(&quot;MAXVALUE&quot;)) {</span>
+<span class="nc" id="L81">        leftHand = &quot;true&quot;;</span>
+      } else {
+<span class="nc" id="L83">        leftHand = String.format(&quot;%s &lt; %s&quot;, partExprStr, current);</span>
+      }
+<span class="nc bnc" id="L85" title="All 2 branches missed.">      if (i == 0) {</span>
+<span class="nc" id="L86">        partExprs.add(parser.parseExpression(leftHand));</span>
+      } else {
+<span class="nc" id="L88">        String previous = partInfo.getDefs().get(i - 1).getLessThan().get(lessThanIdx);</span>
+<span class="nc" id="L89">        String and = String.format(&quot;%s and %s&quot;, partExprStr + &quot;&gt;=&quot; + previous, leftHand);</span>
+<span class="nc" id="L90">        partExprs.add(parser.parseExpression(and));</span>
+      }
+    }
+<span class="nc" id="L93">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractLockResolverClient.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.txn</a> &gt; <span class="el_source">AbstractLockResolverClient.java</span></div><h1>AbstractLockResolverClient.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.txn;
+
+import java.util.List;
+import org.tikv.common.PDClient;
+import org.tikv.common.StoreVersion;
+import org.tikv.common.TiConfiguration;
+import org.tikv.common.Version;
+import org.tikv.common.exception.KeyException;
+import org.tikv.common.region.RegionManager;
+import org.tikv.common.region.RegionStoreClient;
+import org.tikv.common.region.TiRegion;
+import org.tikv.common.region.TiStore;
+import org.tikv.common.util.BackOffer;
+import org.tikv.common.util.ChannelFactory;
+import org.tikv.kvproto.Kvrpcpb;
+import org.tikv.kvproto.TikvGrpc;
+
+public interface AbstractLockResolverClient {
+  /** ResolvedCacheSize is max number of cached txn status. */
+  long RESOLVED_TXN_CACHE_SIZE = 2048;
+
+  /** transaction involves keys exceed this threshold can be treated as `big transaction`. */
+  long BIG_TXN_THRESHOLD = 16;
+
+  static Lock extractLockFromKeyErr(Kvrpcpb.KeyError keyError) {
+<span class="pc bpc" id="L43" title="1 of 2 branches missed.">    if (keyError.hasLocked()) {</span>
+<span class="nc" id="L44">      return new Lock(keyError.getLocked());</span>
+    }
+
+<span class="pc bpc" id="L47" title="1 of 2 branches missed.">    if (keyError.hasConflict()) {</span>
+<span class="nc" id="L48">      Kvrpcpb.WriteConflict conflict = keyError.getConflict();</span>
+<span class="nc" id="L49">      throw new KeyException(</span>
+<span class="nc" id="L50">          String.format(</span>
+              &quot;scan meet key conflict on primary key %s at commit ts %s&quot;,
+<span class="nc" id="L52">              conflict.getPrimary(), conflict.getConflictTs()));</span>
+    }
+
+<span class="pc bpc" id="L55" title="1 of 2 branches missed.">    if (!keyError.getRetryable().isEmpty()) {</span>
+<span class="nc" id="L56">      throw new KeyException(</span>
+<span class="nc" id="L57">          String.format(&quot;tikv restart txn %s&quot;, keyError.getRetryableBytes().toStringUtf8()));</span>
+    }
+
+<span class="pc bpc" id="L60" title="1 of 2 branches missed.">    if (!keyError.getAbort().isEmpty()) {</span>
+<span class="fc" id="L61">      throw new KeyException(</span>
+<span class="fc" id="L62">          String.format(&quot;tikv abort txn %s&quot;, keyError.getAbortBytes().toStringUtf8()));</span>
+    }
+
+<span class="nc" id="L65">    throw new KeyException(</span>
+<span class="nc" id="L66">        String.format(&quot;unexpected key error meets and it is %s&quot;, keyError.toString()));</span>
+  }
+
+  static AbstractLockResolverClient getInstance(
+      TiConfiguration conf,
+      TiRegion region,
+      TiStore store,
+      TikvGrpc.TikvBlockingStub blockingStub,
+      TikvGrpc.TikvFutureStub asyncStub,
+      ChannelFactory channelFactory,
+      RegionManager regionManager,
+      PDClient pdClient,
+      RegionStoreClient.RegionStoreClientBuilder clientBuilder) {
+<span class="pc bpc" id="L79" title="1 of 2 branches missed.">    if (StoreVersion.compareTo(store.getStore().getVersion(), Version.RESOLVE_LOCK_V3) &lt; 0) {</span>
+<span class="nc" id="L80">      return new LockResolverClientV2(</span>
+          conf, region, store, blockingStub, asyncStub, channelFactory, regionManager);
+<span class="fc bfc" id="L82" title="All 2 branches covered.">    } else if (StoreVersion.compareTo(store.getStore().getVersion(), Version.RESOLVE_LOCK_V4) &lt; 0) {</span>
+<span class="fc" id="L83">      return new LockResolverClientV3(</span>
+          conf,
+          region,
+          store,
+          blockingStub,
+          asyncStub,
+          channelFactory,
+          regionManager,
+          pdClient,
+          clientBuilder);
+    } else {
+<span class="fc" id="L94">      return new LockResolverClientV4(</span>
+          conf,
+          region,
+          store,
+          blockingStub,
+          asyncStub,
+          channelFactory,
+          regionManager,
+          pdClient,
+          clientBuilder);
+    }
+  }
+
+  String getVersion();
+
+  /**
+   * ResolveLocks tries to resolve Locks. The resolving process is in 3 steps: 1) Use the `lockTTL`
+   * to pick up all expired locks. Only locks that are old enough are considered orphan locks and
+   * will be handled later. If all locks are expired then all locks will be resolved so true will be
+   * returned, otherwise caller should sleep a while before retry. 2) For each lock, query the
+   * primary key to get txn(which left the lock)'s commit status. 3) Send `ResolveLock` cmd to the
+   * lock's region to resolve all locks belong to the same transaction.
+   *
+   * @param bo
+   * @param callerStartTS
+   * @param locks
+   * @param forWrite
+   * @return msBeforeTxnExpired: 0 means all locks are resolved
+   */
+  ResolveLockResult resolveLocks(
+      BackOffer bo, long callerStartTS, List&lt;Lock&gt; locks, boolean forWrite);
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

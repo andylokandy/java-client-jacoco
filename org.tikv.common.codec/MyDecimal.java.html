@@ -1,0 +1,827 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MyDecimal.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.codec</a> &gt; <span class="el_source">MyDecimal.java</span></div><h1>MyDecimal.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.codec;
+
+import com.google.common.annotations.VisibleForTesting;
+import java.io.Serializable;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.Arrays;
+
+// TODO: We shouldn't allow empty MyDecimal
+// TODO: It seems MyDecimal to BigDecimal is very slow
+public class MyDecimal implements Serializable {
+  // how many digits that a word has
+  private static final int digitsPerWord = 9;
+  // MyDecimal can holds at most 9 words.
+  private static final int wordBufLen = 9;
+  // A word is 4 bytes int
+  private static final int wordSize = 4;
+  private static final int ten0 = 1;
+  private static final int ten1 = 10;
+  private static final int ten2 = 100;
+  private static final int ten3 = 1000;
+  private static final int ten4 = 10000;
+  private static final int ten5 = 100000;
+  private static final int ten6 = 1000000;
+  private static final int ten7 = 10000000;
+  private static final int ten8 = 100000000;
+  private static final int ten9 = 1000000000;
+  private static final int digMask = ten8;
+  private static final int wordBase = ten9;
+<span class="fc" id="L45">  private static final BigInteger wordBaseBigInt = BigInteger.valueOf(ten9);</span>
+  private static final int wordMax = wordBase - 1;
+<span class="fc" id="L47">  private static final int[] div9 =</span>
+<span class="fc" id="L48">      new int[] {</span>
+        0, 0, 0, 0, 0, 0, 0, 0, 0,
+<span class="fc" id="L50">        1, 1, 1, 1, 1, 1, 1, 1, 1,</span>
+<span class="fc" id="L51">        2, 2, 2, 2, 2, 2, 2, 2, 2,</span>
+<span class="fc" id="L52">        3, 3, 3, 3, 3, 3, 3, 3, 3,</span>
+<span class="fc" id="L53">        4, 4, 4, 4, 4, 4, 4, 4, 4,</span>
+<span class="fc" id="L54">        5, 5, 5, 5, 5, 5, 5, 5, 5,</span>
+<span class="fc" id="L55">        6, 6, 6, 6, 6, 6, 6, 6, 6,</span>
+<span class="fc" id="L56">        7, 7, 7, 7, 7, 7, 7, 7, 7,</span>
+<span class="fc" id="L57">        8, 8, 8, 8, 8, 8, 8, 8, 8,</span>
+<span class="fc" id="L58">        9, 9, 9, 9, 9, 9, 9, 9, 9,</span>
+<span class="fc" id="L59">        10, 10, 10, 10, 10, 10, 10, 10, 10,</span>
+<span class="fc" id="L60">        11, 11, 11, 11, 11, 11, 11, 11, 11,</span>
+<span class="fc" id="L61">        12, 12, 12, 12, 12, 12, 12, 12, 12,</span>
+<span class="fc" id="L62">        13, 13, 13, 13, 13, 13, 13, 13, 13,</span>
+<span class="fc" id="L63">        14, 14,</span>
+      };
+<span class="fc" id="L65">  private static final int[] powers10 =</span>
+<span class="fc" id="L66">      new int[] {ten0, ten1, ten2, ten3, ten4, ten5, ten6, ten7, ten8, ten9};</span>
+
+<span class="fc" id="L68">  private static final BigInteger[] powers10BigInt =</span>
+<span class="fc" id="L69">      new BigInteger[] {</span>
+<span class="fc" id="L70">        BigInteger.valueOf(ten0),</span>
+<span class="fc" id="L71">        BigInteger.valueOf(ten1),</span>
+<span class="fc" id="L72">        BigInteger.valueOf(ten2),</span>
+<span class="fc" id="L73">        BigInteger.valueOf(ten3),</span>
+<span class="fc" id="L74">        BigInteger.valueOf(ten4),</span>
+<span class="fc" id="L75">        BigInteger.valueOf(ten5),</span>
+<span class="fc" id="L76">        BigInteger.valueOf(ten6),</span>
+<span class="fc" id="L77">        BigInteger.valueOf(ten7),</span>
+<span class="fc" id="L78">        BigInteger.valueOf(ten8),</span>
+<span class="fc" id="L79">        BigInteger.valueOf(ten9)</span>
+      };
+
+  // A MyDecimal holds 9 words.
+  private static final int maxWordBufLen = 9;
+  private static final int maxFraction = 30;
+<span class="fc" id="L85">  private static final int[] dig2bytes = new int[] {0, 1, 1, 2, 2, 3, 3, 4, 4, 4};</span>
+
+  // The following are fields of MyDecimal
+  private int digitsInt;
+  private int digitsFrac;
+  private boolean negative;
+<span class="pc" id="L91">  private int[] wordBuf = new int[maxWordBufLen];</span>
+
+<span class="fc" id="L93">  public MyDecimal() {}</span>
+
+<span class="nc" id="L95">  public MyDecimal(int digitsInt, int digitsFrac, boolean negative, int[] wordBuf) {</span>
+<span class="nc" id="L96">    this.digitsInt = digitsInt;</span>
+<span class="nc" id="L97">    this.digitsFrac = digitsFrac;</span>
+<span class="nc" id="L98">    this.negative = negative;</span>
+<span class="nc" id="L99">    this.wordBuf = wordBuf;</span>
+<span class="nc" id="L100">  }</span>
+
+  /**
+   * Reads a word from a array at given size.
+   *
+   * @param b b is source data of unsigned byte as int[]
+   * @param size is word size which can be used in switch statement.
+   * @param start start indicates the where start to read.
+   */
+  @VisibleForTesting
+  public static int readWord(int[] b, int size, int start) {
+<span class="fc" id="L111">    int x = 0;</span>
+<span class="pc bpc" id="L112" title="1 of 5 branches missed.">    switch (size) {</span>
+      case 1:
+<span class="fc" id="L114">        x = (byte) b[start];</span>
+<span class="fc" id="L115">        break;</span>
+      case 2:
+<span class="fc" id="L117">        x = (((byte) b[start]) &lt;&lt; 8) + (b[start + 1] &amp; 0xFF);</span>
+<span class="fc" id="L118">        break;</span>
+      case 3:
+<span class="fc" id="L120">        int sign = b[start] &amp; 128;</span>
+<span class="fc bfc" id="L121" title="All 2 branches covered.">        if (sign &gt; 0) {</span>
+<span class="fc" id="L122">          x = 0xFF &lt;&lt; 24 | (b[start] &lt;&lt; 16) | (b[start + 1] &lt;&lt; 8) | (b[start + 2]);</span>
+<span class="fc" id="L123">        } else {</span>
+<span class="fc" id="L124">          x = b[start] &lt;&lt; 16 | (b[start + 1] &lt;&lt; 8) | b[start + 2];</span>
+        }
+<span class="fc" id="L126">        break;</span>
+      case 4:
+<span class="fc" id="L128">        x = b[start + 3] + (b[start + 2] &lt;&lt; 8) + (b[start + 1] &lt;&lt; 16) + (b[start] &lt;&lt; 24);</span>
+        break;
+    }
+<span class="fc" id="L131">    return x;</span>
+  }
+
+  /*
+   * Returns total precision of this decimal. Basically, it is sum of digitsInt and digitsFrac. But there
+   * are some special cases need to be token care of such as 000.001.
+   * Precision reflects the actual effective precision without leading zero
+   */
+  public int precision() {
+<span class="fc" id="L140">    int frac = this.digitsFrac;</span>
+<span class="fc" id="L141">    int digitsInt =</span>
+<span class="fc" id="L142">        this.removeLeadingZeros()[</span>
+<span class="fc" id="L143">            1]; /*this function return an array and the second element is digitsInt*/</span>
+<span class="fc" id="L144">    int precision = digitsInt + frac;</span>
+    // if no precision, it is just 0.
+<span class="pc bpc" id="L146" title="1 of 2 branches missed.">    if (precision == 0) {</span>
+<span class="nc" id="L147">      precision = 1;</span>
+    }
+<span class="fc" id="L149">    return precision;</span>
+  }
+
+  /**
+   * Returns fraction digits that counts how many digits after &quot;.&quot;. frac() reflects the actual
+   * effective fraction without trailing zero
+   */
+  public int frac() {
+<span class="fc" id="L157">    return digitsFrac;</span>
+  }
+
+  /**
+   * Parses a decimal value from a string
+   *
+   * @param value an double value
+   */
+  public void fromDecimal(double value) {
+<span class="fc" id="L166">    String s = Double.toString(value);</span>
+<span class="fc" id="L167">    this.fromString(s);</span>
+<span class="fc" id="L168">  }</span>
+
+  /**
+   * Parses a decimal from binary string for given precision and frac.
+   *
+   * @param precision precision specifies total digits that this decimal will be..
+   * @param frac frac specifies how many fraction digits
+   * @param bin bin is binary string which represents a decimal value.
+   */
+  public int fromBin(int precision, int frac, int[] bin) {
+<span class="pc bpc" id="L178" title="1 of 2 branches missed.">    if (bin.length == 0) {</span>
+<span class="nc" id="L179">      throw new IllegalArgumentException(&quot;Bad Float Number to parse&quot;);</span>
+    }
+
+<span class="fc" id="L182">    int _digitsInt = precision - frac;</span>
+<span class="fc" id="L183">    int _wordsInt = _digitsInt / digitsPerWord;</span>
+<span class="fc" id="L184">    int _leadingDigits = _digitsInt - _wordsInt * digitsPerWord;</span>
+<span class="fc" id="L185">    int _wordsFrac = frac / digitsPerWord;</span>
+<span class="fc" id="L186">    int trailingDigits = frac - _wordsFrac * digitsPerWord;</span>
+<span class="fc" id="L187">    int wordsIntTo = _wordsInt;</span>
+<span class="fc bfc" id="L188" title="All 2 branches covered.">    if (_leadingDigits &gt; 0) {</span>
+<span class="fc" id="L189">      wordsIntTo++;</span>
+    }
+<span class="fc" id="L191">    int wordsFracTo = _wordsFrac;</span>
+<span class="fc bfc" id="L192" title="All 2 branches covered.">    if (trailingDigits &gt; 0) {</span>
+<span class="fc" id="L193">      wordsFracTo++;</span>
+    }
+
+<span class="fc" id="L196">    int binIdx = 0;</span>
+<span class="fc" id="L197">    int mask = -1;</span>
+<span class="fc" id="L198">    int sign = bin[binIdx] &amp; 0x80;</span>
+<span class="fc bfc" id="L199" title="All 2 branches covered.">    if (sign &gt; 0) {</span>
+<span class="fc" id="L200">      mask = 0;</span>
+    }
+<span class="fc" id="L202">    int binSize = decimalBinSize(precision, frac);</span>
+    int[] dCopy;
+<span class="fc" id="L204">    dCopy = Arrays.copyOf(bin, binSize);</span>
+<span class="fc" id="L205">    dCopy[0] ^= 0x80;</span>
+<span class="fc" id="L206">    bin = dCopy;</span>
+
+<span class="fc" id="L208">    int oldWordsIntTo = wordsIntTo;</span>
+<span class="fc" id="L209">    boolean overflow = false;</span>
+<span class="fc" id="L210">    boolean truncated = false;</span>
+<span class="pc bpc" id="L211" title="1 of 2 branches missed.">    if (wordsIntTo + wordsFracTo &gt; wordBufLen) {</span>
+<span class="nc bnc" id="L212" title="All 2 branches missed.">      if (wordsIntTo &gt; wordBufLen) {</span>
+<span class="nc" id="L213">        wordsIntTo = wordBufLen;</span>
+<span class="nc" id="L214">        wordsFracTo = 0;</span>
+<span class="nc" id="L215">        overflow = true;</span>
+<span class="nc" id="L216">      } else {</span>
+<span class="nc" id="L217">        wordsIntTo = _wordsInt;</span>
+<span class="nc" id="L218">        wordsFracTo = wordBufLen - _wordsInt;</span>
+<span class="nc" id="L219">        truncated = true;</span>
+      }
+    }
+
+<span class="pc bpc" id="L223" title="2 of 4 branches missed.">    if (overflow || truncated) {</span>
+<span class="nc bnc" id="L224" title="All 2 branches missed.">      if (wordsIntTo &lt; oldWordsIntTo) {</span>
+<span class="nc" id="L225">        binIdx += dig2bytes[_leadingDigits] + (_wordsInt - wordsIntTo) * wordSize;</span>
+<span class="nc" id="L226">      } else {</span>
+<span class="nc" id="L227">        trailingDigits = 0;</span>
+<span class="nc" id="L228">        _wordsFrac = wordsFracTo;</span>
+      }
+    }
+
+<span class="fc bfc" id="L232" title="All 2 branches covered.">    this.negative = mask != 0;</span>
+<span class="fc" id="L233">    this.digitsInt = (byte) (_wordsInt * digitsPerWord + _leadingDigits);</span>
+<span class="fc" id="L234">    this.digitsFrac = (byte) (_wordsFrac * digitsPerWord + trailingDigits);</span>
+
+<span class="fc" id="L236">    int wordIdx = 0;</span>
+<span class="fc bfc" id="L237" title="All 2 branches covered.">    if (_leadingDigits &gt; 0) {</span>
+<span class="fc" id="L238">      int i = dig2bytes[_leadingDigits];</span>
+<span class="fc" id="L239">      int x = readWord(bin, i, binIdx);</span>
+<span class="fc" id="L240">      binIdx += i;</span>
+<span class="fc bfc" id="L241" title="All 2 branches covered.">      this.wordBuf[wordIdx] = (x ^ mask) &gt; 0 ? x ^ mask : (x ^ mask) &amp; 0xFF;</span>
+<span class="pc bpc" id="L242" title="1 of 2 branches missed.">      if (this.wordBuf[wordIdx] &gt;= powers10[_leadingDigits + 1]) {</span>
+<span class="nc" id="L243">        throw new IllegalArgumentException(&quot;BadNumber&quot;);</span>
+      }
+<span class="fc bfc" id="L245" title="All 2 branches covered.">      if (this.wordBuf[wordIdx] != 0) {</span>
+<span class="fc" id="L246">        wordIdx++;</span>
+<span class="fc" id="L247">      } else {</span>
+<span class="fc" id="L248">        this.digitsInt -= _leadingDigits;</span>
+      }
+    }
+<span class="fc bfc" id="L251" title="All 2 branches covered.">    for (int stop = binIdx + _wordsInt * wordSize; binIdx &lt; stop; binIdx += wordSize) {</span>
+<span class="fc" id="L252">      this.wordBuf[wordIdx] = (readWord(bin, 4, binIdx) ^ mask);</span>
+<span class="pc bpc" id="L253" title="1 of 2 branches missed.">      if (this.wordBuf[wordIdx] &gt; wordMax) {</span>
+<span class="nc" id="L254">        throw new IllegalArgumentException(&quot;BadNumber&quot;);</span>
+      }
+<span class="pc bpc" id="L256" title="3 of 4 branches missed.">      if (wordIdx &gt; 0 || this.wordBuf[wordIdx] != 0) {</span>
+<span class="fc" id="L257">        wordIdx++;</span>
+<span class="fc" id="L258">      } else {</span>
+<span class="nc" id="L259">        this.digitsInt -= digitsPerWord;</span>
+      }
+    }
+
+<span class="fc bfc" id="L263" title="All 2 branches covered.">    for (int stop = binIdx + _wordsFrac * wordSize; binIdx &lt; stop; binIdx += wordSize) {</span>
+<span class="fc" id="L264">      int x = readWord(bin, 4, binIdx);</span>
+<span class="pc bpc" id="L265" title="1 of 2 branches missed.">      this.wordBuf[wordIdx] = (x ^ mask) &gt; 0 ? x ^ mask : (x ^ mask) &amp; 0xFF;</span>
+<span class="pc bpc" id="L266" title="1 of 2 branches missed.">      if (this.wordBuf[wordIdx] &gt; wordMax) {</span>
+<span class="nc" id="L267">        throw new IllegalArgumentException(&quot;BadNumber&quot;);</span>
+      }
+<span class="fc" id="L269">      wordIdx++;</span>
+    }
+
+<span class="fc bfc" id="L272" title="All 2 branches covered.">    if (trailingDigits &gt; 0) {</span>
+<span class="fc" id="L273">      int i = dig2bytes[trailingDigits];</span>
+<span class="fc" id="L274">      int x = readWord(bin, i, binIdx);</span>
+<span class="fc" id="L275">      this.wordBuf[wordIdx] =</span>
+<span class="pc bpc" id="L276" title="1 of 2 branches missed.">          ((x ^ mask) &gt; 0 ? x ^ mask : (x ^ mask) &amp; 0xFF)</span>
+<span class="fc" id="L277">              * powers10[digitsPerWord - trailingDigits];</span>
+<span class="pc bpc" id="L278" title="1 of 2 branches missed.">      if (this.wordBuf[wordIdx] &gt; wordMax) {</span>
+<span class="nc" id="L279">        throw new IllegalArgumentException(&quot;BadNumber&quot;);</span>
+      }
+    }
+
+<span class="fc" id="L283">    return binSize;</span>
+  }
+
+  /** Truncates any prefix zeros such as 00.001. After this, digitsInt is truncated from 2 to 0. */
+  private int[] removeLeadingZeros() {
+<span class="fc" id="L288">    int wordIdx = 0;</span>
+<span class="fc" id="L289">    int digitsInt = this.digitsInt;</span>
+<span class="fc" id="L290">    int i = ((digitsInt - 1) % digitsPerWord) + 1;</span>
+<span class="fc bfc" id="L291" title="All 4 branches covered.">    for (; digitsInt &gt; 0 &amp;&amp; this.wordBuf[wordIdx] == 0; ) {</span>
+<span class="fc" id="L292">      digitsInt -= i;</span>
+<span class="fc" id="L293">      i = digitsPerWord;</span>
+<span class="fc" id="L294">      wordIdx++;</span>
+    }
+<span class="fc bfc" id="L296" title="All 2 branches covered.">    if (digitsInt &gt; 0) {</span>
+<span class="fc" id="L297">      digitsInt -= countLeadingZeroes((digitsInt - 1) % digitsPerWord, this.wordBuf[wordIdx]);</span>
+<span class="fc" id="L298">    } else {</span>
+<span class="fc" id="L299">      digitsInt = 0;</span>
+    }
+<span class="fc" id="L301">    int[] res = new int[2];</span>
+<span class="fc" id="L302">    res[0] = wordIdx;</span>
+<span class="fc" id="L303">    res[1] = digitsInt;</span>
+<span class="fc" id="L304">    return res;</span>
+  }
+
+  /**
+   * Counts the number of digits of prefix zeroes. For 00.001, it returns two.
+   *
+   * @param i i is index for getting powers10.
+   * @param word word is a integer.
+   */
+  private int countLeadingZeroes(int i, int word) {
+<span class="fc" id="L314">    int leading = 0;</span>
+<span class="pc bpc" id="L315" title="1 of 2 branches missed.">    for (; word &lt; powers10[i]; ) {</span>
+<span class="nc" id="L316">      i--;</span>
+<span class="nc" id="L317">      leading++;</span>
+    }
+<span class="fc" id="L319">    return leading;</span>
+  }
+
+  /** Returns size of word for a give value with number of digits */
+  private int digitsToWords(int digits) {
+<span class="pc bpc" id="L324" title="2 of 4 branches missed.">    if ((digits + digitsPerWord - 1) &gt;= 0 &amp;&amp; ((digits + digitsPerWord - 1) &lt; 128)) {</span>
+<span class="fc" id="L325">      return div9[digits + digitsPerWord - 1];</span>
+    }
+<span class="nc" id="L327">    return (digits + digitsPerWord - 1) / digitsPerWord;</span>
+  }
+
+  /**
+   * parser a decimal value from a string.
+   *
+   * @param s s is a decimal in string form.
+   */
+  @VisibleForTesting
+  public void fromString(String s) {
+<span class="fc" id="L337">    char[] sCharArray = s.toCharArray();</span>
+<span class="fc" id="L338">    fromCharArray(sCharArray);</span>
+<span class="fc" id="L339">  }</span>
+
+  // helper function for fromString
+  private void fromCharArray(char[] str) {
+<span class="fc" id="L343">    int startIdx = 0;</span>
+    // found first character is not space and start from here
+<span class="pc bpc" id="L345" title="1 of 2 branches missed.">    for (; startIdx &lt; str.length; startIdx++) {</span>
+<span class="pc bpc" id="L346" title="1 of 2 branches missed.">      if (!Character.isSpaceChar(str[startIdx])) {</span>
+<span class="fc" id="L347">        break;</span>
+      }
+    }
+
+<span class="pc bpc" id="L351" title="1 of 2 branches missed.">    if (str.length == 0) {</span>
+<span class="nc" id="L352">      throw new IllegalArgumentException(&quot;BadNumber&quot;);</span>
+    }
+
+    // skip sign and record where digits start from
+    // [-, 1, 2, 3]
+    // [+, 1, 2, 3]
+    // for +/-, we need skip them and record sign information into negative field.
+<span class="pc bpc" id="L359" title="1 of 3 branches missed.">    switch (str[startIdx]) {</span>
+      case '-':
+<span class="fc" id="L361">        this.negative = true;</span>
+<span class="fc" id="L362">        startIdx++;</span>
+<span class="fc" id="L363">        break;</span>
+      case '+':
+<span class="nc" id="L365">        startIdx++;</span>
+        break;
+    }
+<span class="fc" id="L368">    int strIdx = startIdx;</span>
+<span class="fc bfc" id="L369" title="All 4 branches covered.">    for (; strIdx &lt; str.length &amp;&amp; Character.isDigit(str[strIdx]); ) {</span>
+<span class="fc" id="L370">      strIdx++;</span>
+    }
+    // we initialize strIdx in case of sign notation, here we need subtract startIdx from strIdx
+    // cause strIdx is used for counting the number of digits.
+<span class="fc" id="L374">    int digitsInt = strIdx - startIdx;</span>
+    int digitsFrac;
+    int endIdx;
+<span class="pc bpc" id="L377" title="1 of 4 branches missed.">    if (strIdx &lt; str.length &amp;&amp; str[strIdx] == '.') {</span>
+<span class="fc" id="L378">      endIdx = strIdx + 1;</span>
+      // detect where is the end index of this char array.
+<span class="fc bfc" id="L380" title="All 4 branches covered.">      for (; endIdx &lt; str.length &amp;&amp; Character.isDigit(str[endIdx]); ) {</span>
+<span class="fc" id="L381">        endIdx++;</span>
+      }
+<span class="fc" id="L383">      digitsFrac = endIdx - strIdx - 1;</span>
+<span class="fc" id="L384">    } else {</span>
+<span class="fc" id="L385">      digitsFrac = 0;</span>
+    }
+
+<span class="pc bpc" id="L388" title="1 of 2 branches missed.">    if (digitsInt + digitsFrac == 0) {</span>
+<span class="nc" id="L389">      throw new IllegalArgumentException(&quot;BadNumber&quot;);</span>
+    }
+<span class="fc" id="L391">    int wordsInt = digitsToWords(digitsInt);</span>
+<span class="fc" id="L392">    int wordsFrac = digitsToWords(digitsFrac);</span>
+
+    // TODO the following code are fixWordCntError such as overflow and truncated error
+<span class="fc" id="L395">    boolean overflow = false;</span>
+<span class="fc" id="L396">    boolean truncated = false;</span>
+<span class="pc bpc" id="L397" title="1 of 2 branches missed.">    if (wordsInt + wordsFrac &gt; wordBufLen) {</span>
+<span class="nc bnc" id="L398" title="All 2 branches missed.">      if (wordsInt &gt; wordBufLen) {</span>
+<span class="nc" id="L399">        wordsInt = wordBufLen;</span>
+<span class="nc" id="L400">        wordsFrac = 0;</span>
+<span class="nc" id="L401">        overflow = true;</span>
+<span class="nc" id="L402">      } else {</span>
+<span class="nc" id="L403">        wordsFrac = wordBufLen - wordsInt;</span>
+<span class="nc" id="L404">        truncated = true;</span>
+      }
+    }
+
+<span class="pc bpc" id="L408" title="2 of 4 branches missed.">    if (overflow || truncated) {</span>
+<span class="nc" id="L409">      digitsFrac = wordsFrac * digitsPerWord;</span>
+<span class="nc bnc" id="L410" title="All 2 branches missed.">      if (overflow) {</span>
+<span class="nc" id="L411">        digitsInt = wordsInt * digitsPerWord;</span>
+      }
+    }
+<span class="fc" id="L414">    this.digitsInt = digitsInt;</span>
+<span class="fc" id="L415">    this.digitsFrac = digitsFrac;</span>
+<span class="fc" id="L416">    int wordIdx = wordsInt;</span>
+<span class="fc" id="L417">    int strIdxTmp = strIdx;</span>
+<span class="fc" id="L418">    int word = 0;</span>
+<span class="fc" id="L419">    int innerIdx = 0;</span>
+<span class="fc bfc" id="L420" title="All 2 branches covered.">    for (; digitsInt &gt; 0; ) {</span>
+<span class="fc" id="L421">      digitsInt--;</span>
+<span class="fc" id="L422">      strIdx--;</span>
+<span class="fc" id="L423">      word += (str[strIdx] - '0') * powers10[innerIdx];</span>
+<span class="fc" id="L424">      innerIdx++;</span>
+<span class="fc bfc" id="L425" title="All 2 branches covered.">      if (innerIdx == digitsPerWord) {</span>
+<span class="fc" id="L426">        wordIdx--;</span>
+<span class="fc" id="L427">        this.wordBuf[wordIdx] = word;</span>
+<span class="fc" id="L428">        word = 0;</span>
+<span class="fc" id="L429">        innerIdx = 0;</span>
+      }
+    }
+
+<span class="fc bfc" id="L433" title="All 2 branches covered.">    if (innerIdx != 0) {</span>
+<span class="fc" id="L434">      wordIdx--;</span>
+<span class="fc" id="L435">      this.wordBuf[wordIdx] = word;</span>
+    }
+
+<span class="fc" id="L438">    wordIdx = wordsInt;</span>
+<span class="fc" id="L439">    strIdx = strIdxTmp;</span>
+<span class="fc" id="L440">    word = 0;</span>
+<span class="fc" id="L441">    innerIdx = 0;</span>
+
+<span class="fc bfc" id="L443" title="All 2 branches covered.">    for (; digitsFrac &gt; 0; ) {</span>
+<span class="fc" id="L444">      digitsFrac--;</span>
+<span class="fc" id="L445">      strIdx++;</span>
+<span class="fc" id="L446">      word = (str[strIdx] - '0') + word * 10;</span>
+<span class="fc" id="L447">      innerIdx++;</span>
+<span class="fc bfc" id="L448" title="All 2 branches covered.">      if (innerIdx == digitsPerWord) {</span>
+<span class="fc" id="L449">        this.wordBuf[wordIdx] = word;</span>
+<span class="fc" id="L450">        wordIdx++;</span>
+<span class="fc" id="L451">        word = 0;</span>
+<span class="fc" id="L452">        innerIdx = 0;</span>
+      }
+    }
+<span class="fc bfc" id="L455" title="All 2 branches covered.">    if (innerIdx != 0) {</span>
+<span class="fc" id="L456">      this.wordBuf[wordIdx] = word * powers10[digitsPerWord - innerIdx];</span>
+    }
+
+    // this is -0000 is just 0.
+<span class="fc" id="L460">    boolean allZero = true;</span>
+<span class="fc bfc" id="L461" title="All 2 branches covered.">    for (int i = 0; i &lt; wordBufLen; i++) {</span>
+<span class="fc bfc" id="L462" title="All 2 branches covered.">      if (this.wordBuf[i] != 0) {</span>
+<span class="fc" id="L463">        allZero = false;</span>
+<span class="fc" id="L464">        break;</span>
+      }
+    }
+<span class="fc bfc" id="L467" title="All 2 branches covered.">    if (allZero) {</span>
+<span class="fc" id="L468">      this.negative = false;</span>
+    }
+<span class="fc" id="L470">  }</span>
+
+  // Returns a decimal string.
+  @Override
+  public String toString() {
+    char[] str;
+
+<span class="fc" id="L477">    int _digitsFrac = this.digitsFrac;</span>
+<span class="fc" id="L478">    int[] res = removeLeadingZeros();</span>
+<span class="fc" id="L479">    int wordStartIdx = res[0];</span>
+<span class="fc" id="L480">    int digitsInt = res[1];</span>
+<span class="fc bfc" id="L481" title="All 2 branches covered.">    if (digitsInt + _digitsFrac == 0) {</span>
+<span class="fc" id="L482">      digitsInt = 1;</span>
+<span class="fc" id="L483">      wordStartIdx = 0;</span>
+    }
+
+<span class="fc" id="L486">    int digitsIntLen = digitsInt;</span>
+<span class="fc bfc" id="L487" title="All 2 branches covered.">    if (digitsIntLen == 0) {</span>
+<span class="fc" id="L488">      digitsIntLen = 1;</span>
+    }
+<span class="fc" id="L490">    int digitsFracLen = _digitsFrac;</span>
+<span class="fc" id="L491">    int length = digitsIntLen + digitsFracLen;</span>
+<span class="fc bfc" id="L492" title="All 2 branches covered.">    if (this.negative) {</span>
+<span class="fc" id="L493">      length++;</span>
+    }
+<span class="fc bfc" id="L495" title="All 2 branches covered.">    if (_digitsFrac &gt; 0) {</span>
+<span class="fc" id="L496">      length++;</span>
+    }
+<span class="fc" id="L498">    str = new char[length];</span>
+
+<span class="fc" id="L500">    int strIdx = 0;</span>
+<span class="fc bfc" id="L501" title="All 2 branches covered.">    if (this.negative) {</span>
+<span class="fc" id="L502">      str[strIdx] = '-';</span>
+<span class="fc" id="L503">      strIdx++;</span>
+    }
+
+<span class="fc bfc" id="L506" title="All 2 branches covered.">    if (_digitsFrac &gt; 0) {</span>
+<span class="fc" id="L507">      int fracIdx = strIdx + digitsIntLen;</span>
+<span class="fc" id="L508">      int wordIdx = wordStartIdx + digitsToWords(digitsInt);</span>
+<span class="fc" id="L509">      str[fracIdx] = '.';</span>
+<span class="fc" id="L510">      fracIdx++;</span>
+<span class="fc bfc" id="L511" title="All 2 branches covered.">      for (; _digitsFrac &gt; 0; _digitsFrac -= digitsPerWord) {</span>
+<span class="fc" id="L512">        int x = this.wordBuf[wordIdx];</span>
+<span class="fc" id="L513">        wordIdx++;</span>
+<span class="fc bfc" id="L514" title="All 2 branches covered.">        for (int i = Math.min(_digitsFrac, MyDecimal.digitsPerWord); i &gt; 0; i--) {</span>
+<span class="fc" id="L515">          int y = x / digMask;</span>
+<span class="fc" id="L516">          str[fracIdx] = (char) ((char) y + '0');</span>
+<span class="fc" id="L517">          fracIdx++;</span>
+<span class="fc" id="L518">          x -= y * digMask;</span>
+<span class="fc" id="L519">          x *= 10;</span>
+        }
+      }
+    }
+<span class="fc bfc" id="L523" title="All 2 branches covered.">    if (digitsInt &gt; 0) {</span>
+<span class="fc" id="L524">      strIdx += digitsInt;</span>
+<span class="fc" id="L525">      int wordIdx = wordStartIdx + digitsToWords(digitsInt);</span>
+<span class="fc bfc" id="L526" title="All 2 branches covered.">      for (; digitsInt &gt; 0; digitsInt -= digitsPerWord) {</span>
+<span class="fc" id="L527">        wordIdx--;</span>
+<span class="fc" id="L528">        int x = this.wordBuf[wordIdx];</span>
+<span class="fc bfc" id="L529" title="All 2 branches covered.">        for (int i = Math.min(digitsInt, MyDecimal.digitsPerWord); i &gt; 0; i--) {</span>
+<span class="fc" id="L530">          int temp = x / 10;</span>
+<span class="fc" id="L531">          strIdx--;</span>
+<span class="fc" id="L532">          str[strIdx] = (char) ('0' + (x - temp * 10));</span>
+<span class="fc" id="L533">          x = temp;</span>
+        }
+      }
+<span class="fc" id="L536">    } else {</span>
+<span class="fc" id="L537">      str[strIdx] = '0';</span>
+    }
+
+<span class="fc" id="L540">    return new String(str);</span>
+  }
+
+  // decimalBinSize returns the size of array to hold a binary representation of a decimal.
+  private int decimalBinSize(int precision, int frac) {
+<span class="fc" id="L545">    int digitsInt = precision - frac;</span>
+<span class="fc" id="L546">    int wordsInt = digitsInt / digitsPerWord;</span>
+<span class="fc" id="L547">    int wordsFrac = frac / digitsPerWord;</span>
+<span class="fc" id="L548">    int xInt = digitsInt - wordsInt * digitsPerWord;</span>
+<span class="fc" id="L549">    int xFrac = frac - wordsFrac * digitsPerWord;</span>
+<span class="fc" id="L550">    return wordsInt * wordSize + dig2bytes[xInt] + wordsFrac * wordSize + dig2bytes[xFrac];</span>
+  }
+
+  /**
+   * ToBin converts decimal to its binary fixed-length representation two representations of the
+   * same length can be compared with memcmp with the correct -1/0/+1 result
+   *
+   * &lt;p&gt;PARAMS precision/frac - if precision is 0, internal value of the decimal will be used, then
+   * the encoded value is not memory comparable.
+   *
+   * &lt;p&gt;NOTE the buffer is assumed to be of the size decimalBinSize(precision, frac)
+   *
+   * &lt;p&gt;RETURN VALUE bin - binary value errCode - eDecOK/eDecTruncate/eDecOverflow
+   *
+   * &lt;p&gt;DESCRIPTION for storage decimal numbers are converted to the &quot;binary&quot; format.
+   *
+   * &lt;p&gt;This format has the following properties: 1. length of the binary representation depends on
+   * the {precision, frac} as provided by the caller and NOT on the digitsInt/digitsFrac of the
+   * decimal to convert. 2. binary representations of the same {precision, frac} can be compared
+   * with memcmp - with the same result as DecimalCompare() of the original decimals (not taking
+   * into account possible precision loss during conversion).
+   *
+   * &lt;p&gt;This binary format is as follows: 1. First the number is converted to have a requested
+   * precision and frac. 2. Every full digitsPerWord digits of digitsInt part are stored in 4 bytes
+   * as is 3. The first digitsInt % digitsPerWord digits are stored in the reduced number of bytes
+   * (enough bytes to store this number of digits - see dig2bytes) 4. same for frac - full word are
+   * stored as is, the last frac % digitsPerWord digits - in the reduced number of bytes. 5. If the
+   * number is negative - every byte is inverted. 5. The very first bit of the resulting byte array
+   * is inverted (because memcmp compares unsigned bytes, see property 2 above)
+   *
+   * &lt;p&gt;Example:
+   *
+   * &lt;p&gt;1234567890.1234
+   *
+   * &lt;p&gt;internally is represented as 3 words
+   *
+   * &lt;p&gt;1 234567890 123400000
+   *
+   * &lt;p&gt;(assuming we want a binary representation with precision=14, frac=4) in hex it's
+   *
+   * &lt;p&gt;00-00-00-01 0D-FB-38-D2 07-5A-EF-40
+   *
+   * &lt;p&gt;now, middle word is full - it stores 9 decimal digits. It goes into binary representation as
+   * is:
+   *
+   * &lt;p&gt;........... 0D-FB-38-D2 ............
+   *
+   * &lt;p&gt;First word has only one decimal digit. We can store one digit in one byte, no need to waste
+   * four:
+   *
+   * &lt;p&gt;01 0D-FB-38-D2 ............
+   *
+   * &lt;p&gt;now, last word. It's 123400000. We can store 1234 in two bytes:
+   *
+   * &lt;p&gt;01 0D-FB-38-D2 04-D2
+   *
+   * &lt;p&gt;So, we've packed 12 bytes number in 7 bytes. And now we invert the highest bit to get the
+   * final result:
+   *
+   * &lt;p&gt;81 0D FB 38 D2 04 D2
+   *
+   * &lt;p&gt;And for -1234567890.1234 it would be
+   *
+   * &lt;p&gt;7E F2 04 C7 2D FB 2D return a int array which represents a decimal value.
+   *
+   * @param precision precision for decimal value.
+   * @param frac fraction for decimal value.
+   */
+  public int[] toBin(int precision, int frac) {
+<span class="pc bpc" id="L619" title="1 of 2 branches missed.">    if (precision &gt; digitsPerWord * maxWordBufLen</span>
+<span class="pc bpc" id="L620" title="1 of 2 branches missed.">        || precision &lt; 0</span>
+<span class="pc bpc" id="L621" title="1 of 2 branches missed.">        || frac &gt; maxFraction</span>
+<span class="pc bpc" id="L622" title="1 of 2 branches missed.">        || frac &lt; 0) {</span>
+<span class="nc" id="L623">      throw new IllegalArgumentException(&quot;BadNumber&quot;);</span>
+    }
+
+<span class="fc" id="L626">    int mask = 0;</span>
+<span class="fc bfc" id="L627" title="All 2 branches covered.">    if (this.negative) {</span>
+<span class="fc" id="L628">      mask = -1;</span>
+    }
+
+<span class="fc" id="L631">    int digitsInt = precision - frac; // how many digits before dot</span>
+<span class="fc" id="L632">    int wordsInt = digitsInt / digitsPerWord; // how many words to stores int part before dot.</span>
+<span class="fc" id="L633">    int leadingDigits = digitsInt - wordsInt * digitsPerWord; // first digits</span>
+<span class="fc" id="L634">    int wordsFrac = frac / digitsPerWord; // how many words to store int part after dot</span>
+<span class="fc" id="L635">    int trailingDigits = frac - wordsFrac * digitsPerWord; // last digits</span>
+
+    // this should be one of 0, 1, 2, 3, 4
+<span class="fc" id="L638">    int wordsFracFrom = this.digitsFrac / digitsPerWord;</span>
+<span class="fc" id="L639">    int trailingDigitsFrom = this.digitsFrac - wordsFracFrom * digitsPerWord;</span>
+<span class="fc" id="L640">    int intSize = wordsInt * wordSize + dig2bytes[leadingDigits];</span>
+<span class="fc" id="L641">    int fracSize = wordsFrac * wordSize + dig2bytes[trailingDigits];</span>
+<span class="fc" id="L642">    int fracSizeFrom = wordsFracFrom * wordSize + dig2bytes[trailingDigitsFrom];</span>
+<span class="fc" id="L643">    int originIntSize = intSize;</span>
+<span class="fc" id="L644">    int originFracSize = fracSize;</span>
+<span class="fc" id="L645">    int[] bin = new int[intSize + fracSize];</span>
+<span class="fc" id="L646">    int binIdx = 0;</span>
+<span class="fc" id="L647">    int[] res = this.removeLeadingZeros();</span>
+<span class="fc" id="L648">    int wordIdxFrom = res[0];</span>
+<span class="fc" id="L649">    int digitsIntFrom = res[1];</span>
+<span class="fc bfc" id="L650" title="All 2 branches covered.">    if (digitsIntFrom + fracSizeFrom == 0) {</span>
+<span class="fc" id="L651">      mask = 0;</span>
+<span class="fc" id="L652">      digitsInt = 1;</span>
+    }
+
+<span class="fc" id="L655">    int wordsIntFrom = digitsIntFrom / digitsPerWord;</span>
+<span class="fc" id="L656">    int leadingDigitsFrom = digitsIntFrom - wordsIntFrom * digitsPerWord;</span>
+<span class="fc" id="L657">    int iSizeFrom = wordsIntFrom * wordSize + dig2bytes[leadingDigitsFrom];</span>
+
+<span class="pc bpc" id="L659" title="1 of 2 branches missed.">    if (digitsInt &lt; digitsIntFrom) {</span>
+<span class="nc" id="L660">      wordIdxFrom += (wordsIntFrom - wordsInt);</span>
+<span class="nc bnc" id="L661" title="All 2 branches missed.">      if (leadingDigitsFrom &gt; 0) {</span>
+<span class="nc" id="L662">        wordIdxFrom++;</span>
+      }
+
+<span class="nc bnc" id="L665" title="All 2 branches missed.">      if (leadingDigits &gt; 0) {</span>
+<span class="nc" id="L666">        wordIdxFrom--;</span>
+      }
+
+<span class="nc" id="L669">      wordsIntFrom = wordsInt;</span>
+<span class="nc" id="L670">      leadingDigitsFrom = leadingDigits;</span>
+      // TODO overflow here
+<span class="pc bfc" id="L672" title="All 2 branches covered.">    } else if (intSize &gt; iSizeFrom) {</span>
+<span class="fc bfc" id="L673" title="All 2 branches covered.">      for (; intSize &gt; iSizeFrom; ) {</span>
+<span class="fc" id="L674">        intSize--;</span>
+<span class="fc" id="L675">        bin[binIdx] = mask &amp; 0xff;</span>
+<span class="fc" id="L676">        binIdx++;</span>
+      }
+    }
+
+    // when fracSize smaller than fracSizeFrom, output is truncated
+<span class="pc bpc" id="L681" title="1 of 2 branches missed.">    if (fracSize &lt; fracSizeFrom) {</span>
+<span class="nc" id="L682">      wordsFracFrom = wordsFrac;</span>
+<span class="nc" id="L683">      trailingDigitsFrom = trailingDigits;</span>
+      // TODO truncated
+<span class="pc bpc" id="L685" title="3 of 4 branches missed.">    } else if (fracSize &gt; fracSizeFrom &amp;&amp; trailingDigitsFrom &gt; 0) {</span>
+<span class="nc bnc" id="L686" title="All 2 branches missed.">      if (wordsFrac == wordsFracFrom) {</span>
+<span class="nc" id="L687">        trailingDigitsFrom = trailingDigits;</span>
+<span class="nc" id="L688">        fracSize = fracSizeFrom;</span>
+<span class="nc" id="L689">      } else {</span>
+<span class="nc" id="L690">        wordsFracFrom++;</span>
+<span class="nc" id="L691">        trailingDigitsFrom = 0;</span>
+      }
+    }
+
+    // xIntFrom part
+<span class="fc bfc" id="L696" title="All 2 branches covered.">    if (leadingDigitsFrom &gt; 0) {</span>
+<span class="fc" id="L697">      int i = dig2bytes[leadingDigitsFrom];</span>
+<span class="fc" id="L698">      int x = (this.wordBuf[wordIdxFrom] % powers10[leadingDigitsFrom]) ^ mask;</span>
+<span class="fc" id="L699">      wordIdxFrom++;</span>
+<span class="fc" id="L700">      writeWord(bin, x, i, binIdx);</span>
+<span class="fc" id="L701">      binIdx += i;</span>
+    }
+
+    // wordsInt + wordsFrac part.
+<span class="fc bfc" id="L705" title="All 2 branches covered.">    for (int stop = wordIdxFrom + wordsIntFrom + wordsFracFrom;</span>
+<span class="fc" id="L706">        wordIdxFrom &lt; stop;</span>
+<span class="fc" id="L707">        binIdx += wordSize) {</span>
+<span class="fc" id="L708">      int x = this.wordBuf[wordIdxFrom] ^ mask;</span>
+<span class="fc" id="L709">      wordIdxFrom++;</span>
+<span class="fc" id="L710">      writeWord(bin, x, 4, binIdx);</span>
+    }
+
+<span class="fc bfc" id="L713" title="All 2 branches covered.">    if (trailingDigitsFrom &gt; 0) {</span>
+      int x;
+<span class="fc" id="L715">      int i = dig2bytes[trailingDigitsFrom];</span>
+<span class="fc" id="L716">      int lim = trailingDigits;</span>
+<span class="pc bpc" id="L717" title="1 of 2 branches missed.">      if (wordsFracFrom &lt; wordsFrac) {</span>
+<span class="nc" id="L718">        lim = digitsPerWord;</span>
+      }
+
+<span class="pc bpc" id="L721" title="3 of 4 branches missed.">      for (; trailingDigitsFrom &lt; lim &amp;&amp; dig2bytes[trailingDigitsFrom] == i; ) {</span>
+<span class="nc" id="L722">        trailingDigitsFrom++;</span>
+      }
+<span class="fc" id="L724">      x = (this.wordBuf[wordIdxFrom] / powers10[digitsPerWord - trailingDigitsFrom]) ^ mask;</span>
+<span class="fc" id="L725">      writeWord(bin, x, i, binIdx);</span>
+<span class="fc" id="L726">      binIdx += i;</span>
+    }
+
+<span class="pc bpc" id="L729" title="1 of 2 branches missed.">    if (fracSize &gt; fracSizeFrom) {</span>
+<span class="nc" id="L730">      int binIdxEnd = originIntSize + originFracSize;</span>
+<span class="nc bnc" id="L731" title="All 4 branches missed.">      for (; fracSize &gt; fracSizeFrom &amp;&amp; binIdx &lt; binIdxEnd; ) {</span>
+<span class="nc" id="L732">        fracSize--;</span>
+<span class="nc" id="L733">        bin[binIdx] = mask &amp; 0xff;</span>
+<span class="nc" id="L734">        binIdx++;</span>
+      }
+    }
+<span class="fc" id="L737">    bin[0] ^= 0x80;</span>
+<span class="fc" id="L738">    return bin;</span>
+  }
+
+  // write a word into buf.
+  private void writeWord(int[] b, int word, int size, int start) {
+<span class="pc bpc" id="L743" title="1 of 5 branches missed.">    switch (size) {</span>
+      case 1:
+<span class="fc" id="L745">        b[start] = word &amp; 0xFF;</span>
+<span class="fc" id="L746">        break;</span>
+      case 2:
+<span class="fc" id="L748">        b[start] = (word &gt;&gt;&gt; 8) &amp; 0xFF;</span>
+<span class="fc" id="L749">        b[start + 1] = word &amp; 0xFF;</span>
+<span class="fc" id="L750">        break;</span>
+      case 3:
+<span class="fc" id="L752">        b[start] = (word &gt;&gt;&gt; 16) &amp; 0xFF;</span>
+<span class="fc" id="L753">        b[start + 1] = (word &gt;&gt;&gt; 8) &amp; 0xFF;</span>
+<span class="fc" id="L754">        b[start + 2] = word &amp; 0xFF;</span>
+<span class="fc" id="L755">        break;</span>
+      case 4:
+<span class="fc" id="L757">        b[start] = (word &gt;&gt;&gt; 24) &amp; 0xFF;</span>
+<span class="fc" id="L758">        b[start + 1] = (word &gt;&gt;&gt; 16) &amp; 0xFF;</span>
+<span class="fc" id="L759">        b[start + 2] = (word &gt;&gt;&gt; 8) &amp; 0xFF;</span>
+<span class="fc" id="L760">        b[start + 3] = word &amp; 0xFF;</span>
+        break;
+    }
+<span class="fc" id="L763">  }</span>
+
+  /** Clears this instance. */
+  public void clear() {
+<span class="fc" id="L767">    this.digitsFrac = 0;</span>
+<span class="fc" id="L768">    this.digitsInt = 0;</span>
+<span class="fc" id="L769">    this.negative = false;</span>
+<span class="fc" id="L770">  }</span>
+
+  private BigInteger toBigInteger() {
+<span class="nc" id="L773">    BigInteger x = BigInteger.ZERO;</span>
+<span class="nc" id="L774">    int wordIdx = 0;</span>
+<span class="nc bnc" id="L775" title="All 2 branches missed.">    for (int i = this.digitsInt; i &gt; 0; i -= digitsPerWord) {</span>
+<span class="nc" id="L776">      x = x.multiply(wordBaseBigInt).add(BigInteger.valueOf(this.wordBuf[wordIdx]));</span>
+<span class="nc" id="L777">      wordIdx++;</span>
+    }
+
+<span class="nc bnc" id="L780" title="All 2 branches missed.">    for (int i = this.digitsFrac; i &gt; 0; i -= digitsPerWord) {</span>
+<span class="nc" id="L781">      x = x.multiply(wordBaseBigInt).add(BigInteger.valueOf(this.wordBuf[wordIdx]));</span>
+<span class="nc" id="L782">      wordIdx++;</span>
+    }
+
+<span class="nc bnc" id="L785" title="All 2 branches missed.">    if (digitsFrac % digitsPerWord != 0) {</span>
+<span class="nc" id="L786">      x = x.divide(powers10BigInt[digitsPerWord - digitsFrac % digitsPerWord]);</span>
+    }
+<span class="nc bnc" id="L788" title="All 2 branches missed.">    if (negative) {</span>
+<span class="nc" id="L789">      x = x.negate();</span>
+    }
+<span class="nc" id="L791">    return x;</span>
+  }
+
+  public long toLong() {
+<span class="nc" id="L795">    long x = 0;</span>
+<span class="nc" id="L796">    int wordIdx = 0;</span>
+<span class="nc bnc" id="L797" title="All 2 branches missed.">    for (int i = this.digitsInt; i &gt; 0; i -= digitsPerWord) {</span>
+<span class="nc" id="L798">      x = x * wordBase + this.wordBuf[wordIdx];</span>
+<span class="nc" id="L799">      wordIdx++;</span>
+    }
+
+<span class="nc bnc" id="L802" title="All 2 branches missed.">    for (int i = this.digitsFrac; i &gt; 0; i -= digitsPerWord) {</span>
+<span class="nc" id="L803">      x = x * wordBase + this.wordBuf[wordIdx];</span>
+<span class="nc" id="L804">      wordIdx++;</span>
+    }
+
+<span class="nc bnc" id="L807" title="All 2 branches missed.">    if (digitsFrac % digitsPerWord != 0) {</span>
+<span class="nc" id="L808">      x = x / powers10[digitsPerWord - digitsFrac % digitsPerWord];</span>
+    }
+
+<span class="nc bnc" id="L811" title="All 2 branches missed.">    if (negative) {</span>
+<span class="nc" id="L812">      x = -x;</span>
+    }
+<span class="nc" id="L814">    return x;</span>
+  }
+
+  public BigDecimal toBigDecimal() {
+    // 19 is the length of digits of Long.MAX_VALUE
+    // If a decimal can be expressed as a long value, we should use toLong method which has
+    // better performance than toBigInteger.
+<span class="nc bnc" id="L821" title="All 2 branches missed.">    if (digitsInt + digitsFrac &lt; 19) {</span>
+<span class="nc" id="L822">      return new BigDecimal(BigInteger.valueOf(toLong()), digitsFrac);</span>
+    }
+<span class="nc" id="L824">    return new BigDecimal(toBigInteger(), digitsFrac);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

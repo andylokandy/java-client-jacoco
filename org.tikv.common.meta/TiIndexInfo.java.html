@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TiIndexInfo.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.meta</a> &gt; <span class="el_source">TiIndexInfo.java</span></div><h1>TiIndexInfo.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.meta;
+
+import static java.util.Objects.requireNonNull;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableList;
+import com.pingcap.tidb.tipb.ColumnInfo;
+import com.pingcap.tidb.tipb.IndexInfo;
+import java.io.Serializable;
+import java.util.List;
+import java.util.stream.Collectors;
+import org.tikv.common.exception.TiKVException;
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class TiIndexInfo implements Serializable {
+  private final long id;
+  private final String name;
+  private final String tableName;
+  private final List&lt;TiIndexColumn&gt; indexColumns;
+  private final boolean isUnique;
+  private final boolean isPrimary;
+  private final org.tikv.common.meta.SchemaState schemaState;
+  private final String comment;
+  private final org.tikv.common.meta.IndexType indexType;
+  private final boolean isFakePrimaryKey;
+
+  // default index column size (TypeFlag + Int64)
+<span class="nc" id="L47">  private long indexColumnSize = 9;</span>
+
+  @JsonCreator
+  @VisibleForTesting
+<span class="nc" id="L51">  public TiIndexInfo(</span>
+      @JsonProperty(&quot;id&quot;) long id,
+      @JsonProperty(&quot;idx_name&quot;) org.tikv.common.meta.CIStr name,
+      @JsonProperty(&quot;tbl_name&quot;) org.tikv.common.meta.CIStr tableName,
+      @JsonProperty(&quot;idx_cols&quot;) List&lt;TiIndexColumn&gt; indexColumns,
+      @JsonProperty(&quot;is_unique&quot;) boolean isUnique,
+      @JsonProperty(&quot;is_primary&quot;) boolean isPrimary,
+      @JsonProperty(&quot;state&quot;) int schemaState,
+      @JsonProperty(&quot;comment&quot;) String comment,
+      @JsonProperty(&quot;index_type&quot;) int indexType,
+      // This is a fake property and added JsonProperty only to
+      // to bypass Jackson frameworks's check
+      @JsonProperty(&quot;___isFakePrimaryKey&quot;) boolean isFakePrimaryKey) {
+<span class="nc" id="L64">    this.id = id;</span>
+<span class="nc" id="L65">    this.name = requireNonNull(name, &quot;index name is null&quot;).getL();</span>
+<span class="nc" id="L66">    this.tableName = requireNonNull(tableName, &quot;table name is null&quot;).getL();</span>
+<span class="nc" id="L67">    this.indexColumns = ImmutableList.copyOf(requireNonNull(indexColumns, &quot;indexColumns is null&quot;));</span>
+<span class="nc" id="L68">    this.isUnique = isUnique;</span>
+<span class="nc" id="L69">    this.isPrimary = isPrimary;</span>
+<span class="nc" id="L70">    this.schemaState = org.tikv.common.meta.SchemaState.fromValue(schemaState);</span>
+<span class="nc" id="L71">    this.comment = comment;</span>
+<span class="nc" id="L72">    this.indexType = org.tikv.common.meta.IndexType.fromValue(indexType);</span>
+<span class="nc" id="L73">    this.isFakePrimaryKey = isFakePrimaryKey;</span>
+<span class="nc" id="L74">  }</span>
+
+  public static TiIndexInfo generateFakePrimaryKeyIndex(TiTableInfo table) {
+<span class="nc" id="L77">    org.tikv.common.meta.TiColumnInfo pkColumn = table.getPKIsHandleColumn();</span>
+<span class="nc bnc" id="L78" title="All 2 branches missed.">    if (pkColumn != null) {</span>
+<span class="nc" id="L79">      return new TiIndexInfo(</span>
+<span class="nc" id="L80">          -1,</span>
+<span class="nc" id="L81">          org.tikv.common.meta.CIStr.newCIStr(&quot;fake_pk_&quot; + table.getId()),</span>
+<span class="nc" id="L82">          org.tikv.common.meta.CIStr.newCIStr(table.getName()),</span>
+<span class="nc" id="L83">          ImmutableList.of(pkColumn.toFakeIndexColumn()),</span>
+<span class="nc" id="L84">          true,</span>
+<span class="nc" id="L85">          true,</span>
+<span class="nc" id="L86">          org.tikv.common.meta.SchemaState.StatePublic.getStateCode(),</span>
+<span class="nc" id="L87">          &quot;Fake Column&quot;,</span>
+<span class="nc" id="L88">          org.tikv.common.meta.IndexType.IndexTypeHash.getTypeCode(),</span>
+<span class="nc" id="L89">          true);</span>
+    }
+<span class="nc" id="L91">    return null;</span>
+  }
+
+  private long calculateIndexColumnSize(
+      TiIndexColumn indexColumn, List&lt;org.tikv.common.meta.TiColumnInfo&gt; columns) {
+<span class="nc bnc" id="L96" title="All 2 branches missed.">    for (org.tikv.common.meta.TiColumnInfo column : columns) {</span>
+<span class="nc bnc" id="L97" title="All 2 branches missed.">      if (column.getName().equalsIgnoreCase(indexColumn.getName())) {</span>
+<span class="nc" id="L98">        return column.getType().getSize();</span>
+      }
+    }
+<span class="nc" id="L101">    throw new TiKVException(</span>
+<span class="nc" id="L102">        String.format(</span>
+<span class="nc" id="L103">            &quot;Index column [%s] not found in table [%s] columns [%s]&quot;,</span>
+<span class="nc" id="L104">            indexColumn.getName(), getTableName(), columns));</span>
+  }
+
+  void calculateIndexSize(List&lt;org.tikv.common.meta.TiColumnInfo&gt; columns) {
+<span class="nc" id="L108">    long ret = 0;</span>
+<span class="nc bnc" id="L109" title="All 2 branches missed.">    for (TiIndexColumn indexColumn : indexColumns) {</span>
+<span class="nc bnc" id="L110" title="All 2 branches missed.">      if (indexColumn.isLengthUnspecified()) {</span>
+<span class="nc" id="L111">        ret += calculateIndexColumnSize(indexColumn, columns);</span>
+<span class="nc" id="L112">      } else {</span>
+<span class="nc" id="L113">        ret += indexColumn.getLength();</span>
+      }
+    }
+<span class="nc" id="L116">    indexColumnSize = ret;</span>
+<span class="nc" id="L117">  }</span>
+
+  public long getIndexColumnSize() {
+<span class="nc" id="L120">    return this.indexColumnSize;</span>
+  }
+
+  public long getId() {
+<span class="nc" id="L124">    return id;</span>
+  }
+
+  public String getName() {
+<span class="nc" id="L128">    return name;</span>
+  }
+
+  public String getTableName() {
+<span class="nc" id="L132">    return tableName;</span>
+  }
+
+  public List&lt;TiIndexColumn&gt; getIndexColumns() {
+<span class="nc" id="L136">    return indexColumns;</span>
+  }
+
+  public boolean isUnique() {
+<span class="nc" id="L140">    return isUnique;</span>
+  }
+
+  public boolean isPrimary() {
+<span class="nc" id="L144">    return isPrimary;</span>
+  }
+
+  public org.tikv.common.meta.SchemaState getSchemaState() {
+<span class="nc" id="L148">    return schemaState;</span>
+  }
+
+  public String getComment() {
+<span class="nc" id="L152">    return comment;</span>
+  }
+
+  public org.tikv.common.meta.IndexType getIndexType() {
+<span class="nc" id="L156">    return indexType;</span>
+  }
+
+  public IndexInfo toProto(TiTableInfo tableInfo) {
+<span class="nc" id="L160">    IndexInfo.Builder builder =</span>
+<span class="nc" id="L161">        IndexInfo.newBuilder().setTableId(tableInfo.getId()).setIndexId(id).setUnique(isUnique);</span>
+
+<span class="nc" id="L163">    List&lt;org.tikv.common.meta.TiColumnInfo&gt; columns = tableInfo.getColumns();</span>
+
+<span class="nc bnc" id="L165" title="All 2 branches missed.">    for (TiIndexColumn indexColumn : getIndexColumns()) {</span>
+<span class="nc" id="L166">      int offset = indexColumn.getOffset();</span>
+<span class="nc" id="L167">      org.tikv.common.meta.TiColumnInfo column = columns.get(offset);</span>
+<span class="nc" id="L168">      builder.addColumns(column.toProto(tableInfo));</span>
+    }
+
+<span class="nc bnc" id="L171" title="All 2 branches missed.">    if (tableInfo.isPkHandle()) {</span>
+<span class="nc bnc" id="L172" title="All 2 branches missed.">      for (org.tikv.common.meta.TiColumnInfo column : columns) {</span>
+<span class="nc bnc" id="L173" title="All 2 branches missed.">        if (!column.isPrimaryKey()) {</span>
+<span class="nc" id="L174">          continue;</span>
+        }
+<span class="nc" id="L176">        ColumnInfo pbColumn = column.toProto(tableInfo);</span>
+<span class="nc" id="L177">        builder.addColumns(pbColumn);</span>
+      }
+    }
+<span class="nc" id="L180">    return builder.build();</span>
+  }
+
+  public boolean isFakePrimaryKey() {
+<span class="nc" id="L184">    return isFakePrimaryKey;</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L189">    return String.format(</span>
+<span class="nc" id="L190">        &quot;%s[%s]&quot;,</span>
+<span class="nc" id="L191">        name,</span>
+<span class="nc" id="L192">        Joiner.on(&quot;,&quot;)</span>
+<span class="nc" id="L193">            .skipNulls()</span>
+<span class="nc" id="L194">            .join(indexColumns.stream().map(TiIndexColumn::getName).collect(Collectors.toList())));</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

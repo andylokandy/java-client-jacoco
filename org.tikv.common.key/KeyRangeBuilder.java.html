@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>KeyRangeBuilder.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.key</a> &gt; <span class="el_source">KeyRangeBuilder.java</span></div><h1>KeyRangeBuilder.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2019 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.key;
+
+import com.google.common.collect.BoundType;
+import com.google.common.collect.Range;
+import org.tikv.common.predicates.IndexRange;
+
+// An abstract class that computes key range from IndexRange
+// After computing lower and upper boundaries, the builder should
+// build a key range according to its own rules.
+abstract class KeyRangeBuilder {
+
+  private final IndexRange ir;
+  private final Key pointKey;
+  Key lPointKey;
+  Key uPointKey;
+  Key lKey;
+  Key uKey;
+
+<span class="nc" id="L34">  KeyRangeBuilder(IndexRange ir) {</span>
+<span class="nc" id="L35">    this.ir = ir;</span>
+<span class="nc bnc" id="L36" title="All 2 branches missed.">    pointKey = ir.hasAccessKey() ? Key.toRawKey(ir.getAccessKey().getBytes()) : Key.EMPTY;</span>
+<span class="nc" id="L37">  }</span>
+
+  private void computeWithOutRange() {
+<span class="nc" id="L40">    lPointKey = pointKey;</span>
+<span class="nc" id="L41">    uPointKey = pointKey.nextPrefix();</span>
+
+<span class="nc" id="L43">    lKey = Key.EMPTY;</span>
+<span class="nc" id="L44">    uKey = Key.EMPTY;</span>
+<span class="nc" id="L45">  }</span>
+
+  private void computeWithRange() {
+<span class="nc" id="L48">    Range&lt;TypedKey&gt; range = ir.getRange();</span>
+<span class="nc" id="L49">    lPointKey = pointKey;</span>
+<span class="nc" id="L50">    uPointKey = pointKey;</span>
+
+<span class="nc bnc" id="L52" title="All 2 branches missed.">    if (!range.hasLowerBound()) {</span>
+      // -INF
+<span class="nc" id="L54">      lKey = Key.NULL;</span>
+    } else {
+<span class="nc" id="L56">      lKey = Key.toRawKey(range.lowerEndpoint().getBytes());</span>
+<span class="nc bnc" id="L57" title="All 2 branches missed.">      if (range.lowerBoundType().equals(BoundType.OPEN)) {</span>
+<span class="nc" id="L58">        lKey = lKey.nextPrefix();</span>
+      }
+    }
+
+<span class="nc bnc" id="L62" title="All 2 branches missed.">    if (!range.hasUpperBound()) {</span>
+      // INF
+<span class="nc" id="L64">      uKey = Key.MAX;</span>
+    } else {
+<span class="nc" id="L66">      uKey = Key.toRawKey(range.upperEndpoint().getBytes());</span>
+<span class="nc bnc" id="L67" title="All 2 branches missed.">      if (range.upperBoundType().equals(BoundType.CLOSED)) {</span>
+<span class="nc" id="L68">        uKey = uKey.nextPrefix();</span>
+      }
+    }
+<span class="nc" id="L71">  }</span>
+
+  void computeKeyRange() {
+<span class="nc bnc" id="L74" title="All 2 branches missed.">    if (!ir.hasRange()) {</span>
+<span class="nc" id="L75">      computeWithOutRange();</span>
+    } else {
+<span class="nc" id="L77">      computeWithRange();</span>
+    }
+<span class="nc" id="L79">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

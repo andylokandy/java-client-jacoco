@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TiColumnVector.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.columnar</a> &gt; <span class="el_source">TiColumnVector.java</span></div><h1>TiColumnVector.java</h1><pre class="source lang-java linenums">/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.columnar;
+
+import java.math.BigDecimal;
+import org.tikv.common.types.DataType;
+
+/**
+ * An interface is mostly copied from Spark's ColumnVector (we do not link it here because we do not
+ * want to pollute tikv java client's dependencies).
+ *
+ * &lt;p&gt;Most of the APIs take the rowId as a parameter. This is the batch local 0-based row id for
+ * values in this TiColumnVector.
+ *
+ * &lt;p&gt;Spark only calls specific `get` method according to the data type of this {@link
+ * TiColumnVector}, e.g. if it's int type, Spark is guaranteed to only call {@link #getInt(int)} or
+ * {@link #getInts(int, int)}.
+ *
+ * &lt;p&gt;TiColumnVector is expected to be reused during the entire data loading process, to avoid
+ * allocating memory again and again.
+ */
+public abstract class TiColumnVector implements AutoCloseable {
+
+  private final int numOfRows;
+  /** Data type for this column. */
+  protected DataType type;
+
+  /** Sets up the data type of this column vector. */
+<span class="nc" id="L44">  protected TiColumnVector(DataType type, int numOfRows) {</span>
+<span class="nc" id="L45">    this.type = type;</span>
+<span class="nc" id="L46">    this.numOfRows = numOfRows;</span>
+<span class="nc" id="L47">  }</span>
+
+  /** Returns the data type of this column vector. */
+  public final DataType dataType() {
+<span class="nc" id="L51">    return type;</span>
+  }
+
+  /**
+   * Cleans up memory for this column vector. The column vector is not usable after this.
+   *
+   * &lt;p&gt;This overwrites `AutoCloseable.close` to remove the `throws` clause, as column vector is
+   * in-memory and we don't expect any exception to happen during closing.
+   */
+  @Override
+  public abstract void close();
+
+  /** Returns true if this column vector contains any null values. */
+  public abstract boolean hasNull();
+
+  /** Returns the number of nulls in this column vector. */
+  public abstract int numNulls();
+
+  /** Returns whether the value at rowId is NULL. */
+  public abstract boolean isNullAt(int rowId);
+
+  /**
+   * Returns the boolean type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  public abstract boolean getBoolean(int rowId);
+
+  /**
+   * Gets boolean type values from [rowId, rowId + count). The return values for the null slots are
+   * undefined and can be anything.
+   */
+  public boolean[] getBooleans(int rowId, int count) {
+<span class="nc" id="L83">    boolean[] res = new boolean[count];</span>
+<span class="nc bnc" id="L84" title="All 2 branches missed.">    for (int i = 0; i &lt; count; i++) {</span>
+<span class="nc" id="L85">      res[i] = getBoolean(rowId + i);</span>
+    }
+<span class="nc" id="L87">    return res;</span>
+  }
+
+  /**
+   * Returns the byte type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  public abstract byte getByte(int rowId);
+
+  /**
+   * Gets byte type values from [rowId, rowId + count). The return values for the null slots are
+   * undefined and can be anything.
+   */
+  public byte[] getBytes(int rowId, int count) {
+<span class="nc" id="L101">    byte[] res = new byte[count];</span>
+<span class="nc bnc" id="L102" title="All 2 branches missed.">    for (int i = 0; i &lt; count; i++) {</span>
+<span class="nc" id="L103">      res[i] = getByte(rowId + i);</span>
+    }
+<span class="nc" id="L105">    return res;</span>
+  }
+
+  /**
+   * Returns the short type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  public abstract short getShort(int rowId);
+
+  /**
+   * Gets short type values from [rowId, rowId + count). The return values for the null slots are
+   * undefined and can be anything.
+   */
+  public short[] getShorts(int rowId, int count) {
+<span class="nc" id="L119">    short[] res = new short[count];</span>
+<span class="nc bnc" id="L120" title="All 2 branches missed.">    for (int i = 0; i &lt; count; i++) {</span>
+<span class="nc" id="L121">      res[i] = getShort(rowId + i);</span>
+    }
+<span class="nc" id="L123">    return res;</span>
+  }
+
+  /**
+   * Returns the int type value for rowId. The return value is undefined and can be anything, if the
+   * slot for rowId is null.
+   */
+  public abstract int getInt(int rowId);
+
+  /**
+   * Gets int type values from [rowId, rowId + count). The return values for the null slots are
+   * undefined and can be anything.
+   */
+  public int[] getInts(int rowId, int count) {
+<span class="nc" id="L137">    int[] res = new int[count];</span>
+<span class="nc bnc" id="L138" title="All 2 branches missed.">    for (int i = 0; i &lt; count; i++) {</span>
+<span class="nc" id="L139">      res[i] = getInt(rowId + i);</span>
+    }
+<span class="nc" id="L141">    return res;</span>
+  }
+
+  /**
+   * Returns the long type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  public abstract long getLong(int rowId);
+
+  /**
+   * Gets long type values from [rowId, rowId + count). The return values for the null slots are
+   * undefined and can be anything.
+   */
+  public long[] getLongs(int rowId, int count) {
+<span class="nc" id="L155">    long[] res = new long[count];</span>
+<span class="nc bnc" id="L156" title="All 2 branches missed.">    for (int i = 0; i &lt; count; i++) {</span>
+<span class="nc" id="L157">      res[i] = getLong(rowId + i);</span>
+    }
+<span class="nc" id="L159">    return res;</span>
+  }
+
+  /**
+   * Returns the float type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  public abstract float getFloat(int rowId);
+
+  /**
+   * Gets float type values from [rowId, rowId + count). The return values for the null slots are
+   * undefined and can be anything.
+   */
+  public float[] getFloats(int rowId, int count) {
+<span class="nc" id="L173">    float[] res = new float[count];</span>
+<span class="nc bnc" id="L174" title="All 2 branches missed.">    for (int i = 0; i &lt; count; i++) {</span>
+<span class="nc" id="L175">      res[i] = getFloat(rowId + i);</span>
+    }
+<span class="nc" id="L177">    return res;</span>
+  }
+
+  /**
+   * Returns the double type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  public abstract double getDouble(int rowId);
+
+  /**
+   * Gets double type values from [rowId, rowId + count). The return values for the null slots are
+   * undefined and can be anything.
+   */
+  public double[] getDoubles(int rowId, int count) {
+<span class="nc" id="L191">    double[] res = new double[count];</span>
+<span class="nc bnc" id="L192" title="All 2 branches missed.">    for (int i = 0; i &lt; count; i++) {</span>
+<span class="nc" id="L193">      res[i] = getDouble(rowId + i);</span>
+    }
+<span class="nc" id="L195">    return res;</span>
+  }
+
+  /**
+   * Returns the decimal type value for rowId. If the slot for rowId is null, it should return null.
+   */
+  public abstract BigDecimal getDecimal(int rowId, int precision, int scale);
+
+  /**
+   * Returns the string type value for rowId. If the slot for rowId is null, it should return null.
+   * Note that the returned UTF8String may point to the data of this column vector, please copy it
+   * if you want to keep it after this column vector is freed.
+   */
+  public abstract String getUTF8String(int rowId);
+
+  /**
+   * Returns the binary type value for rowId. If the slot for rowId is null, it should return null.
+   */
+  public abstract byte[] getBinary(int rowId);
+
+  /** @return child [[TiColumnVector]] at the given ordinal. */
+  protected abstract TiColumnVector getChild(int ordinal);
+
+  public int numOfRows() {
+<span class="nc" id="L219">    return numOfRows;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

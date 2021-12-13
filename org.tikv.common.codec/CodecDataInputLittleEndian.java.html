@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CodecDataInputLittleEndian.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.codec</a> &gt; <span class="el_source">CodecDataInputLittleEndian.java</span></div><h1>CodecDataInputLittleEndian.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.codec;
+
+import com.google.protobuf.ByteString;
+import javax.annotation.Nonnull;
+import org.tikv.common.exception.CodecException;
+
+public class CodecDataInputLittleEndian extends CodecDataInput {
+
+  public CodecDataInputLittleEndian(ByteString data) {
+<span class="nc" id="L25">    super(data);</span>
+<span class="nc" id="L26">  }</span>
+
+  public CodecDataInputLittleEndian(byte[] buf) {
+<span class="nc" id="L29">    super(buf);</span>
+<span class="nc" id="L30">  }</span>
+
+  @Override
+  public short readShort() {
+<span class="nc" id="L34">    int ch1 = readUnsignedByte();</span>
+<span class="nc" id="L35">    int ch2 = readUnsignedByte();</span>
+<span class="nc" id="L36">    return (short) ((ch1) + (ch2 &lt;&lt; 8));</span>
+  }
+
+  @Override
+  public int readUnsignedShort() {
+<span class="nc" id="L41">    int ch1 = readUnsignedByte();</span>
+<span class="nc" id="L42">    int ch2 = readUnsignedByte();</span>
+<span class="nc" id="L43">    return (ch1) + (ch2 &lt;&lt; 8);</span>
+  }
+
+  @Override
+  public char readChar() {
+<span class="nc" id="L48">    int ch1 = readUnsignedByte();</span>
+<span class="nc" id="L49">    int ch2 = readUnsignedByte();</span>
+<span class="nc" id="L50">    return (char) ((ch1) + (ch2 &lt;&lt; 8));</span>
+  }
+
+  @Override
+  public int readInt() {
+<span class="nc" id="L55">    int ch1 = readUnsignedByte();</span>
+<span class="nc" id="L56">    int ch2 = readUnsignedByte();</span>
+<span class="nc" id="L57">    int ch3 = readUnsignedByte();</span>
+<span class="nc" id="L58">    int ch4 = readUnsignedByte();</span>
+<span class="nc" id="L59">    return ((ch1) + (ch2 &lt;&lt; 8) + (ch3 &lt;&lt; 16) + (ch4 &lt;&lt; 24));</span>
+  }
+
+  @Override
+  public long readLong() {
+<span class="nc" id="L64">    byte[] readBuffer = new byte[8];</span>
+<span class="nc" id="L65">    readFully(readBuffer, 0, 8);</span>
+<span class="nc" id="L66">    return ((readBuffer[0] &amp; 0xff)</span>
+        + ((readBuffer[1] &amp; 0xff) &lt;&lt; 8)
+        + ((readBuffer[2] &amp; 0xff) &lt;&lt; 16)
+        + ((long) (readBuffer[3] &amp; 0xff) &lt;&lt; 24)
+        + ((long) (readBuffer[4] &amp; 0xff) &lt;&lt; 32)
+        + ((long) (readBuffer[5] &amp; 0xff) &lt;&lt; 40)
+        + ((long) (readBuffer[6] &amp; 0xff) &lt;&lt; 48)
+        + ((long) (readBuffer[7] &amp; 0xff) &lt;&lt; 56));
+  }
+
+  @Override
+  public float readFloat() {
+<span class="nc" id="L78">    return Float.intBitsToFloat(readInt());</span>
+  }
+
+  @Override
+  public double readDouble() {
+<span class="nc" id="L83">    return Double.longBitsToDouble(readLong());</span>
+  }
+
+  @Override
+  public String readLine() {
+<span class="nc" id="L88">    throw new CodecException(&quot;unimplemented&quot;);</span>
+  }
+
+  @Override
+  @Nonnull
+  public String readUTF() {
+<span class="nc" id="L94">    throw new CodecException(&quot;unimplemented&quot;);</span>
+  }
+
+  public int peekByte() {
+<span class="nc" id="L98">    return super.peekByte();</span>
+  }
+
+  public int currentPos() {
+<span class="nc" id="L102">    return super.currentPos();</span>
+  }
+
+  public void mark(int givenPos) {
+<span class="nc" id="L106">    super.mark(givenPos);</span>
+<span class="nc" id="L107">  }</span>
+
+  public void reset() {
+<span class="nc" id="L110">    super.reset();</span>
+<span class="nc" id="L111">  }</span>
+
+  public boolean eof() {
+<span class="nc" id="L114">    return super.eof();</span>
+  }
+
+  public int size() {
+<span class="nc" id="L118">    return super.size();</span>
+  }
+
+  public int available() {
+<span class="nc" id="L122">    return super.available();</span>
+  }
+
+  public byte[] toByteArray() {
+<span class="nc" id="L126">    return super.toByteArray();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

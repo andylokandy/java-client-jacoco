@@ -1,0 +1,283 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TiChunkColumnVector.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.columnar</a> &gt; <span class="el_source">TiChunkColumnVector.java</span></div><h1>TiChunkColumnVector.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2019 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.columnar;
+
+import com.google.common.primitives.UnsignedLong;
+import java.math.BigDecimal;
+import java.nio.ByteBuffer;
+import java.sql.Timestamp;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import org.joda.time.LocalDate;
+import org.tikv.common.codec.CodecDataInput;
+import org.tikv.common.codec.MyDecimal;
+import org.tikv.common.exception.UnsupportedSyntaxException;
+import org.tikv.common.types.*;
+import org.tikv.common.util.JsonUtils;
+
+/** An implementation of {@link TiColumnVector}. All data is stored in TiDB chunk format. */
+public class TiChunkColumnVector extends TiColumnVector {
+  /** Represents the length of each different data type */
+  private final int fixLength;
+  /** Represents how many nulls in this column vector */
+  private final int numOfNulls;
+  /** Can be used to determine data at rowId is null or not */
+  private final byte[] nullBitMaps;
+  /** Can be used to read non-fixed length data type such as string */
+  private final long[] offsets;
+
+  private final ByteBuffer data;
+
+  public TiChunkColumnVector(
+      DataType dataType,
+      int fixLength,
+      int numOfRows,
+      int numOfNulls,
+      byte[] nullBitMaps,
+      long[] offsets,
+      ByteBuffer data) {
+<span class="nc" id="L52">    super(dataType, numOfRows);</span>
+<span class="nc" id="L53">    this.fixLength = fixLength;</span>
+<span class="nc" id="L54">    this.numOfNulls = numOfNulls;</span>
+<span class="nc" id="L55">    this.nullBitMaps = nullBitMaps;</span>
+<span class="nc" id="L56">    this.data = data;</span>
+<span class="nc" id="L57">    this.offsets = offsets;</span>
+<span class="nc" id="L58">  }</span>
+
+  public final String typeName() {
+<span class="nc" id="L61">    return dataType().getType().name();</span>
+  }
+
+  // TODO: once we switch off_heap mode, we need control memory access pattern.
+<span class="nc" id="L65">  public void free() {}</span>
+
+  /**
+   * Cleans up memory for this column vector. The column vector is not usable after this.
+   *
+   * &lt;p&gt;This overwrites `AutoCloseable.close` to remove the `throws` clause, as column vector is
+   * in-memory and we don't expect any exception to happen during closing.
+   */
+  @Override
+<span class="nc" id="L74">  public void close() {}</span>
+
+  /** Returns true if this column vector contains any null values. */
+  @Override
+  public boolean hasNull() {
+<span class="nc bnc" id="L79" title="All 2 branches missed.">    return numOfNulls &gt; 0;</span>
+  }
+
+  /** Returns the number of nulls in this column vector. */
+  @Override
+  public int numNulls() {
+<span class="nc" id="L85">    return numOfNulls;</span>
+  }
+
+  public boolean isNullAt(int rowId) {
+<span class="nc" id="L89">    int nullByte = this.nullBitMaps[rowId / 8] &amp; 0XFF;</span>
+<span class="nc bnc" id="L90" title="All 2 branches missed.">    return (nullByte &amp; (1 &lt;&lt; (rowId &amp; 7))) == 0;</span>
+  }
+
+  /**
+   * Returns the boolean type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  @Override
+  public boolean getBoolean(int rowId) {
+<span class="nc" id="L99">    return false;</span>
+  }
+
+  public byte getByte(int rowId) {
+<span class="nc" id="L103">    return data.get();</span>
+  }
+
+  public short getShort(int rowId) {
+<span class="nc" id="L107">    return data.getShort();</span>
+  }
+
+  public int getInt(int rowId) {
+<span class="nc" id="L111">    return (int) getLong(rowId);</span>
+  }
+
+  private boolean isDataTimeOrTimestamp() {
+<span class="nc bnc" id="L115" title="All 4 branches missed.">    return type instanceof DateTimeType || type instanceof TimestampType;</span>
+  }
+
+  private long getTime(int rowId) {
+<span class="nc" id="L119">    int startPos = rowId * fixLength;</span>
+<span class="nc" id="L120">    TiCoreTime coreTime = new TiCoreTime(data.getLong(startPos));</span>
+
+<span class="nc" id="L122">    int year = coreTime.getYear();</span>
+<span class="nc" id="L123">    int month = coreTime.getMonth();</span>
+<span class="nc" id="L124">    int day = coreTime.getDay();</span>
+<span class="nc" id="L125">    int hour = coreTime.getHour();</span>
+<span class="nc" id="L126">    int minute = coreTime.getMinute();</span>
+<span class="nc" id="L127">    int second = coreTime.getSecond();</span>
+<span class="nc" id="L128">    long microsecond = coreTime.getMicroSecond();</span>
+<span class="nc" id="L129">    boolean zeroDate = false, zeroTime = false;</span>
+<span class="nc" id="L130">    boolean zeroInDate = false;</span>
+<span class="nc bnc" id="L131" title="All 6 branches missed.">    if (year == 0 &amp;&amp; month == 0 &amp;&amp; day == 0) {</span>
+<span class="nc" id="L132">      zeroDate = true;</span>
+    }
+<span class="nc bnc" id="L134" title="All 6 branches missed.">    if (hour == 0 &amp;&amp; minute == 0 &amp;&amp; microsecond == 0) {</span>
+<span class="nc" id="L135">      zeroTime = true;</span>
+    }
+<span class="nc bnc" id="L137" title="All 4 branches missed.">    if (month == 0 || day == 0) {</span>
+<span class="nc" id="L138">      zeroInDate = true;</span>
+    }
+    // This behavior can be modified using the zeroDateTimeBehavior configuration property.
+    // The allowable values are:
+    //    * exception (the default), which throws an SQLException with an SQLState of S1009.
+    //    * convertToNull, which returns NULL instead of the date.
+    //    * round, which rounds the date to the nearest closest value which is 0001-01-01.
+<span class="nc bnc" id="L145" title="All 4 branches missed.">    if (zeroDate &amp;&amp; zeroTime) {</span>
+<span class="nc" id="L146">      year = 1;</span>
+<span class="nc" id="L147">      month = 1;</span>
+<span class="nc" id="L148">      day = 1;</span>
+<span class="nc bnc" id="L149" title="All 4 branches missed.">    } else if (!zeroDate &amp;&amp; zeroInDate) {</span>
+<span class="nc" id="L150">      String dateString = String.format(&quot;%04d-%02d-%02d&quot;, year, month, day);</span>
+      try {
+<span class="nc" id="L152">        Date d = new SimpleDateFormat(&quot;yyyy-MM-dd&quot;).parse(dateString);</span>
+<span class="nc" id="L153">        year = d.getYear() + 1900;</span>
+<span class="nc" id="L154">        month = d.getMonth() + 1;</span>
+<span class="nc" id="L155">        day = d.getDate();</span>
+<span class="nc" id="L156">      } catch (Exception e) {</span>
+<span class="nc" id="L157">        throw new UnsupportedSyntaxException(&quot;illegal date value: &quot; + dateString);</span>
+      }
+    }
+<span class="nc bnc" id="L160" title="All 2 branches missed.">    if (this.type instanceof DateType) {</span>
+<span class="nc" id="L161">      LocalDate date = new LocalDate(year, month, day);</span>
+<span class="nc" id="L162">      return ((DateType) type).getDays(date);</span>
+<span class="nc bnc" id="L163" title="All 4 branches missed.">    } else if (type instanceof DateTimeType || type instanceof TimestampType) {</span>
+      // only return microsecond from epoch.
+<span class="nc" id="L165">      Timestamp ts =</span>
+<span class="nc" id="L166">          new Timestamp(</span>
+<span class="nc" id="L167">              year - 1900, month - 1, day, hour, minute, second, (int) microsecond * 1000);</span>
+<span class="nc" id="L168">      return ts.getTime() / 1000 * 1000000 + ts.getNanos() / 1000;</span>
+    } else {
+<span class="nc" id="L170">      throw new UnsupportedOperationException(&quot;data, datetime, timestamp are already handled.&quot;);</span>
+    }
+  }
+
+  private long getLongFromBinary(int rowId) {
+<span class="nc" id="L175">    byte[] bytes = getBinary(rowId);</span>
+<span class="nc bnc" id="L176" title="All 2 branches missed.">    if (bytes.length == 0) return 0;</span>
+<span class="nc" id="L177">    long result = 0;</span>
+<span class="nc bnc" id="L178" title="All 2 branches missed.">    for (byte b : bytes) {</span>
+<span class="nc" id="L179">      result = (result &lt;&lt; 8) | b;</span>
+    }
+<span class="nc" id="L181">    return result;</span>
+  }
+
+  public long getLong(int rowId) {
+<span class="nc bnc" id="L185" title="All 2 branches missed.">    if (type instanceof IntegerType) {</span>
+<span class="nc bnc" id="L186" title="All 2 branches missed.">      if (type instanceof BitType) {</span>
+<span class="nc" id="L187">        return getLongFromBinary(rowId);</span>
+      }
+<span class="nc" id="L189">      return data.getLong(rowId * fixLength);</span>
+<span class="nc bnc" id="L190" title="All 2 branches missed.">    } else if (type instanceof AbstractDateTimeType) {</span>
+<span class="nc" id="L191">      return getTime(rowId);</span>
+<span class="nc bnc" id="L192" title="All 2 branches missed.">    } else if (type instanceof TimeType) {</span>
+<span class="nc" id="L193">      return data.getLong(rowId * fixLength);</span>
+    }
+
+<span class="nc" id="L196">    throw new UnsupportedOperationException(&quot;only IntegerType and Time related are supported.&quot;);</span>
+  }
+
+  public float getFloat(int rowId) {
+<span class="nc" id="L200">    return data.getFloat(rowId * fixLength);</span>
+  }
+
+  public double getDouble(int rowId) {
+<span class="nc" id="L204">    return data.getDouble(rowId * fixLength);</span>
+  }
+
+  private MyDecimal getMyDecimal(int rowId) {
+<span class="nc" id="L208">    int startPos = rowId * fixLength;</span>
+<span class="nc" id="L209">    int digitsInt = data.get(startPos);</span>
+<span class="nc" id="L210">    int digitsFrac = data.get(startPos + 1);</span>
+<span class="nc" id="L211">    int resultFrac = data.get(startPos + 2);</span>
+<span class="nc bnc" id="L212" title="All 2 branches missed.">    boolean negative = data.get(startPos + 3) == 1;</span>
+<span class="nc" id="L213">    int[] wordBuf = new int[9];</span>
+<span class="nc bnc" id="L214" title="All 2 branches missed.">    for (int i = 0; i &lt; 9; i++) {</span>
+<span class="nc" id="L215">      wordBuf[i] = data.getInt(startPos + 4 + i * 4);</span>
+    }
+
+<span class="nc" id="L218">    return new MyDecimal(digitsInt, digitsFrac, negative, wordBuf);</span>
+  }
+  /**
+   * Returns the decimal type value for rowId. If the slot for rowId is null, it should return null.
+   */
+  @Override
+  /** digitsInt int8 1 digitsFrac int8 1 resultFrac int8 1 negative bool 1 wordBuf int32[9] 36 */
+  public BigDecimal getDecimal(int rowId, int precision, int scale) {
+    // this is to handle unsigned long to avoid overflow.
+<span class="nc bnc" id="L227" title="All 2 branches missed.">    if (type instanceof IntegerType) {</span>
+<span class="nc" id="L228">      return new BigDecimal(UnsignedLong.fromLongBits(this.getLong(rowId)).bigIntegerValue());</span>
+    }
+    // TODO figure out how to use precision and scale
+<span class="nc" id="L231">    MyDecimal decimal = getMyDecimal(rowId);</span>
+<span class="nc" id="L232">    return decimal.toBigDecimal();</span>
+  }
+
+  private String getEnumString(int rowId) {
+<span class="nc" id="L236">    int start = (int) this.offsets[rowId];</span>
+<span class="nc" id="L237">    long end = this.offsets[rowId + 1];</span>
+<span class="nc" id="L238">    return new String(getRawBinary(start + 8, end));</span>
+  }
+
+  private String getJsonString(int rowId) {
+<span class="nc" id="L242">    long start = this.offsets[rowId];</span>
+<span class="nc" id="L243">    long end = this.offsets[rowId + 1];</span>
+<span class="nc" id="L244">    return JsonUtils.parseJson(new CodecDataInput(getRawBinary(start, end))).toString();</span>
+  }
+
+  public String getUTF8String(int rowId) {
+<span class="nc bnc" id="L248" title="All 2 branches missed.">    if (type instanceof EnumType) {</span>
+<span class="nc" id="L249">      return getEnumString(rowId);</span>
+    }
+
+<span class="nc bnc" id="L252" title="All 2 branches missed.">    if (type instanceof JsonType) {</span>
+<span class="nc" id="L253">      return getJsonString(rowId);</span>
+    }
+
+<span class="nc" id="L256">    return new String(getBinary(rowId));</span>
+  }
+
+  private byte[] getRawBinary(long start, long end) {
+<span class="nc" id="L260">    byte[] buffer = new byte[(int) (end - start)];</span>
+<span class="nc bnc" id="L261" title="All 2 branches missed.">    for (int i = 0; i &lt; (end - start); i++) {</span>
+<span class="nc" id="L262">      buffer[i] = data.get((int) (start + i));</span>
+    }
+<span class="nc" id="L264">    return buffer;</span>
+  }
+
+  /**
+   * Returns the binary type value for rowId. If the slot for rowId is null, it should return null.
+   */
+  @Override
+  public byte[] getBinary(int rowId) {
+<span class="nc" id="L272">    int start = (int) this.offsets[rowId];</span>
+<span class="nc" id="L273">    long end = this.offsets[rowId + 1];</span>
+<span class="nc" id="L274">    return getRawBinary(start, end);</span>
+  }
+
+  /** @return child [[TiColumnVector]] at the given ordinal. */
+  @Override
+  protected TiColumnVector getChild(int ordinal) {
+<span class="nc" id="L280">    throw new UnsupportedOperationException(&quot;TiChunkColumnVector does not support this operation&quot;);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

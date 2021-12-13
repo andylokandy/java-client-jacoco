@@ -1,0 +1,637 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DataType.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.types</a> &gt; <span class="el_source">DataType.java</span></div><h1>DataType.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.types;
+
+import static java.nio.ByteOrder.LITTLE_ENDIAN;
+import static java.util.Objects.requireNonNull;
+import static org.tikv.common.codec.Codec.isNullFlag;
+
+import com.google.common.collect.ImmutableList;
+import com.pingcap.tidb.tipb.ExprType;
+import java.io.Serializable;
+import java.nio.ByteBuffer;
+import java.util.Arrays;
+import java.util.List;
+import org.tikv.common.codec.Codec;
+import org.tikv.common.codec.Codec.BytesCodec;
+import org.tikv.common.codec.CodecDataInput;
+import org.tikv.common.codec.CodecDataOutput;
+import org.tikv.common.columnar.TiChunkColumnVector;
+import org.tikv.common.exception.ConvertNotSupportException;
+import org.tikv.common.exception.ConvertOverflowException;
+import org.tikv.common.exception.TypeException;
+import org.tikv.common.meta.Collation;
+import org.tikv.common.meta.TiColumnInfo;
+import org.tikv.common.meta.TiColumnInfo.InternalTypeHolder;
+
+/** Base Type for encoding and decoding TiDB row information. */
+<span class="pc bpc" id="L41" title="1 of 2 branches missed.">public abstract class DataType implements Serializable {</span>
+
+  // Flag Information for strict mysql type
+  public static final int NotNullFlag = 1; /* Field can't be NULL */
+  public static final int PriKeyFlag = 2; /* Field is part of a primary key */
+  public static final int UniqueKeyFlag = 4; /* Field is part of a unique key */
+  public static final int MultipleKeyFlag = 8; /* Field is part of a key */
+  public static final int BlobFlag = 16; /* Field is a blob */
+  public static final int UnsignedFlag = 32; /* Field is unsigned */
+  public static final int ZerofillFlag = 64; /* Field is zerofill */
+  public static final int BinaryFlag = 128; /* Field is binary   */
+  public static final int EnumFlag = 256; /* Field is an enum */
+  public static final int AutoIncrementFlag = 512; /* Field is an auto increment field */
+  public static final int TimestampFlag = 1024; /* Field is a timestamp */
+  public static final int SetFlag = 2048; /* Field is a set */
+  public static final int NoDefaultValueFlag = 4096; /* Field doesn't have a default value */
+  public static final int OnUpdateNowFlag = 8192; /* Field is set to NOW on UPDATE */
+  public static final int NumFlag = 32768; /* Field is a num (for clients) */
+  public static final long COLUMN_VERSION_FLAG = 1;
+  public static final int UNSPECIFIED_LEN = -1;
+<span class="fc" id="L61">  private static final Long MaxInt8 = (1L &lt;&lt; 7) - 1;</span>
+<span class="fc" id="L62">  private static final Long MinInt8 = -1L &lt;&lt; 7;</span>
+<span class="fc" id="L63">  private static final Long MaxInt16 = (1L &lt;&lt; 15) - 1;</span>
+<span class="fc" id="L64">  private static final Long MinInt16 = -1L &lt;&lt; 15;</span>
+<span class="fc" id="L65">  private static final Long MaxInt24 = (1L &lt;&lt; 23) - 1;</span>
+<span class="fc" id="L66">  private static final Long MinInt24 = -1L &lt;&lt; 23;</span>
+<span class="fc" id="L67">  private static final Long MaxInt32 = (1L &lt;&lt; 31) - 1;</span>
+<span class="fc" id="L68">  private static final Long MinInt32 = -1L &lt;&lt; 31;</span>
+<span class="fc" id="L69">  private static final Long MaxInt64 = (1L &lt;&lt; 63) - 1;</span>
+<span class="fc" id="L70">  private static final Long MinInt64 = -1L &lt;&lt; 63;</span>
+<span class="fc" id="L71">  private static final Long MaxUint8 = (1L &lt;&lt; 8) - 1;</span>
+<span class="fc" id="L72">  private static final Long MaxUint16 = (1L &lt;&lt; 16) - 1;</span>
+<span class="fc" id="L73">  private static final Long MaxUint24 = (1L &lt;&lt; 24) - 1;</span>
+<span class="fc" id="L74">  private static final Long MaxUint32 = (1L &lt;&lt; 32) - 1;</span>
+<span class="fc" id="L75">  private static final Long MaxUint64 = -1L;</span>
+  // MySQL type
+  protected final MySQLType tp;
+  // Not Encode/Decode flag, this is used to strict mysql type
+  // such as not null, timestamp
+  protected final int flag;
+  protected final int decimal;
+  protected final int collation;
+  protected final long length;
+  private final String charset;
+  private final List&lt;String&gt; elems;
+<span class="nc" id="L86">  private final byte[] allNotNullBitMap = initAllNotNullBitMap();</span>
+<span class="nc" id="L87">  private final byte[] readBuffer = new byte[8];</span>
+
+<span class="nc" id="L89">  public DataType(MySQLType tp, int prec, int scale) {</span>
+<span class="nc" id="L90">    this.tp = tp;</span>
+<span class="nc" id="L91">    this.flag = 0;</span>
+<span class="nc" id="L92">    this.elems = ImmutableList.of();</span>
+<span class="nc" id="L93">    this.length = prec;</span>
+<span class="nc" id="L94">    this.decimal = scale;</span>
+<span class="nc" id="L95">    this.charset = &quot;&quot;;</span>
+<span class="nc" id="L96">    this.collation = Collation.DEF_COLLATION_CODE;</span>
+<span class="nc" id="L97">  }</span>
+
+<span class="nc" id="L99">  protected DataType(TiColumnInfo.InternalTypeHolder holder) {</span>
+<span class="nc" id="L100">    this.tp = MySQLType.fromTypeCode(holder.getTp());</span>
+<span class="nc" id="L101">    this.flag = holder.getFlag();</span>
+<span class="nc" id="L102">    this.length = holder.getFlen();</span>
+<span class="nc" id="L103">    this.decimal = holder.getDecimal();</span>
+<span class="nc" id="L104">    this.charset = holder.getCharset();</span>
+<span class="nc" id="L105">    this.collation = Collation.translate(holder.getCollate());</span>
+<span class="nc bnc" id="L106" title="All 2 branches missed.">    this.elems = holder.getElems() == null ? ImmutableList.of() : holder.getElems();</span>
+<span class="nc" id="L107">  }</span>
+
+<span class="nc" id="L109">  protected DataType(MySQLType type) {</span>
+<span class="nc" id="L110">    this.tp = type;</span>
+<span class="nc" id="L111">    this.flag = 0;</span>
+<span class="nc" id="L112">    this.elems = ImmutableList.of();</span>
+<span class="nc" id="L113">    this.length = UNSPECIFIED_LEN;</span>
+<span class="nc" id="L114">    this.decimal = UNSPECIFIED_LEN;</span>
+<span class="nc" id="L115">    this.charset = &quot;&quot;;</span>
+<span class="nc" id="L116">    this.collation = Collation.DEF_COLLATION_CODE;</span>
+<span class="nc" id="L117">  }</span>
+
+<span class="nc" id="L119">  protected DataType(</span>
+      MySQLType type, int flag, int len, int decimal, String charset, int collation) {
+<span class="nc" id="L121">    this.tp = type;</span>
+<span class="nc" id="L122">    this.flag = flag;</span>
+<span class="nc" id="L123">    this.elems = ImmutableList.of();</span>
+<span class="nc" id="L124">    this.length = len;</span>
+<span class="nc" id="L125">    this.decimal = decimal;</span>
+<span class="nc" id="L126">    this.charset = charset;</span>
+<span class="nc" id="L127">    this.collation = collation;</span>
+<span class="nc" id="L128">  }</span>
+
+  public static void encodeMaxValue(CodecDataOutput cdo) {
+<span class="fc" id="L131">    cdo.writeByte(Codec.MAX_FLAG);</span>
+<span class="fc" id="L132">  }</span>
+
+  public static void encodeNull(CodecDataOutput cdo) {
+<span class="fc" id="L135">    cdo.writeByte(Codec.NULL_FLAG);</span>
+<span class="fc" id="L136">  }</span>
+
+  public static void encodeIndex(CodecDataOutput cdo) {
+<span class="fc" id="L139">    cdo.writeByte(Codec.BYTES_FLAG);</span>
+<span class="fc" id="L140">  }</span>
+
+  public static boolean isLengthUnSpecified(long length) {
+<span class="nc bnc" id="L143" title="All 2 branches missed.">    return length == UNSPECIFIED_LEN;</span>
+  }
+
+  public Long signedLowerBound() throws TypeException {
+<span class="nc bnc" id="L147" title="All 6 branches missed.">    switch (this.getType()) {</span>
+      case TypeTiny:
+<span class="nc" id="L149">        return MinInt8;</span>
+      case TypeShort:
+<span class="nc" id="L151">        return MinInt16;</span>
+      case TypeInt24:
+<span class="nc" id="L153">        return MinInt24;</span>
+      case TypeLong:
+<span class="nc" id="L155">        return MinInt32;</span>
+      case TypeLonglong:
+<span class="nc" id="L157">        return MinInt64;</span>
+      default:
+<span class="nc" id="L159">        throw new TypeException(&quot;Signed Lower Bound: Input Type is not a mysql SIGNED type&quot;);</span>
+    }
+  }
+
+  public Long signedUpperBound() throws TypeException {
+<span class="nc bnc" id="L164" title="All 6 branches missed.">    switch (this.getType()) {</span>
+      case TypeTiny:
+<span class="nc" id="L166">        return MaxInt8;</span>
+      case TypeShort:
+<span class="nc" id="L168">        return MaxInt16;</span>
+      case TypeInt24:
+<span class="nc" id="L170">        return MaxInt24;</span>
+      case TypeLong:
+<span class="nc" id="L172">        return MaxInt32;</span>
+      case TypeLonglong:
+<span class="nc" id="L174">        return MaxInt64;</span>
+      default:
+<span class="nc" id="L176">        throw new TypeException(&quot;Signed Upper Bound: Input Type is not a mysql SIGNED type&quot;);</span>
+    }
+  }
+
+  public Long unsignedUpperBound() throws TypeException {
+<span class="nc bnc" id="L181" title="All 6 branches missed.">    switch (this.getType()) {</span>
+      case TypeTiny:
+<span class="nc" id="L183">        return MaxUint8;</span>
+      case TypeShort:
+<span class="nc" id="L185">        return MaxUint16;</span>
+      case TypeInt24:
+<span class="nc" id="L187">        return MaxUint24;</span>
+      case TypeLong:
+<span class="nc" id="L189">        return MaxUint32;</span>
+      case TypeLonglong:
+      case TypeBit:
+      case TypeEnum:
+      case TypeSet:
+<span class="nc" id="L194">        return MaxUint64;</span>
+      default:
+<span class="nc" id="L196">        throw new TypeException(&quot;Unsigned Upper Bound: Input Type is not a mysql UNSIGNED type&quot;);</span>
+    }
+  }
+
+  protected abstract Object decodeNotNull(int flag, CodecDataInput cdi);
+
+  protected Object decodeNotNullForBatchWrite(int flag, CodecDataInput cdi) {
+<span class="nc" id="L203">    return decodeNotNull(flag, cdi);</span>
+  }
+
+  private int getFixLen() {
+<span class="nc bnc" id="L207" title="All 5 branches missed.">    switch (this.getType()) {</span>
+      case TypeFloat:
+<span class="nc" id="L209">        return 4;</span>
+      case TypeTiny:
+      case TypeShort:
+      case TypeInt24:
+      case TypeLong:
+      case TypeLonglong:
+      case TypeDouble:
+      case TypeYear:
+      case TypeDuration:
+      case TypeTimestamp:
+      case TypeDate:
+      case TypeDatetime:
+<span class="nc" id="L221">        return 8;</span>
+      case TypeDecimal:
+<span class="nc" id="L223">        throw new UnsupportedOperationException(</span>
+<span class="nc" id="L224">            &quot;this should not get involved in calculation process&quot;);</span>
+      case TypeNewDecimal:
+<span class="nc" id="L226">        return 40;</span>
+      default:
+<span class="nc" id="L228">        return -1;</span>
+    }
+  }
+
+  private byte[] setAllNotNull(int numNullBitMapBytes) {
+<span class="nc" id="L233">    byte[] nullBitMaps = new byte[numNullBitMapBytes];</span>
+<span class="nc bnc" id="L234" title="All 2 branches missed.">    for (int i = 0; i &lt; numNullBitMapBytes; ) {</span>
+      // allNotNullBitNMap's actual length
+<span class="nc" id="L236">      int numAppendBytes = Math.min(numNullBitMapBytes - i, 128);</span>
+<span class="nc bnc" id="L237" title="All 2 branches missed.">      if (numAppendBytes &gt;= 0)</span>
+<span class="nc" id="L238">        System.arraycopy(allNotNullBitMap, 0, nullBitMaps, i, numAppendBytes);</span>
+<span class="nc" id="L239">      i += numAppendBytes;</span>
+    }
+<span class="nc" id="L241">    return nullBitMaps;</span>
+  }
+
+  private byte[] initAllNotNullBitMap() {
+<span class="nc" id="L245">    byte[] allNotNullBitMap = new byte[128];</span>
+<span class="nc" id="L246">    Arrays.fill(allNotNullBitMap, (byte) 0xFF);</span>
+<span class="nc" id="L247">    return allNotNullBitMap;</span>
+  }
+
+  private int readIntLittleEndian(CodecDataInput cdi) {
+<span class="nc" id="L251">    int ch1 = cdi.readUnsignedByte();</span>
+<span class="nc" id="L252">    int ch2 = cdi.readUnsignedByte();</span>
+<span class="nc" id="L253">    int ch3 = cdi.readUnsignedByte();</span>
+<span class="nc" id="L254">    int ch4 = cdi.readUnsignedByte();</span>
+<span class="nc" id="L255">    return ((ch1) + (ch2 &lt;&lt; 8) + (ch3 &lt;&lt; 16) + (ch4 &lt;&lt; 24));</span>
+  }
+
+  private long readLongLittleEndian(CodecDataInput cdi) {
+<span class="nc" id="L259">    cdi.readFully(readBuffer, 0, 8);</span>
+<span class="nc" id="L260">    return ((readBuffer[0] &amp; 255)</span>
+<span class="nc" id="L261">        + ((readBuffer[1] &amp; 255) &lt;&lt; 8)</span>
+<span class="nc" id="L262">        + ((readBuffer[2] &amp; 255) &lt;&lt; 16)</span>
+<span class="nc" id="L263">        + ((readBuffer[3] &amp; 255) &lt;&lt; 24)</span>
+<span class="nc" id="L264">        + ((long) (readBuffer[4] &amp; 255) &lt;&lt; 32)</span>
+<span class="nc" id="L265">        + ((long) (readBuffer[5] &amp; 255) &lt;&lt; 40)</span>
+<span class="nc" id="L266">        + ((long) (readBuffer[6] &amp; 255) &lt;&lt; 48)</span>
+<span class="nc" id="L267">        + ((long) (readBuffer[7] &amp; 255) &lt;&lt; 56));</span>
+  }
+
+  public boolean isSameCatalog(DataType other) {
+<span class="nc" id="L271">    return false;</span>
+  }
+
+  // all data should be read in little endian.
+  public TiChunkColumnVector decodeChunkColumn(CodecDataInput cdi) {
+<span class="nc" id="L276">    int numRows = readIntLittleEndian(cdi);</span>
+<span class="nc" id="L277">    int numNulls = readIntLittleEndian(cdi);</span>
+<span class="nc bnc" id="L278" title="All 6 branches missed.">    assert (numRows &gt;= 0) &amp;&amp; (numNulls &gt;= 0);</span>
+<span class="nc" id="L279">    int numNullBitmapBytes = (numRows + 7) / 8;</span>
+<span class="nc" id="L280">    byte[] nullBitMaps = new byte[numNullBitmapBytes];</span>
+<span class="nc bnc" id="L281" title="All 2 branches missed.">    if (numNulls &gt; 0) {</span>
+<span class="nc" id="L282">      cdi.readFully(nullBitMaps);</span>
+<span class="nc" id="L283">    } else {</span>
+<span class="nc" id="L284">      nullBitMaps = setAllNotNull(numNullBitmapBytes);</span>
+    }
+
+<span class="nc" id="L287">    int numFixedBytes = getFixLen();</span>
+<span class="nc" id="L288">    int numDataBytes = numFixedBytes * numRows;</span>
+
+    int numOffsets;
+<span class="nc" id="L291">    long[] offsets = null;</span>
+    // handle var element
+<span class="nc bnc" id="L293" title="All 2 branches missed.">    if (numFixedBytes == -1) {</span>
+<span class="nc" id="L294">      numOffsets = numRows + 1;</span>
+      // read numOffsets * 8 bytes array
+      // and convert bytes to int64
+<span class="nc" id="L297">      offsets = new long[numOffsets];</span>
+<span class="nc bnc" id="L298" title="All 2 branches missed.">      for (int i = 0; i &lt; numOffsets; i++) {</span>
+<span class="nc" id="L299">        offsets[i] = readLongLittleEndian(cdi);</span>
+      }
+<span class="nc" id="L301">      numDataBytes = (int) offsets[numRows];</span>
+    }
+
+    // TODO this costs a lot, we need to find a way to avoid.
+<span class="nc" id="L305">    byte[] dataBuffer = new byte[numDataBytes];</span>
+<span class="nc" id="L306">    cdi.readFully(dataBuffer);</span>
+<span class="nc" id="L307">    ByteBuffer buffer = ByteBuffer.wrap(dataBuffer);</span>
+<span class="nc" id="L308">    buffer.order(LITTLE_ENDIAN);</span>
+<span class="nc" id="L309">    return new TiChunkColumnVector(</span>
+<span class="nc" id="L310">        this, numFixedBytes, numRows, numNulls, nullBitMaps, offsets, buffer);</span>
+  }
+
+  /**
+   * decode value from row which is nothing.
+   *
+   * @param cdi source of data.
+   */
+  public Object decode(CodecDataInput cdi) {
+<span class="nc" id="L319">    int flag = cdi.readUnsignedByte();</span>
+<span class="nc bnc" id="L320" title="All 2 branches missed.">    if (isNullFlag(flag)) {</span>
+<span class="nc" id="L321">      return null;</span>
+    }
+<span class="nc" id="L323">    return decodeNotNull(flag, cdi);</span>
+  }
+
+  public Object decodeForBatchWrite(CodecDataInput cdi) {
+<span class="nc" id="L327">    int flag = cdi.readUnsignedByte();</span>
+<span class="nc bnc" id="L328" title="All 2 branches missed.">    if (isNullFlag(flag)) {</span>
+<span class="nc" id="L329">      return null;</span>
+    }
+<span class="nc" id="L331">    return decodeNotNullForBatchWrite(flag, cdi);</span>
+  }
+
+  public boolean isNextNull(CodecDataInput cdi) {
+<span class="nc" id="L335">    return isNullFlag(cdi.peekByte());</span>
+  }
+
+  /**
+   * encode a Row to CodecDataOutput
+   *
+   * @param cdo destination of data.
+   * @param encodeType Key or Value.
+   * @param value value to be encoded.
+   */
+  public void encode(CodecDataOutput cdo, EncodeType encodeType, Object value) {
+<span class="nc" id="L346">    requireNonNull(cdo, &quot;cdo is null&quot;);</span>
+<span class="nc bnc" id="L347" title="All 2 branches missed.">    if (value == null) {</span>
+<span class="nc bnc" id="L348" title="All 2 branches missed.">      if (encodeType != EncodeType.PROTO) {</span>
+<span class="nc" id="L349">        encodeNull(cdo);</span>
+      }
+<span class="nc" id="L351">    } else {</span>
+<span class="nc bnc" id="L352" title="All 4 branches missed.">      switch (encodeType) {</span>
+        case KEY:
+<span class="nc" id="L354">          encodeKey(cdo, value);</span>
+<span class="nc" id="L355">          return;</span>
+        case VALUE:
+<span class="nc" id="L357">          encodeValue(cdo, value);</span>
+<span class="nc" id="L358">          return;</span>
+        case PROTO:
+<span class="nc" id="L360">          encodeProto(cdo, value);</span>
+<span class="nc" id="L361">          return;</span>
+        default:
+<span class="nc" id="L363">          throw new TypeException(&quot;Unknown encoding type &quot; + encodeType);</span>
+      }
+    }
+<span class="nc" id="L366">  }</span>
+
+  /**
+   * Convert from Spark SQL Supported Java Type to TiDB Type
+   *
+   * &lt;p&gt;1. data convert, e.g. Integer -&gt; SHORT
+   *
+   * &lt;p&gt;2. check overflow, e.g. write 1000 to short
+   *
+   * &lt;p&gt;Spark SQL only support following types:
+   *
+   * &lt;p&gt;1. BooleanType -&gt; java.lang.Boolean 2. ByteType -&gt; java.lang.Byte 3. ShortType -&gt;
+   * java.lang.Short 4. IntegerType -&gt; java.lang.Integer 5. LongType -&gt; java.lang.Long 6. FloatType
+   * -&gt; java.lang.Float 7. DoubleType -&gt; java.lang.Double 8. StringType -&gt; String 9. DecimalType -&gt;
+   * java.math.BigDecimal 10. DateType -&gt; java.sql.Date 11. TimestampType -&gt; java.sql.Timestamp 12.
+   * BinaryType -&gt; byte array 13. ArrayType -&gt; scala.collection.Seq (use getList for java.util.List)
+   * 14. MapType -&gt; scala.collection.Map (use getJavaMap for java.util.Map) 15. StructType -&gt;
+   * org.apache.spark.sql.Row
+   *
+   * @param value
+   * @return
+   * @throws ConvertNotSupportException
+   * @throws ConvertOverflowException
+   */
+  public Object convertToTiDBType(Object value)
+      throws ConvertNotSupportException, ConvertOverflowException {
+<span class="nc bnc" id="L392" title="All 2 branches missed.">    if (value == null) {</span>
+<span class="nc" id="L393">      return null;</span>
+    } else {
+<span class="nc" id="L395">      return doConvertToTiDBType(value);</span>
+    }
+  }
+
+  protected abstract Object doConvertToTiDBType(Object value)
+      throws ConvertNotSupportException, ConvertOverflowException;
+
+  protected abstract void encodeKey(CodecDataOutput cdo, Object value);
+
+  protected abstract void encodeValue(CodecDataOutput cdo, Object value);
+
+  protected abstract void encodeProto(CodecDataOutput cdo, Object value);
+
+  public abstract String getName();
+
+  /**
+   * encode a Key's prefix to CodecDataOutput
+   *
+   * @param cdo destination of data.
+   * @param value value to be encoded.
+   * @param prefixLength specifies prefix length of value to be encoded. When prefixLength is
+   *     DataType.UNSPECIFIED_LEN, encode full length of value.
+   */
+  public void encodeKey(CodecDataOutput cdo, Object value, int prefixLength) {
+<span class="nc" id="L419">    requireNonNull(cdo, &quot;cdo is null&quot;);</span>
+<span class="nc bnc" id="L420" title="All 2 branches missed.">    if (value == null) {</span>
+<span class="nc" id="L421">      encodeNull(cdo);</span>
+<span class="nc bnc" id="L422" title="All 2 branches missed.">    } else if (DataType.isLengthUnSpecified(prefixLength)) {</span>
+<span class="nc" id="L423">      encodeKey(cdo, value);</span>
+<span class="nc bnc" id="L424" title="All 2 branches missed.">    } else if (isPrefixIndexSupported()) {</span>
+      byte[] bytes;
+      // When charset is utf8/utf8mb4, prefix length should be the number of utf8 characters
+      // rather than length of its encoded byte value.
+<span class="nc bnc" id="L428" title="All 4 branches missed.">      if (getCharset().equalsIgnoreCase(&quot;utf8&quot;) || getCharset().equalsIgnoreCase(&quot;utf8mb4&quot;)) {</span>
+<span class="nc" id="L429">        bytes = Converter.convertUtf8ToBytes(value, prefixLength);</span>
+<span class="nc" id="L430">      } else {</span>
+<span class="nc" id="L431">        bytes = Converter.convertToBytes(value, prefixLength);</span>
+      }
+<span class="nc" id="L433">      BytesCodec.writeBytesFully(cdo, bytes);</span>
+<span class="nc" id="L434">    } else {</span>
+<span class="nc" id="L435">      throw new TypeException(&quot;Data type can not encode with prefix&quot;);</span>
+    }
+<span class="nc" id="L437">  }</span>
+
+  /**
+   * Indicates whether a data type supports prefix index
+   *
+   * @return returns true iff the type is BytesType
+   */
+  protected boolean isPrefixIndexSupported() {
+<span class="nc" id="L445">    return false;</span>
+  }
+
+  public abstract ExprType getProtoExprType();
+
+  /**
+   * get origin default value
+   *
+   * @param value a int value represents in string
+   * @return a int object
+   */
+  public abstract Object getOriginDefaultValueNonNull(String value, long version);
+
+  /** @return true if this type can be pushed down to TiKV or TiFLASH */
+  public boolean isPushDownSupported() {
+<span class="nc" id="L460">    return true;</span>
+  }
+
+  public Object getOriginDefaultValue(String value, long version) {
+<span class="nc bnc" id="L464" title="All 2 branches missed.">    if (value == null) return null;</span>
+<span class="nc" id="L465">    return getOriginDefaultValueNonNull(value, version);</span>
+  }
+
+  public int getCollationCode() {
+<span class="nc" id="L469">    return collation;</span>
+  }
+
+  public long getLength() {
+<span class="nc" id="L473">    return length;</span>
+  }
+
+  long getDefaultDataSize() {
+<span class="nc" id="L477">    return tp.getDefaultSize();</span>
+  }
+
+  long getPrefixSize() {
+<span class="nc" id="L481">    return tp.getPrefixSize();</span>
+  }
+
+  public int getDefaultLength() {
+<span class="nc" id="L485">    return tp.getDefaultLength();</span>
+  }
+
+  /**
+   * Size of data type
+   *
+   * @return size
+   */
+  public long getSize() {
+    // TiDB types are prepended with a type flag.
+<span class="nc" id="L495">    return getPrefixSize() + getDefaultDataSize();</span>
+  }
+
+  public boolean isLengthUnSpecified() {
+<span class="nc" id="L499">    return DataType.isLengthUnSpecified(length);</span>
+  }
+
+  public boolean isDecimalUnSpecified() {
+<span class="nc" id="L503">    return DataType.isLengthUnSpecified(decimal);</span>
+  }
+
+  public int getDecimal() {
+<span class="nc" id="L507">    return decimal;</span>
+  }
+
+  public int getFlag() {
+<span class="nc" id="L511">    return flag;</span>
+  }
+
+  public List&lt;String&gt; getElems() {
+<span class="nc" id="L515">    return this.elems;</span>
+  }
+
+  public int getTypeCode() {
+<span class="nc" id="L519">    return tp.getTypeCode();</span>
+  }
+
+  public MySQLType getType() {
+<span class="nc" id="L523">    return tp;</span>
+  }
+
+  public String getCharset() {
+<span class="nc" id="L527">    return charset;</span>
+  }
+
+  public boolean isPrimaryKey() {
+<span class="nc bnc" id="L531" title="All 2 branches missed.">    return (flag &amp; PriKeyFlag) &gt; 0;</span>
+  }
+
+  public boolean isNotNull() {
+<span class="nc bnc" id="L535" title="All 2 branches missed.">    return (flag &amp; NotNullFlag) &gt; 0;</span>
+  }
+
+  public boolean isNoDefault() {
+<span class="nc bnc" id="L539" title="All 2 branches missed.">    return (flag &amp; NoDefaultValueFlag) &gt; 0;</span>
+  }
+
+  public boolean isAutoIncrement() {
+<span class="nc bnc" id="L543" title="All 2 branches missed.">    return (flag &amp; AutoIncrementFlag) &gt; 0;</span>
+  }
+
+  public boolean isZeroFill() {
+<span class="nc bnc" id="L547" title="All 2 branches missed.">    return (flag &amp; ZerofillFlag) &gt; 0;</span>
+  }
+
+  public boolean isBinary() {
+<span class="nc bnc" id="L551" title="All 2 branches missed.">    return (flag &amp; BinaryFlag) &gt; 0;</span>
+  }
+
+  public boolean isUniqueKey() {
+<span class="nc bnc" id="L555" title="All 2 branches missed.">    return (flag &amp; UniqueKeyFlag) &gt; 0;</span>
+  }
+
+  public boolean isMultiKey() {
+<span class="nc bnc" id="L559" title="All 2 branches missed.">    return (flag &amp; MultipleKeyFlag) &gt; 0;</span>
+  }
+
+  public boolean isTimestamp() {
+<span class="nc bnc" id="L563" title="All 2 branches missed.">    return (flag &amp; TimestampFlag) &gt; 0;</span>
+  }
+
+  public boolean isOnUpdateNow() {
+<span class="nc bnc" id="L567" title="All 2 branches missed.">    return (flag &amp; OnUpdateNowFlag) &gt; 0;</span>
+  }
+
+  public boolean isBlob() {
+<span class="nc bnc" id="L571" title="All 2 branches missed.">    return (flag &amp; BlobFlag) &gt; 0;</span>
+  }
+
+  public boolean isEnum() {
+<span class="nc bnc" id="L575" title="All 2 branches missed.">    return (flag &amp; EnumFlag) &gt; 0;</span>
+  }
+
+  public boolean isSet() {
+<span class="nc bnc" id="L579" title="All 2 branches missed.">    return (flag &amp; SetFlag) &gt; 0;</span>
+  }
+
+  public boolean isNum() {
+<span class="nc bnc" id="L583" title="All 2 branches missed.">    return (flag &amp; NumFlag) &gt; 0;</span>
+  }
+
+  public boolean isUnsigned() {
+<span class="nc bnc" id="L587" title="All 2 branches missed.">    return (flag &amp; UnsignedFlag) &gt; 0;</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L592">    return String.format(&quot;%s:%s&quot;, this.getClass().getSimpleName(), getType());</span>
+  }
+
+  @Override
+  public boolean equals(Object other) {
+<span class="nc bnc" id="L597" title="All 2 branches missed.">    if (other instanceof DataType) {</span>
+<span class="nc" id="L598">      DataType otherType = (DataType) other;</span>
+      // tp implies Class is the same
+      // and that might not always hold
+      // TODO: reconsider design here
+<span class="nc bnc" id="L602" title="All 2 branches missed.">      return tp == otherType.tp</span>
+<span class="nc bnc" id="L603" title="All 2 branches missed.">          &amp;&amp; flag == otherType.flag</span>
+<span class="nc bnc" id="L604" title="All 2 branches missed.">          &amp;&amp; decimal == otherType.decimal</span>
+<span class="nc bnc" id="L605" title="All 4 branches missed.">          &amp;&amp; (charset != null &amp;&amp; charset.equals(otherType.charset))</span>
+<span class="nc bnc" id="L606" title="All 2 branches missed.">          &amp;&amp; collation == otherType.collation</span>
+<span class="nc bnc" id="L607" title="All 2 branches missed.">          &amp;&amp; length == otherType.length</span>
+<span class="nc bnc" id="L608" title="All 2 branches missed.">          &amp;&amp; elems.equals(otherType.elems);</span>
+    }
+<span class="nc" id="L610">    return false;</span>
+  }
+
+  @Override
+  public int hashCode() {
+<span class="nc" id="L615">    return (int)</span>
+<span class="nc" id="L616">        (31</span>
+<span class="nc bnc" id="L617" title="All 2 branches missed.">            * (tp.getTypeCode() == 0 ? 1 : tp.getTypeCode())</span>
+<span class="nc bnc" id="L618" title="All 2 branches missed.">            * (flag == 0 ? 1 : flag)</span>
+<span class="nc bnc" id="L619" title="All 2 branches missed.">            * (decimal == 0 ? 1 : decimal)</span>
+<span class="nc bnc" id="L620" title="All 2 branches missed.">            * (charset == null ? 1 : charset.hashCode())</span>
+<span class="nc bnc" id="L621" title="All 2 branches missed.">            * (collation == 0 ? 1 : collation)</span>
+<span class="nc bnc" id="L622" title="All 2 branches missed.">            * (length == 0 ? 1 : length)</span>
+<span class="nc" id="L623">            * (elems.hashCode()));</span>
+  }
+
+  public InternalTypeHolder toTypeHolder() {
+<span class="nc" id="L627">    return new InternalTypeHolder(</span>
+<span class="nc" id="L628">        getTypeCode(), flag, length, decimal, charset, Collation.translate(collation), elems);</span>
+  }
+
+<span class="nc" id="L631">  public enum EncodeType {</span>
+<span class="nc" id="L632">    KEY,</span>
+<span class="nc" id="L633">    VALUE,</span>
+<span class="nc" id="L634">    PROTO</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

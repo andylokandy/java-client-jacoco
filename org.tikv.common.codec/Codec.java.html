@@ -1,0 +1,834 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Codec.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.codec</a> &gt; <span class="el_source">Codec.java</span></div><h1>Codec.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.codec;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import gnu.trove.list.array.TIntArrayList;
+import java.math.BigDecimal;
+import java.sql.Date;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import org.joda.time.DateTime;
+import org.joda.time.DateTimeZone;
+import org.joda.time.IllegalInstantException;
+import org.joda.time.LocalDate;
+import org.joda.time.LocalDateTime;
+import org.tikv.common.ExtendedDateTime;
+import org.tikv.common.exception.ConvertOverflowException;
+import org.tikv.common.exception.InvalidCodecFormatException;
+import org.tikv.common.exception.TypeException;
+import org.tikv.common.exception.UnsupportedSyntaxException;
+
+<span class="nc" id="L38">public class Codec {</span>
+
+  public static final int NULL_FLAG = 0;
+  public static final int BYTES_FLAG = 1;
+  public static final int COMPACT_BYTES_FLAG = 2;
+  public static final int INT_FLAG = 3;
+  public static final int UINT_FLAG = 4;
+  public static final int FLOATING_FLAG = 5;
+  public static final int DECIMAL_FLAG = 6;
+  public static final int DURATION_FLAG = 7;
+  public static final int VARINT_FLAG = 8;
+  public static final int UVARINT_FLAG = 9;
+  public static final int JSON_FLAG = 10;
+  public static final int MAX_FLAG = 250;
+  public static final long SIGN_MASK = ~Long.MAX_VALUE;
+
+  public static boolean isNullFlag(int flag) {
+<span class="nc bnc" id="L55" title="All 2 branches missed.">    return flag == NULL_FLAG;</span>
+  }
+
+<span class="nc" id="L58">  public static class IntegerCodec {</span>
+
+    private static long flipSignBit(long v) {
+<span class="fc" id="L61">      return v ^ SIGN_MASK;</span>
+    }
+
+    /**
+     * Encoding a long value to byte buffer with type flag at the beginning If we are encoding a
+     * key, the comparable is must true; otherwise the comparable is false.
+     *
+     * @param cdo For outputting data in bytes array
+     * @param lVal The data to encode
+     * @param comparable If the output should be memory comparable without decoding. In real TiDB
+     *     use case, if used in Key encoding, we output memory comparable format otherwise not
+     */
+    public static void writeLongFully(CodecDataOutput cdo, long lVal, boolean comparable) {
+<span class="fc bfc" id="L74" title="All 2 branches covered.">      if (comparable) {</span>
+<span class="fc" id="L75">        cdo.writeByte(INT_FLAG);</span>
+<span class="fc" id="L76">        writeLong(cdo, lVal);</span>
+<span class="fc" id="L77">      } else {</span>
+<span class="fc" id="L78">        cdo.writeByte(VARINT_FLAG);</span>
+<span class="fc" id="L79">        writeVarLong(cdo, lVal);</span>
+      }
+<span class="fc" id="L81">    }</span>
+
+    /**
+     * Encoding a unsigned long value to byte buffer with type flag at the beginning
+     *
+     * @param cdo For outputting data in bytes array
+     * @param lVal The data to encode, note that long is treated as unsigned
+     * @param comparable If the output should be memory comparable without decoding. In real TiDB
+     *     use case, if used in Key encoding, we output memory comparable format otherwise not
+     */
+    public static void writeULongFully(CodecDataOutput cdo, long lVal, boolean comparable) {
+<span class="fc bfc" id="L92" title="All 2 branches covered.">      if (comparable) {</span>
+<span class="fc" id="L93">        cdo.writeByte(UINT_FLAG);</span>
+<span class="fc" id="L94">        writeULong(cdo, lVal);</span>
+<span class="fc" id="L95">      } else {</span>
+<span class="fc" id="L96">        cdo.writeByte(UVARINT_FLAG);</span>
+<span class="fc" id="L97">        writeUVarLong(cdo, lVal);</span>
+      }
+<span class="fc" id="L99">    }</span>
+
+    /**
+     * Encode Data as duration, the same as go's binary.PutUvarint
+     *
+     * @param cdo For outputting data in bytes array
+     * @param value The data to encode
+     */
+    public static void writeDuration(CodecDataOutput cdo, long value) {
+<span class="nc" id="L108">      cdo.writeByte(DURATION_FLAG);</span>
+<span class="nc" id="L109">      writeLong(cdo, value);</span>
+<span class="nc" id="L110">    }</span>
+
+    /**
+     * Encode long value without type flag at the beginning The signed bit is flipped for memory
+     * comparable purpose
+     *
+     * @param cdo For outputting data in bytes array
+     * @param lVal The data to encode
+     */
+    public static void writeLong(CodecDataOutput cdo, long lVal) {
+<span class="fc" id="L120">      cdo.writeLong(flipSignBit(lVal));</span>
+<span class="fc" id="L121">    }</span>
+
+    /**
+     * Encode long value without type flag at the beginning
+     *
+     * @param cdo For outputting data in bytes array
+     * @param lVal The data to encode
+     */
+    public static void writeULong(CodecDataOutput cdo, long lVal) {
+<span class="fc" id="L130">      cdo.writeLong(lVal);</span>
+<span class="fc" id="L131">    }</span>
+
+    /**
+     * Encode var-length long, same as go's binary.PutVarint
+     *
+     * @param cdo For outputting data in bytes array
+     * @param value The data to encode
+     */
+    static void writeVarLong(CodecDataOutput cdo, long value) {
+<span class="fc" id="L140">      long ux = value &lt;&lt; 1;</span>
+<span class="pc bpc" id="L141" title="1 of 2 branches missed.">      if (value &lt; 0) {</span>
+<span class="fc" id="L142">        ux = ~ux;</span>
+      }
+<span class="fc" id="L144">      writeUVarLong(cdo, ux);</span>
+<span class="fc" id="L145">    }</span>
+
+    /**
+     * Encode Data as var-length long, the same as go's binary.PutUvarint
+     *
+     * @param cdo For outputting data in bytes array
+     * @param value The data to encode
+     */
+    static void writeUVarLong(CodecDataOutput cdo, long value) {
+      // value is assumed to be an unsigned value.
+<span class="fc bfc" id="L155" title="All 2 branches covered.">      while (Long.compareUnsigned(value, 0x80) &gt;= 0) {</span>
+<span class="fc" id="L156">        cdo.writeByte((byte) value | 0x80);</span>
+<span class="fc" id="L157">        value &gt;&gt;&gt;= 7;</span>
+      }
+<span class="fc" id="L159">      cdo.writeByte((byte) value);</span>
+<span class="fc" id="L160">    }</span>
+
+    /**
+     * Decode as signed long, assuming encoder flips signed bit for memory comparable
+     *
+     * @param cdi source of data
+     * @return decoded signed long value
+     */
+    public static long readLong(CodecDataInput cdi) {
+<span class="fc" id="L169">      return flipSignBit(cdi.readLong());</span>
+    }
+
+    /**
+     * Decode as unsigned long without any binary manipulation
+     *
+     * @param cdi source of data
+     * @return decoded unsigned long value
+     */
+    public static long readULong(CodecDataInput cdi) {
+<span class="fc" id="L179">      return cdi.readLong();</span>
+    }
+
+    /**
+     * Decode as var-length long, the same as go's binary.Varint
+     *
+     * @param cdi source of data
+     * @return decoded signed long value
+     */
+    public static long readVarLong(CodecDataInput cdi) {
+<span class="fc" id="L189">      long ux = readUVarLong(cdi);</span>
+<span class="fc" id="L190">      long x = ux &gt;&gt;&gt; 1;</span>
+<span class="pc bpc" id="L191" title="1 of 2 branches missed.">      if ((ux &amp; 1) != 0) {</span>
+<span class="fc" id="L192">        x = ~x;</span>
+      }
+<span class="fc" id="L194">      return x;</span>
+    }
+
+    /**
+     * Decode as var-length unsigned long, the same as go's binary.Uvarint
+     *
+     * @param cdi source of data
+     * @return decoded unsigned long value
+     */
+    public static long readUVarLong(CodecDataInput cdi) {
+<span class="fc" id="L204">      long x = 0;</span>
+<span class="fc" id="L205">      int s = 0;</span>
+<span class="fc bfc" id="L206" title="All 2 branches covered.">      for (int i = 0; !cdi.eof(); i++) {</span>
+<span class="fc" id="L207">        long b = cdi.readUnsignedByte();</span>
+<span class="fc bfc" id="L208" title="All 2 branches covered.">        if (Long.compareUnsigned(b, 0x80) &lt; 0) {</span>
+<span class="fc bfc" id="L209" title="All 6 branches covered.">          if (i &gt; 9 || i == 9 &amp;&amp; b &gt; 1) {</span>
+<span class="fc" id="L210">            throw new InvalidCodecFormatException(&quot;readUVarLong overflow&quot;);</span>
+          }
+<span class="fc" id="L212">          return x | b &lt;&lt; s;</span>
+        }
+<span class="fc" id="L214">        x |= (b &amp; 0x7f) &lt;&lt; s;</span>
+<span class="fc" id="L215">        s += 7;</span>
+      }
+<span class="fc" id="L217">      throw new InvalidCodecFormatException(&quot;readUVarLong encountered unfinished data&quot;);</span>
+    }
+  }
+
+<span class="nc" id="L221">  public static class BytesCodec {</span>
+
+    private static final int GRP_SIZE = 8;
+<span class="fc" id="L224">    private static final byte[] PADS = new byte[GRP_SIZE];</span>
+    private static final int MARKER = 0xFF;
+<span class="fc" id="L226">    private static final byte PAD = (byte) 0x0;</span>
+
+    public static void writeBytesRaw(CodecDataOutput cdo, byte[] data) {
+<span class="fc" id="L229">      cdo.write(data);</span>
+<span class="fc" id="L230">    }</span>
+
+    public static void writeBytesFully(CodecDataOutput cdo, byte[] data) {
+<span class="nc" id="L233">      cdo.write(Codec.BYTES_FLAG);</span>
+<span class="nc" id="L234">      BytesCodec.writeBytes(cdo, data);</span>
+<span class="nc" id="L235">    }</span>
+
+    // writeBytes guarantees the encoded value is in ascending order for comparison,
+    // encoding with the following rule:
+    //  [group1][marker1]...[groupN][markerN]
+    //  group is 8 bytes slice which is padding with 0.
+    //  marker is `0xFF - padding 0 count`
+    // For example:
+    //   [] -&gt; [0, 0, 0, 0, 0, 0, 0, 0, 247]
+    //   [1, 2, 3] -&gt; [1, 2, 3, 0, 0, 0, 0, 0, 250]
+    //   [1, 2, 3, 0] -&gt; [1, 2, 3, 0, 0, 0, 0, 0, 251]
+    //   [1, 2, 3, 4, 5, 6, 7, 8] -&gt; [1, 2, 3, 4, 5, 6, 7, 8, 255, 0, 0, 0, 0, 0, 0, 0, 0, 247]
+    // Refer: https://github.com/facebook/mysql-5.6/wiki/MyRocks-record-format#memcomparable-format
+    public static void writeBytes(CodecDataOutput cdo, byte[] data) {
+<span class="fc bfc" id="L249" title="All 2 branches covered.">      for (int i = 0; i &lt;= data.length; i += GRP_SIZE) {</span>
+<span class="fc" id="L250">        int remain = data.length - i;</span>
+<span class="fc" id="L251">        int padCount = 0;</span>
+<span class="fc bfc" id="L252" title="All 2 branches covered.">        if (remain &gt;= GRP_SIZE) {</span>
+<span class="fc" id="L253">          cdo.write(data, i, GRP_SIZE);</span>
+<span class="fc" id="L254">        } else {</span>
+<span class="fc" id="L255">          padCount = GRP_SIZE - remain;</span>
+<span class="fc" id="L256">          cdo.write(data, i, data.length - i);</span>
+<span class="fc" id="L257">          cdo.write(PADS, 0, padCount);</span>
+        }
+<span class="fc" id="L259">        cdo.write((byte) (MARKER - padCount));</span>
+      }
+<span class="fc" id="L261">    }</span>
+
+    public static void writeCompactBytesFully(CodecDataOutput cdo, byte[] data) {
+<span class="nc" id="L264">      cdo.write(Codec.COMPACT_BYTES_FLAG);</span>
+<span class="nc" id="L265">      writeCompactBytes(cdo, data);</span>
+<span class="nc" id="L266">    }</span>
+
+    /**
+     * Write bytes in a compact form.
+     *
+     * @param cdo destination of data.
+     * @param data is value that will be written into cdo.
+     */
+    static void writeCompactBytes(CodecDataOutput cdo, byte[] data) {
+<span class="nc" id="L275">      int length = data.length;</span>
+<span class="nc" id="L276">      IntegerCodec.writeVarLong(cdo, length);</span>
+<span class="nc" id="L277">      cdo.write(data);</span>
+<span class="nc" id="L278">    }</span>
+
+    // readBytes decodes bytes which is encoded by EncodeBytes before,
+    // returns the leftover bytes and decoded value if no error.
+    public static byte[] readBytes(CodecDataInput cdi) {
+<span class="fc" id="L283">      return readBytes(cdi, false);</span>
+    }
+
+    public static byte[] readCompactBytes(CodecDataInput cdi) {
+<span class="nc" id="L287">      int size = (int) IntegerCodec.readVarLong(cdi);</span>
+<span class="nc" id="L288">      return readCompactBytes(cdi, size);</span>
+    }
+
+    private static byte[] readCompactBytes(CodecDataInput cdi, int size) {
+<span class="nc" id="L292">      byte[] data = new byte[size];</span>
+<span class="nc bnc" id="L293" title="All 2 branches missed.">      for (int i = 0; i &lt; size; i++) {</span>
+<span class="nc" id="L294">        data[i] = cdi.readByte();</span>
+      }
+<span class="nc" id="L296">      return data;</span>
+    }
+
+    private static byte[] readBytes(CodecDataInput cdi, boolean reverse) {
+<span class="fc" id="L300">      CodecDataOutput cdo = new CodecDataOutput();</span>
+      while (true) {
+<span class="fc" id="L302">        byte[] groupBytes = new byte[GRP_SIZE + 1];</span>
+
+<span class="fc" id="L304">        cdi.readFully(groupBytes, 0, GRP_SIZE + 1);</span>
+<span class="fc" id="L305">        byte[] group = Arrays.copyOfRange(groupBytes, 0, GRP_SIZE);</span>
+
+        int padCount;
+<span class="fc" id="L308">        int marker = Byte.toUnsignedInt(groupBytes[GRP_SIZE]);</span>
+
+<span class="pc bpc" id="L310" title="1 of 2 branches missed.">        if (reverse) {</span>
+<span class="nc" id="L311">          padCount = marker;</span>
+<span class="nc" id="L312">        } else {</span>
+<span class="fc" id="L313">          padCount = MARKER - marker;</span>
+        }
+
+<span class="pc bpc" id="L316" title="1 of 2 branches missed.">        checkArgument(padCount &lt;= GRP_SIZE);</span>
+<span class="fc" id="L317">        int realGroupSize = GRP_SIZE - padCount;</span>
+<span class="fc" id="L318">        cdo.write(group, 0, realGroupSize);</span>
+
+<span class="fc bfc" id="L320" title="All 2 branches covered.">        if (padCount != 0) {</span>
+<span class="fc" id="L321">          byte padByte = PAD;</span>
+<span class="pc bpc" id="L322" title="1 of 2 branches missed.">          if (reverse) {</span>
+<span class="nc" id="L323">            padByte = (byte) MARKER;</span>
+          }
+          // Check validity of padding bytes.
+<span class="fc bfc" id="L326" title="All 2 branches covered.">          for (int i = realGroupSize; i &lt; group.length; i++) {</span>
+<span class="fc" id="L327">            byte b = group[i];</span>
+<span class="pc bpc" id="L328" title="1 of 2 branches missed.">            checkArgument(padByte == b);</span>
+          }
+          break;
+        }
+      }
+<span class="fc" id="L333">      byte[] bytes = cdo.toBytes();</span>
+<span class="pc bpc" id="L334" title="1 of 2 branches missed.">      if (reverse) {</span>
+<span class="nc bnc" id="L335" title="All 2 branches missed.">        for (int i = 0; i &lt; bytes.length; i++) {</span>
+<span class="nc" id="L336">          bytes[i] = (byte) ~bytes[i];</span>
+        }
+      }
+<span class="fc" id="L339">      return bytes;</span>
+    }
+  }
+
+<span class="nc" id="L343">  public static class RealCodec {</span>
+    /**
+     * Decode as float
+     *
+     * @param cdi source of data
+     * @return decoded unsigned long value
+     */
+    public static double readDouble(CodecDataInput cdi) {
+<span class="nc" id="L351">      long u = IntegerCodec.readULong(cdi);</span>
+<span class="nc bnc" id="L352" title="All 2 branches missed.">      if (u &lt; 0) {</span>
+<span class="nc" id="L353">        u &amp;= Long.MAX_VALUE;</span>
+<span class="nc" id="L354">      } else {</span>
+<span class="nc" id="L355">        u = ~u;</span>
+      }
+<span class="nc" id="L357">      return Double.longBitsToDouble(u);</span>
+    }
+
+    private static long encodeDoubleToCmpLong(double val) {
+<span class="nc" id="L361">      long u = Double.doubleToRawLongBits(val);</span>
+<span class="nc bnc" id="L362" title="All 2 branches missed.">      if (val &gt;= 0) {</span>
+<span class="nc" id="L363">        u |= SIGN_MASK;</span>
+<span class="nc" id="L364">      } else {</span>
+<span class="nc" id="L365">        u = ~u;</span>
+      }
+<span class="nc" id="L367">      return u;</span>
+    }
+
+    public static void writeDoubleFully(CodecDataOutput cdo, double val) {
+<span class="nc" id="L371">      cdo.writeByte(FLOATING_FLAG);</span>
+<span class="nc" id="L372">      writeDouble(cdo, val);</span>
+<span class="nc" id="L373">    }</span>
+
+    /**
+     * Encoding a double value to byte buffer
+     *
+     * @param cdo For outputting data in bytes array
+     * @param val The data to encode
+     */
+    public static void writeDouble(CodecDataOutput cdo, double val) {
+<span class="nc" id="L382">      IntegerCodec.writeULong(cdo, encodeDoubleToCmpLong(val));</span>
+<span class="nc" id="L383">    }</span>
+  }
+
+<span class="nc" id="L386">  public static class DecimalCodec {</span>
+
+    /**
+     * read a decimal value from CodecDataInput
+     *
+     * @param cdi cdi is source data.
+     */
+    public static BigDecimal readDecimal(CodecDataInput cdi) {
+<span class="nc bnc" id="L394" title="All 2 branches missed.">      if (cdi.available() &lt; 3) {</span>
+<span class="nc" id="L395">        throw new IllegalArgumentException(&quot;insufficient bytes to read value&quot;);</span>
+      }
+
+      // 64 should be larger enough for avoiding unnecessary growth.
+<span class="nc" id="L399">      TIntArrayList data = new TIntArrayList(64);</span>
+<span class="nc" id="L400">      int precision = cdi.readUnsignedByte();</span>
+<span class="nc" id="L401">      int frac = cdi.readUnsignedByte();</span>
+<span class="nc" id="L402">      int length = precision + frac;</span>
+<span class="nc" id="L403">      int curPos = cdi.size() - cdi.available();</span>
+<span class="nc bnc" id="L404" title="All 2 branches missed.">      for (int i = 0; i &lt; length; i++) {</span>
+<span class="nc bnc" id="L405" title="All 2 branches missed.">        if (cdi.eof()) {</span>
+<span class="nc" id="L406">          break;</span>
+        }
+<span class="nc" id="L408">        data.add(cdi.readUnsignedByte());</span>
+      }
+
+<span class="nc" id="L411">      MyDecimal dec = new MyDecimal();</span>
+<span class="nc" id="L412">      int binSize = dec.fromBin(precision, frac, data.toArray());</span>
+<span class="nc" id="L413">      cdi.mark(curPos + binSize);</span>
+<span class="nc" id="L414">      cdi.reset();</span>
+<span class="nc" id="L415">      return dec.toBigDecimal();</span>
+    }
+
+    /**
+     * write a decimal value from CodecDataInput
+     *
+     * @param cdo cdo is destination data.
+     * @param dec is decimal value that will be written into cdo.
+     */
+    public static void writeDecimal(
+        CodecDataOutput cdo, MyDecimal dec, int precision, int fraction) {
+<span class="nc" id="L426">      int[] data = dec.toBin(precision, fraction);</span>
+<span class="nc" id="L427">      cdo.writeByte(precision);</span>
+<span class="nc" id="L428">      cdo.writeByte(fraction);</span>
+<span class="nc bnc" id="L429" title="All 2 branches missed.">      for (int aData : data) {</span>
+<span class="nc" id="L430">        cdo.writeByte(aData &amp; 0xFF);</span>
+      }
+<span class="nc" id="L432">    }</span>
+
+    //  TODO remove this once we refactor unit test CodecTest
+    public static void writeDecimal(CodecDataOutput cdo, BigDecimal val) {
+<span class="nc" id="L436">      MyDecimal dec = new MyDecimal();</span>
+<span class="nc" id="L437">      dec.fromString(val.toPlainString());</span>
+<span class="nc" id="L438">      int[] data = dec.toBin(dec.precision(), dec.frac());</span>
+<span class="nc" id="L439">      cdo.writeByte(dec.precision());</span>
+<span class="nc" id="L440">      cdo.writeByte(dec.frac());</span>
+<span class="nc bnc" id="L441" title="All 2 branches missed.">      for (int aData : data) {</span>
+<span class="nc" id="L442">        cdo.writeByte(aData &amp; 0xFF);</span>
+      }
+<span class="nc" id="L444">    }</span>
+
+    public static void writeDecimalFully(
+        CodecDataOutput cdo, MyDecimal val, int precision, int fraction) {
+<span class="nc" id="L448">      cdo.writeByte(DECIMAL_FLAG);</span>
+<span class="nc" id="L449">      writeDecimal(cdo, val, precision, fraction);</span>
+<span class="nc" id="L450">    }</span>
+  }
+
+<span class="nc" id="L453">  public static class DateTimeCodec {</span>
+    /**
+     * Encode a DateTime to a packed long converting to specific timezone
+     *
+     * @param extendedDateTime dateTime with nanos that need to be encoded.
+     * @param tz timezone used for converting to localDateTime
+     * @return a packed long.
+     */
+    public static long toPackedLong(ExtendedDateTime extendedDateTime, DateTimeZone tz) {
+<span class="nc" id="L462">      DateTime dateTime = extendedDateTime.getDateTime();</span>
+<span class="nc" id="L463">      LocalDateTime localDateTime = dateTime.withZone(tz).toLocalDateTime();</span>
+<span class="nc" id="L464">      return toPackedLong(</span>
+<span class="nc" id="L465">          localDateTime.getYear(),</span>
+<span class="nc" id="L466">          localDateTime.getMonthOfYear(),</span>
+<span class="nc" id="L467">          localDateTime.getDayOfMonth(),</span>
+<span class="nc" id="L468">          localDateTime.getHourOfDay(),</span>
+<span class="nc" id="L469">          localDateTime.getMinuteOfHour(),</span>
+<span class="nc" id="L470">          localDateTime.getSecondOfMinute(),</span>
+<span class="nc" id="L471">          extendedDateTime.getMicrosOfSeconds());</span>
+    }
+
+    /**
+     * Encode a date/time parts to a packed long.
+     *
+     * @return a packed long.
+     */
+    static long toPackedLong(
+        int year, int month, int day, int hour, int minute, int second, int micro) {
+<span class="nc" id="L481">      long ymd = (year * 13 + month) &lt;&lt; 5 | day;</span>
+<span class="nc" id="L482">      long hms = hour &lt;&lt; 12 | minute &lt;&lt; 6 | second;</span>
+<span class="nc" id="L483">      return ((ymd &lt;&lt; 17 | hms) &lt;&lt; 24) | micro;</span>
+    }
+
+    /**
+     * Read datetime from packed Long which contains all parts of a datetime namely, year, month,
+     * day and hour, min and sec, millisec. The original representation does not indicate any
+     * timezone information In Timestamp type, it should be interpreted as UTC while in DateType it
+     * is interpreted as local timezone
+     *
+     * @param packed long value that packs date / time parts
+     * @param tz timezone to interpret datetime parts
+     * @return decoded DateTime using provided timezone
+     */
+    public static ExtendedDateTime fromPackedLong(long packed, DateTimeZone tz) {
+      // TODO: As for JDBC behavior, it can be configured to &quot;round&quot; or &quot;toNull&quot;
+      // for now we didn't pass in session so we do a toNull behavior
+<span class="nc bnc" id="L499" title="All 2 branches missed.">      if (packed == 0) {</span>
+<span class="nc" id="L500">        return null;</span>
+      }
+<span class="nc" id="L502">      long ymdhms = packed &gt;&gt; 24;</span>
+<span class="nc" id="L503">      long ymd = ymdhms &gt;&gt; 17;</span>
+<span class="nc" id="L504">      int day = (int) (ymd &amp; ((1 &lt;&lt; 5) - 1));</span>
+<span class="nc" id="L505">      long ym = ymd &gt;&gt; 5;</span>
+<span class="nc" id="L506">      int month = (int) (ym % 13);</span>
+<span class="nc" id="L507">      int year = (int) (ym / 13);</span>
+
+<span class="nc" id="L509">      int hms = (int) (ymdhms &amp; ((1 &lt;&lt; 17) - 1));</span>
+<span class="nc" id="L510">      int second = hms &amp; ((1 &lt;&lt; 6) - 1);</span>
+<span class="nc" id="L511">      int minute = (hms &gt;&gt; 6) &amp; ((1 &lt;&lt; 6) - 1);</span>
+<span class="nc" id="L512">      int hour = hms &gt;&gt; 12;</span>
+<span class="nc" id="L513">      int microsec = (int) (packed % (1 &lt;&lt; 24));</span>
+
+<span class="nc" id="L515">      return createExtendedDateTime(tz, year, month, day, hour, minute, second, microsec);</span>
+    }
+
+    public static ExtendedDateTime createExtendedDateTime(
+        DateTimeZone tz,
+        int year,
+        int month,
+        int day,
+        int hour,
+        int minute,
+        int second,
+        int microsec) {
+<span class="nc" id="L527">      boolean zeroDate = false, zeroTime = false;</span>
+<span class="nc" id="L528">      boolean zeroInDate = false;</span>
+<span class="nc bnc" id="L529" title="All 6 branches missed.">      if (year == 0 &amp;&amp; month == 0 &amp;&amp; day == 0) {</span>
+<span class="nc" id="L530">        zeroDate = true;</span>
+      }
+<span class="nc bnc" id="L532" title="All 6 branches missed.">      if (hour == 0 &amp;&amp; minute == 0 &amp;&amp; microsec == 0) {</span>
+<span class="nc" id="L533">        zeroTime = true;</span>
+      }
+<span class="nc bnc" id="L535" title="All 4 branches missed.">      if (month == 0 || day == 0) {</span>
+<span class="nc" id="L536">        zeroInDate = true;</span>
+      }
+      // This behavior can be modified using the zeroDateTimeBehavior configuration property.
+      // The allowable values are:
+      //    * exception (the default), which throws an SQLException with an SQLState of S1009.
+      //    * convertToNull, which returns NULL instead of the date.
+      //    * round, which rounds the date to the nearest closest value which is 0001-01-01.
+<span class="nc bnc" id="L543" title="All 4 branches missed.">      if (zeroDate &amp;&amp; zeroTime) {</span>
+<span class="nc" id="L544">        year = 1;</span>
+<span class="nc" id="L545">        month = 1;</span>
+<span class="nc" id="L546">        day = 1;</span>
+<span class="nc bnc" id="L547" title="All 4 branches missed.">      } else if (!zeroDate &amp;&amp; zeroInDate) {</span>
+<span class="nc" id="L548">        String dateString = String.format(&quot;%04d-%02d-%02d&quot;, year, month, day);</span>
+        try {
+<span class="nc" id="L550">          java.util.Date d = new SimpleDateFormat(&quot;yyyy-MM-dd&quot;).parse(dateString);</span>
+<span class="nc" id="L551">          year = d.getYear() + 1900;</span>
+<span class="nc" id="L552">          month = d.getMonth() + 1;</span>
+<span class="nc" id="L553">          day = d.getDate();</span>
+<span class="nc" id="L554">        } catch (Exception e) {</span>
+<span class="nc" id="L555">          throw new UnsupportedSyntaxException(&quot;illegal date value: &quot; + dateString);</span>
+        }
+      }
+      try {
+<span class="nc" id="L559">        DateTime dateTime =</span>
+<span class="nc" id="L560">            new DateTime(year, month, day, hour, minute, second, microsec / 1000, tz);</span>
+<span class="nc" id="L561">        return new ExtendedDateTime(dateTime, microsec % 1000);</span>
+<span class="nc" id="L562">      } catch (IllegalInstantException e) {</span>
+<span class="nc" id="L563">        LocalDateTime localDateTime =</span>
+<span class="nc" id="L564">            new LocalDateTime(year, month, day, hour, minute, second, microsec / 1000);</span>
+<span class="nc" id="L565">        DateTime dt = localDateTime.toLocalDate().toDateTimeAtStartOfDay(tz);</span>
+<span class="nc" id="L566">        long millis = dt.getMillis() + localDateTime.toLocalTime().getMillisOfDay();</span>
+<span class="nc" id="L567">        DateTime dateTime = new DateTime(millis, tz);</span>
+<span class="nc" id="L568">        return new ExtendedDateTime(dateTime, microsec % 1000);</span>
+      }
+    }
+
+    /**
+     * Encode DateTime as packed long converting into specified timezone All timezone conversion
+     * should be done beforehand
+     *
+     * @param cdo encoding output
+     * @param extendeddateTime value to encode
+     * @param tz timezone used to converting local time
+     */
+    public static void writeDateTimeFully(
+        CodecDataOutput cdo, ExtendedDateTime extendeddateTime, DateTimeZone tz) {
+<span class="nc" id="L582">      long val = DateTimeCodec.toPackedLong(extendeddateTime, tz);</span>
+<span class="nc" id="L583">      IntegerCodec.writeULongFully(cdo, val, true);</span>
+<span class="nc" id="L584">    }</span>
+
+    /**
+     * Encode DateTime as packed long converting into specified timezone All timezone conversion
+     * should be done beforehand The encoded value has no data type flag
+     *
+     * @param cdo encoding output
+     * @param extendedDateTime value to encode
+     * @param tz timezone used to converting local time
+     */
+    public static void writeDateTimeProto(
+        CodecDataOutput cdo, ExtendedDateTime extendedDateTime, DateTimeZone tz) {
+<span class="nc" id="L596">      long val = DateTimeCodec.toPackedLong(extendedDateTime, tz);</span>
+<span class="nc" id="L597">      IntegerCodec.writeULong(cdo, val);</span>
+<span class="nc" id="L598">    }</span>
+
+    /**
+     * Read datetime from packed Long encoded as unsigned var-len integer converting into specified
+     * timezone
+     *
+     * @see DateTimeCodec#fromPackedLong(long, DateTimeZone)
+     * @param cdi codec buffer input
+     * @param tz timezone to interpret datetime parts
+     * @return decoded ExtendedDateTime using provided timezone
+     */
+    public static ExtendedDateTime readFromUVarInt(CodecDataInput cdi, DateTimeZone tz) {
+<span class="nc" id="L610">      return DateTimeCodec.fromPackedLong(IntegerCodec.readUVarLong(cdi), tz);</span>
+    }
+
+    /**
+     * Read datetime from packed Long as unsigned fixed-len integer
+     *
+     * @see DateTimeCodec#fromPackedLong(long, DateTimeZone)
+     * @param cdi codec buffer input
+     * @param tz timezone to interpret datetime parts
+     * @return decoded ExtendedDateTime using provided timezone
+     */
+    public static ExtendedDateTime readFromUInt(CodecDataInput cdi, DateTimeZone tz) {
+<span class="nc" id="L622">      return DateTimeCodec.fromPackedLong(IntegerCodec.readULong(cdi), tz);</span>
+    }
+  }
+
+<span class="nc" id="L626">  public static class DateCodec {</span>
+
+    /**
+     * Encode a UTC Date to a packed long converting to specific timezone
+     *
+     * @param date date that need to be encoded.
+     * @param tz timezone used for converting to localDate
+     * @return a packed long.
+     */
+    static long toPackedLong(Date date, DateTimeZone tz) {
+<span class="nc" id="L636">      return toPackedLong(date.getTime(), tz);</span>
+    }
+
+    static long toPackedLong(long utcMillsTs, DateTimeZone tz) {
+<span class="nc" id="L640">      LocalDate date = new LocalDate(utcMillsTs, tz);</span>
+<span class="nc" id="L641">      return toPackedLong(date);</span>
+    }
+
+    static long toPackedLong(LocalDate date) {
+<span class="nc" id="L645">      return DateCodec.toPackedLong(date.getYear(), date.getMonthOfYear(), date.getDayOfMonth());</span>
+    }
+
+    /**
+     * Encode a date part to a packed long.
+     *
+     * @return a packed long.
+     */
+    static long toPackedLong(int year, int month, int day) {
+<span class="nc" id="L654">      long ymd = (year * 13 + month) &lt;&lt; 5 | day;</span>
+<span class="nc" id="L655">      return ymd &lt;&lt; 41;</span>
+    }
+
+    static LocalDate fromPackedLong(long packed) {
+      // TODO: As for JDBC behavior, it can be configured to &quot;round&quot; or &quot;toNull&quot;
+      // for now we didn't pass in session so we do a toNull behavior
+<span class="nc bnc" id="L661" title="All 2 branches missed.">      if (packed == 0) {</span>
+<span class="nc" id="L662">        return null;</span>
+      }
+<span class="nc" id="L664">      long ymd = packed &gt;&gt; 41;</span>
+<span class="nc" id="L665">      int day = (int) (ymd &amp; ((1 &lt;&lt; 5) - 1));</span>
+<span class="nc" id="L666">      long ym = ymd &gt;&gt; 5;</span>
+<span class="nc" id="L667">      int month = (int) (ym % 13);</span>
+<span class="nc" id="L668">      int year = (int) (ym / 13);</span>
+
+<span class="nc" id="L670">      boolean zeroDate = false;</span>
+<span class="nc" id="L671">      boolean zeroInDate = false;</span>
+<span class="nc bnc" id="L672" title="All 6 branches missed.">      if (year == 0 &amp;&amp; month == 0 &amp;&amp; day == 0) {</span>
+<span class="nc" id="L673">        zeroDate = true;</span>
+      }
+<span class="nc bnc" id="L675" title="All 4 branches missed.">      if (month == 0 || day == 0) {</span>
+<span class="nc" id="L676">        zeroInDate = true;</span>
+      }
+      // This behavior can be modified using the zeroDateTimeBehavior configuration property.
+      // The allowable values are:
+      //    * exception (the default), which throws an SQLException with an SQLState of S1009.
+      //    * convertToNull, which returns NULL instead of the date.
+      //    * round, which rounds the date to the nearest closest value which is 0001-01-01.
+<span class="nc bnc" id="L683" title="All 2 branches missed.">      if (zeroDate) {</span>
+<span class="nc" id="L684">        year = 1;</span>
+<span class="nc" id="L685">        month = 1;</span>
+<span class="nc" id="L686">        day = 1;</span>
+<span class="nc bnc" id="L687" title="All 2 branches missed.">      } else if (zeroInDate) {</span>
+<span class="nc" id="L688">        String dateString = String.format(&quot;%04d-%02d-%02d&quot;, year, month, day);</span>
+        try {
+<span class="nc" id="L690">          java.util.Date d = new SimpleDateFormat(&quot;yyyy-MM-dd&quot;).parse(dateString);</span>
+<span class="nc" id="L691">          year = d.getYear() + 1900;</span>
+<span class="nc" id="L692">          month = d.getMonth() + 1;</span>
+<span class="nc" id="L693">          day = d.getDate();</span>
+<span class="nc" id="L694">        } catch (Exception e) {</span>
+<span class="nc" id="L695">          throw new UnsupportedSyntaxException(&quot;illegal date value: &quot; + dateString);</span>
+        }
+      }
+
+<span class="nc" id="L699">      return new LocalDate(year, month, day, null);</span>
+    }
+
+    /**
+     * Encode Date as packed long converting into specified timezone All timezone conversion should
+     * be done beforehand
+     *
+     * @param cdo encoding output
+     * @param date value to encode
+     * @param tz timezone used to converting local time
+     */
+    public static void writeDateFully(CodecDataOutput cdo, Date date, DateTimeZone tz) {
+<span class="nc" id="L711">      long val = DateCodec.toPackedLong(date, tz);</span>
+<span class="nc" id="L712">      IntegerCodec.writeULongFully(cdo, val, true);</span>
+<span class="nc" id="L713">    }</span>
+
+    /**
+     * Encode Date as packed long converting into specified timezone All timezone conversion should
+     * be done beforehand The encoded value has no data type flag
+     *
+     * @param cdo encoding output
+     * @param date value to encode
+     * @param tz timezone used to converting local time
+     */
+    public static void writeDateProto(CodecDataOutput cdo, Date date, DateTimeZone tz) {
+<span class="nc" id="L724">      long val = DateCodec.toPackedLong(date, tz);</span>
+<span class="nc" id="L725">      IntegerCodec.writeULong(cdo, val);</span>
+<span class="nc" id="L726">    }</span>
+
+    /**
+     * Read date from packed Long encoded as unsigned var-len integer converting into specified
+     * timezone
+     *
+     * @see DateCodec#fromPackedLong(long)
+     * @param cdi codec buffer input
+     * @return decoded DateTime using provided timezone
+     */
+    public static LocalDate readFromUVarInt(CodecDataInput cdi) {
+<span class="nc" id="L737">      return DateCodec.fromPackedLong(IntegerCodec.readUVarLong(cdi));</span>
+    }
+
+    /**
+     * Read date from packed Long as unsigned fixed-len integer
+     *
+     * @see DateCodec#fromPackedLong(long)
+     * @param cdi codec buffer input
+     * @return decoded DateTime using provided timezone
+     */
+    public static LocalDate readFromUInt(CodecDataInput cdi) {
+<span class="nc" id="L748">      return DateCodec.fromPackedLong(IntegerCodec.readULong(cdi));</span>
+    }
+  }
+
+<span class="nc" id="L752">  public static class EnumCodec {</span>
+
+    public static Integer parseEnumName(String name, List&lt;String&gt; elems)
+        throws ConvertOverflowException {
+<span class="nc" id="L756">      int i = 0;</span>
+<span class="nc bnc" id="L757" title="All 2 branches missed.">      while (i &lt; elems.size()) {</span>
+<span class="nc bnc" id="L758" title="All 2 branches missed.">        if (elems.get(i).equals(name)) {</span>
+<span class="nc" id="L759">          return i + 1;</span>
+        }
+<span class="nc" id="L761">        i = i + 1;</span>
+      }
+
+      // name doesn't exist, maybe an integer?
+      int result;
+      try {
+<span class="nc" id="L767">        result = Integer.parseInt(name);</span>
+<span class="nc" id="L768">      } catch (Exception e) {</span>
+<span class="nc" id="L769">        throw ConvertOverflowException.newEnumException(name);</span>
+      }
+<span class="nc" id="L771">      return parseEnumValue(result, elems);</span>
+    }
+
+    public static Integer parseEnumValue(Integer number, List&lt;String&gt; elems)
+        throws ConvertOverflowException {
+<span class="nc bnc" id="L776" title="All 2 branches missed.">      if (number == 0) {</span>
+<span class="nc" id="L777">        throw ConvertOverflowException.newLowerBoundException(number, 0);</span>
+      }
+
+<span class="nc bnc" id="L780" title="All 2 branches missed.">      if (number &gt; elems.size()) {</span>
+<span class="nc" id="L781">        throw ConvertOverflowException.newUpperBoundException(number, elems.size());</span>
+      }
+
+<span class="nc" id="L784">      return number;</span>
+    }
+
+    public static String readEnumFromIndex(int idx, List&lt;String&gt; elems) {
+<span class="nc bnc" id="L788" title="All 2 branches missed.">      if (idx == -1) {</span>
+<span class="nc" id="L789">        return &quot;&quot;;</span>
+      }
+<span class="nc bnc" id="L791" title="All 4 branches missed.">      if (idx &lt; 0 || idx &gt;= elems.size()) throw new TypeException(&quot;Index is out of range&quot;);</span>
+<span class="nc" id="L792">      return elems.get(idx);</span>
+    }
+  }
+
+<span class="nc" id="L796">  public static class SetCodec {</span>
+<span class="nc" id="L797">    private static final long[] SET_INDEX_VALUE = initSetIndexVal();</span>
+<span class="nc" id="L798">    private static final long[] SET_INDEX_INVERT_VALUE = initSetIndexInvertVal();</span>
+
+    private static long[] initSetIndexInvertVal() {
+<span class="nc" id="L801">      long[] tmpArr = new long[64];</span>
+<span class="nc bnc" id="L802" title="All 2 branches missed.">      for (int i = 0; i &lt; 64; i++) {</span>
+        // complement of original value.
+<span class="nc" id="L804">        tmpArr[i] = ~SET_INDEX_VALUE[i];</span>
+      }
+<span class="nc" id="L806">      return tmpArr;</span>
+    }
+
+    private static long[] initSetIndexVal() {
+<span class="nc" id="L810">      long[] tmpArr = new long[64];</span>
+<span class="nc bnc" id="L811" title="All 2 branches missed.">      for (int i = 0; i &lt; 64; i++) {</span>
+<span class="nc" id="L812">        tmpArr[i] = 1L &lt;&lt; i;</span>
+      }
+<span class="nc" id="L814">      return tmpArr;</span>
+    }
+
+    public static String readSetFromLong(long number, List&lt;String&gt; elems) {
+<span class="nc" id="L818">      List&lt;String&gt; items = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L819">      int length = elems.size();</span>
+<span class="nc bnc" id="L820" title="All 2 branches missed.">      for (int i = 0; i &lt; length; i++) {</span>
+<span class="nc" id="L821">        long checker = number &amp; SET_INDEX_VALUE[i];</span>
+<span class="nc bnc" id="L822" title="All 2 branches missed.">        if (checker != 0) {</span>
+<span class="nc" id="L823">          items.add(elems.get(i));</span>
+<span class="nc" id="L824">          number &amp;= SET_INDEX_INVERT_VALUE[i];</span>
+        }
+      }
+<span class="nc bnc" id="L827" title="All 2 branches missed.">      if (number != 0) {</span>
+<span class="nc" id="L828">        throw new TypeException(String.format(&quot;invalid number %d for Set %s&quot;, number, elems));</span>
+      }
+<span class="nc" id="L830">      return String.join(&quot;,&quot;, items);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

@@ -1,0 +1,726 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PDClient.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common</a> &gt; <span class="el_source">PDClient.java</span></div><h1>PDClient.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static org.tikv.common.operation.PDErrorHandler.getRegionResponseErrorExtractor;
+import static org.tikv.common.pd.PDError.buildFromPdpbError;
+import static org.tikv.common.pd.PDUtils.addrToUri;
+import static org.tikv.common.pd.PDUtils.uriToAddr;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import com.google.protobuf.ByteString;
+import io.etcd.jetcd.ByteSequence;
+import io.etcd.jetcd.Client;
+import io.etcd.jetcd.KeyValue;
+import io.etcd.jetcd.kv.GetResponse;
+import io.etcd.jetcd.options.GetOption;
+import io.grpc.ManagedChannel;
+import io.grpc.Metadata;
+import io.grpc.stub.MetadataUtils;
+import io.prometheus.client.Histogram;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.TiConfiguration.KVMode;
+import org.tikv.common.codec.Codec.BytesCodec;
+import org.tikv.common.codec.CodecDataInput;
+import org.tikv.common.codec.CodecDataOutput;
+import org.tikv.common.codec.KeyUtils;
+import org.tikv.common.exception.GrpcException;
+import org.tikv.common.exception.TiClientInternalException;
+import org.tikv.common.meta.TiTimestamp;
+import org.tikv.common.operation.NoopHandler;
+import org.tikv.common.operation.PDErrorHandler;
+import org.tikv.common.util.BackOffFunction.BackOffFuncType;
+import org.tikv.common.util.BackOffer;
+import org.tikv.common.util.ChannelFactory;
+import org.tikv.common.util.ConcreteBackOffer;
+import org.tikv.common.util.Pair;
+import org.tikv.kvproto.Metapb;
+import org.tikv.kvproto.Metapb.Store;
+import org.tikv.kvproto.PDGrpc;
+import org.tikv.kvproto.PDGrpc.PDBlockingStub;
+import org.tikv.kvproto.PDGrpc.PDFutureStub;
+import org.tikv.kvproto.Pdpb;
+import org.tikv.kvproto.Pdpb.Error;
+import org.tikv.kvproto.Pdpb.ErrorType;
+import org.tikv.kvproto.Pdpb.GetAllStoresRequest;
+import org.tikv.kvproto.Pdpb.GetMembersRequest;
+import org.tikv.kvproto.Pdpb.GetMembersResponse;
+import org.tikv.kvproto.Pdpb.GetOperatorRequest;
+import org.tikv.kvproto.Pdpb.GetOperatorResponse;
+import org.tikv.kvproto.Pdpb.GetRegionByIDRequest;
+import org.tikv.kvproto.Pdpb.GetRegionRequest;
+import org.tikv.kvproto.Pdpb.GetRegionResponse;
+import org.tikv.kvproto.Pdpb.GetStoreRequest;
+import org.tikv.kvproto.Pdpb.GetStoreResponse;
+import org.tikv.kvproto.Pdpb.OperatorStatus;
+import org.tikv.kvproto.Pdpb.RequestHeader;
+import org.tikv.kvproto.Pdpb.ResponseHeader;
+import org.tikv.kvproto.Pdpb.ScatterRegionRequest;
+import org.tikv.kvproto.Pdpb.ScatterRegionResponse;
+import org.tikv.kvproto.Pdpb.Timestamp;
+import org.tikv.kvproto.Pdpb.TsoRequest;
+import org.tikv.kvproto.Pdpb.TsoResponse;
+
+public class PDClient extends AbstractGRPCClient&lt;PDBlockingStub, PDFutureStub&gt;
+    implements ReadOnlyPDClient {
+  private static final String TIFLASH_TABLE_SYNC_PROGRESS_PATH = &quot;/tiflash/table/sync&quot;;
+  private static final long MIN_TRY_UPDATE_DURATION = 50;
+<span class="fc" id="L99">  private final Logger logger = LoggerFactory.getLogger(PDClient.class);</span>
+  private RequestHeader header;
+  private TsoRequest tsoReq;
+  private volatile PDClientWrapper pdClientWrapper;
+  private ScheduledExecutorService service;
+  private ScheduledExecutorService tiflashReplicaService;
+  private List&lt;URI&gt; pdAddrs;
+  private Client etcdClient;
+  private ConcurrentMap&lt;Long, Double&gt; tiflashReplicaMap;
+  private HostMapping hostMapping;
+  private long lastUpdateLeaderTime;
+
+<span class="fc" id="L111">  public static final Histogram PD_GET_REGION_BY_KEY_REQUEST_LATENCY =</span>
+<span class="fc" id="L112">      Histogram.build()</span>
+<span class="fc" id="L113">          .name(&quot;client_java_pd_get_region_by_requests_latency&quot;)</span>
+<span class="fc" id="L114">          .help(&quot;pd getRegionByKey request latency.&quot;)</span>
+<span class="fc" id="L115">          .register();</span>
+
+  private PDClient(TiConfiguration conf, ChannelFactory channelFactory) {
+<span class="fc" id="L118">    super(conf, channelFactory);</span>
+<span class="fc" id="L119">    initCluster();</span>
+<span class="fc" id="L120">    this.blockingStub = getBlockingStub();</span>
+<span class="fc" id="L121">    this.asyncStub = getAsyncStub();</span>
+<span class="fc" id="L122">  }</span>
+
+  public static ReadOnlyPDClient create(TiConfiguration conf, ChannelFactory channelFactory) {
+<span class="nc" id="L125">    return createRaw(conf, channelFactory);</span>
+  }
+
+  static PDClient createRaw(TiConfiguration conf, ChannelFactory channelFactory) {
+<span class="fc" id="L129">    return new PDClient(conf, channelFactory);</span>
+  }
+
+  public HostMapping getHostMapping() {
+<span class="fc" id="L133">    return hostMapping;</span>
+  }
+
+  @Override
+  public TiTimestamp getTimestamp(BackOffer backOffer) {
+<span class="fc" id="L138">    Supplier&lt;TsoRequest&gt; request = () -&gt; tsoReq;</span>
+
+<span class="fc" id="L140">    PDErrorHandler&lt;TsoResponse&gt; handler =</span>
+        new PDErrorHandler&lt;&gt;(
+<span class="pc bpc" id="L142" title="1 of 2 branches missed.">            r -&gt; r.getHeader().hasError() ? buildFromPdpbError(r.getHeader().getError()) : null,</span>
+            this);
+
+<span class="fc" id="L145">    TsoResponse resp = callWithRetry(backOffer, PDGrpc.getTsoMethod(), request, handler);</span>
+<span class="fc" id="L146">    Timestamp timestamp = resp.getTimestamp();</span>
+<span class="fc" id="L147">    return new TiTimestamp(timestamp.getPhysical(), timestamp.getLogical());</span>
+  }
+
+  /**
+   * Sends request to pd to scatter region.
+   *
+   * @param region represents a region info
+   */
+  void scatterRegion(Metapb.Region region, BackOffer backOffer) {
+<span class="nc" id="L156">    Supplier&lt;ScatterRegionRequest&gt; request =</span>
+        () -&gt;
+<span class="nc" id="L158">            ScatterRegionRequest.newBuilder().setHeader(header).setRegionId(region.getId()).build();</span>
+
+<span class="nc" id="L160">    PDErrorHandler&lt;ScatterRegionResponse&gt; handler =</span>
+        new PDErrorHandler&lt;&gt;(
+<span class="nc bnc" id="L162" title="All 2 branches missed.">            r -&gt; r.getHeader().hasError() ? buildFromPdpbError(r.getHeader().getError()) : null,</span>
+            this);
+
+<span class="nc" id="L165">    ScatterRegionResponse resp =</span>
+<span class="nc" id="L166">        callWithRetry(backOffer, PDGrpc.getScatterRegionMethod(), request, handler);</span>
+    // TODO: maybe we should retry here, need dig into pd's codebase.
+<span class="nc bnc" id="L168" title="All 4 branches missed.">    if (resp.hasHeader() &amp;&amp; resp.getHeader().hasError()) {</span>
+<span class="nc" id="L169">      throw new TiClientInternalException(</span>
+<span class="nc" id="L170">          String.format(&quot;failed to scatter region because %s&quot;, resp.getHeader().getError()));</span>
+    }
+<span class="nc" id="L172">  }</span>
+
+  /**
+   * wait scatter region until finish
+   *
+   * @param region
+   */
+  void waitScatterRegionFinish(Metapb.Region region, BackOffer backOffer) {
+    for (; ; ) {
+<span class="nc" id="L181">      GetOperatorResponse resp = getOperator(region.getId());</span>
+<span class="nc bnc" id="L182" title="All 2 branches missed.">      if (resp != null) {</span>
+<span class="nc bnc" id="L183" title="All 2 branches missed.">        if (isScatterRegionFinish(resp)) {</span>
+<span class="nc" id="L184">          logger.info(String.format(&quot;wait scatter region on %d is finished&quot;, region.getId()));</span>
+<span class="nc" id="L185">          return;</span>
+        } else {
+<span class="nc" id="L187">          backOffer.doBackOff(</span>
+              BackOffFuncType.BoRegionMiss, new GrpcException(&quot;waiting scatter region&quot;));
+<span class="nc" id="L189">          logger.info(</span>
+<span class="nc" id="L190">              String.format(</span>
+                  &quot;wait scatter region %d at key %s is %s&quot;,
+<span class="nc" id="L192">                  region.getId(),</span>
+<span class="nc" id="L193">                  KeyUtils.formatBytes(resp.getDesc().toByteArray()),</span>
+<span class="nc" id="L194">                  resp.getStatus().toString()));</span>
+        }
+      }
+<span class="nc" id="L197">    }</span>
+  }
+
+  private GetOperatorResponse getOperator(long regionId) {
+<span class="nc" id="L201">    Supplier&lt;GetOperatorRequest&gt; request =</span>
+<span class="nc" id="L202">        () -&gt; GetOperatorRequest.newBuilder().setHeader(header).setRegionId(regionId).build();</span>
+    // get operator no need to handle error and no need back offer.
+<span class="nc" id="L204">    return callWithRetry(</span>
+<span class="nc" id="L205">        ConcreteBackOffer.newCustomBackOff(0),</span>
+<span class="nc" id="L206">        PDGrpc.getGetOperatorMethod(),</span>
+        request,
+        new NoopHandler&lt;&gt;());
+  }
+
+  private boolean isScatterRegionFinish(GetOperatorResponse resp) {
+    // If the current operator of region is not `scatter-region`, we could assume
+    // that `scatter-operator` has finished or timeout.
+<span class="nc" id="L214">    boolean finished =</span>
+<span class="nc bnc" id="L215" title="All 2 branches missed.">        !resp.getDesc().equals(ByteString.copyFromUtf8(&quot;scatter-region&quot;))</span>
+<span class="nc bnc" id="L216" title="All 2 branches missed.">            || resp.getStatus() != OperatorStatus.RUNNING;</span>
+
+<span class="nc bnc" id="L218" title="All 2 branches missed.">    if (resp.hasHeader()) {</span>
+<span class="nc" id="L219">      ResponseHeader header = resp.getHeader();</span>
+<span class="nc bnc" id="L220" title="All 2 branches missed.">      if (header.hasError()) {</span>
+<span class="nc" id="L221">        Error error = header.getError();</span>
+        // heartbeat may not send to PD
+<span class="nc bnc" id="L223" title="All 2 branches missed.">        if (error.getType() == ErrorType.REGION_NOT_FOUND) {</span>
+<span class="nc" id="L224">          finished = true;</span>
+        }
+      }
+    }
+<span class="nc" id="L228">    return finished;</span>
+  }
+
+  @Override
+  public Pair&lt;Metapb.Region, Metapb.Peer&gt; getRegionByKey(BackOffer backOffer, ByteString key) {
+<span class="fc" id="L233">    Histogram.Timer requestTimer = PD_GET_REGION_BY_KEY_REQUEST_LATENCY.startTimer();</span>
+    try {
+<span class="fc bfc" id="L235" title="All 2 branches covered.">      if (conf.getKvMode() == KVMode.TXN) {</span>
+<span class="fc" id="L236">        CodecDataOutput cdo = new CodecDataOutput();</span>
+<span class="fc" id="L237">        BytesCodec.writeBytes(cdo, key.toByteArray());</span>
+<span class="fc" id="L238">        key = cdo.toByteString();</span>
+      }
+<span class="fc" id="L240">      ByteString queryKey = key;</span>
+
+<span class="fc" id="L242">      Supplier&lt;GetRegionRequest&gt; request =</span>
+<span class="fc" id="L243">          () -&gt; GetRegionRequest.newBuilder().setHeader(header).setRegionKey(queryKey).build();</span>
+
+<span class="fc" id="L245">      PDErrorHandler&lt;GetRegionResponse&gt; handler =</span>
+          new PDErrorHandler&lt;&gt;(getRegionResponseErrorExtractor, this);
+
+<span class="fc" id="L248">      GetRegionResponse resp =</span>
+<span class="fc" id="L249">          callWithRetry(backOffer, PDGrpc.getGetRegionMethod(), request, handler);</span>
+<span class="fc" id="L250">      return new Pair&lt;Metapb.Region, Metapb.Peer&gt;(decodeRegion(resp.getRegion()), resp.getLeader());</span>
+    } finally {
+<span class="fc" id="L252">      requestTimer.observeDuration();</span>
+    }
+  }
+
+  @Override
+  public Pair&lt;Metapb.Region, Metapb.Peer&gt; getRegionByID(BackOffer backOffer, long id) {
+<span class="fc" id="L258">    Supplier&lt;GetRegionByIDRequest&gt; request =</span>
+<span class="fc" id="L259">        () -&gt; GetRegionByIDRequest.newBuilder().setHeader(header).setRegionId(id).build();</span>
+<span class="fc" id="L260">    PDErrorHandler&lt;GetRegionResponse&gt; handler =</span>
+        new PDErrorHandler&lt;&gt;(getRegionResponseErrorExtractor, this);
+
+<span class="fc" id="L263">    GetRegionResponse resp =</span>
+<span class="fc" id="L264">        callWithRetry(backOffer, PDGrpc.getGetRegionByIDMethod(), request, handler);</span>
+<span class="fc" id="L265">    return new Pair&lt;Metapb.Region, Metapb.Peer&gt;(decodeRegion(resp.getRegion()), resp.getLeader());</span>
+  }
+
+  private Supplier&lt;GetStoreRequest&gt; buildGetStoreReq(long storeId) {
+<span class="fc" id="L269">    return () -&gt; GetStoreRequest.newBuilder().setHeader(header).setStoreId(storeId).build();</span>
+  }
+
+  private Supplier&lt;GetAllStoresRequest&gt; buildGetAllStoresReq() {
+<span class="fc" id="L273">    return () -&gt; GetAllStoresRequest.newBuilder().setHeader(header).build();</span>
+  }
+
+  private &lt;T&gt; PDErrorHandler&lt;GetStoreResponse&gt; buildPDErrorHandler() {
+<span class="fc" id="L277">    return new PDErrorHandler&lt;&gt;(</span>
+<span class="pc bpc" id="L278" title="1 of 2 branches missed.">        r -&gt; r.getHeader().hasError() ? buildFromPdpbError(r.getHeader().getError()) : null, this);</span>
+  }
+
+  @Override
+  public Store getStore(BackOffer backOffer, long storeId) {
+<span class="fc" id="L283">    GetStoreResponse resp =</span>
+<span class="fc" id="L284">        callWithRetry(</span>
+            backOffer,
+<span class="fc" id="L286">            PDGrpc.getGetStoreMethod(),</span>
+<span class="fc" id="L287">            buildGetStoreReq(storeId),</span>
+<span class="fc" id="L288">            buildPDErrorHandler());</span>
+<span class="pc bpc" id="L289" title="1 of 2 branches missed.">    if (resp != null) {</span>
+<span class="fc" id="L290">      return resp.getStore();</span>
+    }
+<span class="nc" id="L292">    return null;</span>
+  }
+
+  @Override
+  public List&lt;Store&gt; getAllStores(BackOffer backOffer) {
+<span class="fc" id="L297">    return callWithRetry(</span>
+            backOffer,
+<span class="fc" id="L299">            PDGrpc.getGetAllStoresMethod(),</span>
+<span class="fc" id="L300">            buildGetAllStoresReq(),</span>
+            new PDErrorHandler&lt;&gt;(
+<span class="pc bpc" id="L302" title="1 of 2 branches missed.">                r -&gt; r.getHeader().hasError() ? buildFromPdpbError(r.getHeader().getError()) : null,</span>
+                this))
+<span class="fc" id="L304">        .getStoresList();</span>
+  }
+
+  @Override
+  public TiConfiguration.ReplicaRead getReplicaRead() {
+<span class="nc" id="L309">    return conf.getReplicaRead();</span>
+  }
+
+  @Override
+  public void close() throws InterruptedException {
+<span class="fc" id="L314">    etcdClient.close();</span>
+<span class="pc bpc" id="L315" title="1 of 2 branches missed.">    if (service != null) {</span>
+<span class="fc" id="L316">      service.shutdownNow();</span>
+    }
+<span class="pc bpc" id="L318" title="1 of 2 branches missed.">    if (tiflashReplicaService != null) {</span>
+<span class="fc" id="L319">      tiflashReplicaService.shutdownNow();</span>
+    }
+<span class="pc bpc" id="L321" title="1 of 2 branches missed.">    if (channelFactory != null) {</span>
+<span class="fc" id="L322">      channelFactory.close();</span>
+    }
+<span class="fc" id="L324">  }</span>
+
+  @VisibleForTesting
+  RequestHeader getHeader() {
+<span class="fc" id="L328">    return header;</span>
+  }
+
+  @VisibleForTesting
+  PDClientWrapper getPdClientWrapper() {
+<span class="fc" id="L333">    return pdClientWrapper;</span>
+  }
+
+  private GetMembersResponse getMembers(URI uri) {
+    try {
+<span class="fc" id="L338">      ManagedChannel probChan = channelFactory.getChannel(uriToAddr(uri), hostMapping);</span>
+<span class="fc" id="L339">      PDGrpc.PDBlockingStub stub =</span>
+<span class="fc" id="L340">          PDGrpc.newBlockingStub(probChan).withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS);</span>
+      GetMembersRequest request =
+<span class="fc" id="L342">          GetMembersRequest.newBuilder().setHeader(RequestHeader.getDefaultInstance()).build();</span>
+<span class="fc" id="L343">      GetMembersResponse resp = stub.getMembers(request);</span>
+      // check if the response contains a valid leader
+<span class="pc bpc" id="L345" title="2 of 4 branches missed.">      if (resp != null &amp;&amp; resp.getLeader().getMemberId() == 0) {</span>
+<span class="nc" id="L346">        return null;</span>
+      }
+<span class="fc" id="L348">      return resp;</span>
+<span class="fc" id="L349">    } catch (Exception e) {</span>
+<span class="fc" id="L350">      logger.warn(&quot;failed to get member from pd server.&quot;, e);</span>
+    }
+<span class="fc" id="L352">    return null;</span>
+  }
+
+  // return whether the leader has changed to target address `leaderUrlStr`.
+  synchronized boolean trySwitchLeader(String leaderUrlStr) {
+<span class="pc bpc" id="L357" title="1 of 2 branches missed.">    if (pdClientWrapper != null) {</span>
+<span class="fc bfc" id="L358" title="All 2 branches covered.">      if (leaderUrlStr.equals(pdClientWrapper.getLeaderInfo())) {</span>
+        // The message to leader is not forwarded by follower.
+<span class="pc bpc" id="L360" title="1 of 2 branches missed.">        if (leaderUrlStr.equals(pdClientWrapper.getStoreAddress())) {</span>
+<span class="fc" id="L361">          return true;</span>
+        }
+      }
+      // If leader has transfered to another member, we can create another leaderwrapper.
+    }
+    // switch leader
+<span class="fc" id="L367">    return createLeaderClientWrapper(leaderUrlStr);</span>
+  }
+
+  private synchronized boolean createLeaderClientWrapper(String leaderUrlStr) {
+    try {
+      // create new Leader
+<span class="fc" id="L373">      ManagedChannel clientChannel = channelFactory.getChannel(leaderUrlStr, hostMapping);</span>
+<span class="fc" id="L374">      pdClientWrapper =</span>
+<span class="fc" id="L375">          new PDClientWrapper(leaderUrlStr, leaderUrlStr, clientChannel, System.nanoTime());</span>
+<span class="fc" id="L376">      timeout = conf.getTimeout();</span>
+<span class="nc" id="L377">    } catch (IllegalArgumentException e) {</span>
+<span class="nc" id="L378">      return false;</span>
+<span class="fc" id="L379">    }</span>
+<span class="fc" id="L380">    logger.info(String.format(&quot;Switched to new leader: %s&quot;, pdClientWrapper));</span>
+<span class="fc" id="L381">    return true;</span>
+  }
+
+  synchronized boolean createFollowerClientWrapper(String followerUrlStr, String leaderUrls) {
+    // TODO: Why not strip protocol info on server side since grpc does not need it
+
+    try {
+<span class="pc bpc" id="L388" title="1 of 2 branches missed.">      if (!checkHealth(followerUrlStr, hostMapping)) {</span>
+<span class="fc" id="L389">        return false;</span>
+      }
+
+      // create new Leader
+<span class="nc" id="L393">      ManagedChannel channel = channelFactory.getChannel(followerUrlStr, hostMapping);</span>
+<span class="nc" id="L394">      pdClientWrapper = new PDClientWrapper(leaderUrls, followerUrlStr, channel, System.nanoTime());</span>
+<span class="nc" id="L395">      timeout = conf.getForwardTimeout();</span>
+<span class="nc" id="L396">    } catch (IllegalArgumentException e) {</span>
+<span class="nc" id="L397">      return false;</span>
+<span class="nc" id="L398">    }</span>
+<span class="nc" id="L399">    logger.info(String.format(&quot;Switched to new leader by follower forward: %s&quot;, pdClientWrapper));</span>
+<span class="nc" id="L400">    return true;</span>
+  }
+
+  public synchronized void updateLeaderOrforwardFollower() {
+<span class="fc bfc" id="L404" title="All 2 branches covered.">    if (System.currentTimeMillis() - lastUpdateLeaderTime &lt; MIN_TRY_UPDATE_DURATION) {</span>
+<span class="fc" id="L405">      return;</span>
+    }
+<span class="fc bfc" id="L407" title="All 2 branches covered.">    for (URI url : this.pdAddrs) {</span>
+      // since resp is null, we need update leader's address by walking through all pd server.
+<span class="fc" id="L409">      GetMembersResponse resp = getMembers(url);</span>
+<span class="fc bfc" id="L410" title="All 2 branches covered.">      if (resp == null) {</span>
+<span class="fc" id="L411">        continue;</span>
+      }
+<span class="pc bpc" id="L413" title="1 of 2 branches missed.">      if (resp.getLeader().getClientUrlsList().isEmpty()) {</span>
+<span class="nc" id="L414">        continue;</span>
+      }
+
+<span class="fc" id="L417">      String leaderUrlStr = resp.getLeader().getClientUrlsList().get(0);</span>
+<span class="fc" id="L418">      leaderUrlStr = uriToAddr(addrToUri(leaderUrlStr));</span>
+
+      // if leader is switched, just return.
+<span class="pc bpc" id="L421" title="3 of 4 branches missed.">      if (checkHealth(leaderUrlStr, hostMapping) &amp;&amp; trySwitchLeader(leaderUrlStr)) {</span>
+<span class="nc" id="L422">        lastUpdateLeaderTime = System.currentTimeMillis();</span>
+<span class="nc" id="L423">        return;</span>
+      }
+
+<span class="pc bpc" id="L426" title="1 of 2 branches missed.">      if (!conf.getEnableGrpcForward()) {</span>
+<span class="nc" id="L427">        continue;</span>
+      }
+
+<span class="fc" id="L430">      logger.info(String.format(&quot;can not switch to new leader, try follower forward&quot;));</span>
+<span class="fc" id="L431">      List&lt;Pdpb.Member&gt; members = resp.getMembersList();</span>
+
+<span class="fc" id="L433">      boolean hasReachNextMember = false;</span>
+      // If we have not used follower forward, try the first follower.
+<span class="pc bpc" id="L435" title="2 of 4 branches missed.">      if (pdClientWrapper != null &amp;&amp; pdClientWrapper.getStoreAddress().equals(leaderUrlStr)) {</span>
+<span class="fc" id="L436">        hasReachNextMember = true;</span>
+      }
+
+<span class="fc bfc" id="L439" title="All 2 branches covered.">      for (int i = 0; i &lt; members.size() * 2; i++) {</span>
+<span class="fc" id="L440">        Pdpb.Member member = members.get(i % members.size());</span>
+<span class="fc bfc" id="L441" title="All 2 branches covered.">        if (member.getMemberId() == resp.getLeader().getMemberId()) {</span>
+<span class="fc" id="L442">          continue;</span>
+        }
+<span class="fc" id="L444">        String followerUrlStr = member.getClientUrlsList().get(0);</span>
+<span class="fc" id="L445">        followerUrlStr = uriToAddr(addrToUri(followerUrlStr));</span>
+<span class="pc bpc" id="L446" title="2 of 4 branches missed.">        if (pdClientWrapper != null &amp;&amp; pdClientWrapper.getStoreAddress().equals(followerUrlStr)) {</span>
+<span class="nc" id="L447">          hasReachNextMember = true;</span>
+<span class="nc" id="L448">          continue;</span>
+        }
+<span class="pc bpc" id="L450" title="2 of 4 branches missed.">        if (hasReachNextMember &amp;&amp; createFollowerClientWrapper(followerUrlStr, leaderUrlStr)) {</span>
+<span class="nc" id="L451">          logger.warn(</span>
+<span class="nc" id="L452">              String.format(&quot;forward request to pd [%s] by pd [%s]&quot;, leaderUrlStr, followerUrlStr));</span>
+<span class="nc" id="L453">          return;</span>
+        }
+      }
+<span class="fc" id="L456">    }</span>
+<span class="fc" id="L457">    lastUpdateLeaderTime = System.currentTimeMillis();</span>
+<span class="pc bpc" id="L458" title="1 of 2 branches missed.">    if (pdClientWrapper == null) {</span>
+<span class="nc" id="L459">      throw new TiClientInternalException(</span>
+          &quot;already tried all address on file, but not leader found yet.&quot;);
+    }
+<span class="fc" id="L462">  }</span>
+
+  public void tryUpdateLeader() {
+<span class="fc bfc" id="L465" title="All 2 branches covered.">    for (URI url : this.pdAddrs) {</span>
+      // since resp is null, we need update leader's address by walking through all pd server.
+<span class="fc" id="L467">      GetMembersResponse resp = getMembers(url);</span>
+<span class="fc bfc" id="L468" title="All 2 branches covered.">      if (resp == null) {</span>
+<span class="fc" id="L469">        continue;</span>
+      }
+<span class="fc" id="L471">      List&lt;URI&gt; urls =</span>
+<span class="fc" id="L472">          resp.getMembersList()</span>
+<span class="fc" id="L473">              .stream()</span>
+<span class="fc" id="L474">              .map(mem -&gt; addrToUri(mem.getClientUrls(0)))</span>
+<span class="fc" id="L475">              .collect(Collectors.toList());</span>
+<span class="fc" id="L476">      String leaderUrlStr = resp.getLeader().getClientUrlsList().get(0);</span>
+<span class="fc" id="L477">      leaderUrlStr = uriToAddr(addrToUri(leaderUrlStr));</span>
+
+      // If leader is not change but becomes available, we can cancel follower forward.
+<span class="pc bpc" id="L480" title="1 of 4 branches missed.">      if (checkHealth(leaderUrlStr, hostMapping) &amp;&amp; trySwitchLeader(leaderUrlStr)) {</span>
+<span class="pc bpc" id="L481" title="1 of 2 branches missed.">        if (!urls.equals(this.pdAddrs)) {</span>
+<span class="nc" id="L482">          tryUpdateMembers(urls);</span>
+        }
+<span class="fc" id="L484">        return;</span>
+      }
+<span class="fc" id="L486">    }</span>
+<span class="fc" id="L487">    lastUpdateLeaderTime = System.currentTimeMillis();</span>
+<span class="pc bpc" id="L488" title="1 of 2 branches missed.">    if (pdClientWrapper == null) {</span>
+<span class="nc" id="L489">      throw new TiClientInternalException(</span>
+          &quot;already tried all address on file, but not leader found yet.&quot;);
+    }
+<span class="fc" id="L492">  }</span>
+
+  private synchronized void tryUpdateMembers(List&lt;URI&gt; members) {
+<span class="nc" id="L495">    this.pdAddrs = members;</span>
+<span class="nc" id="L496">  }</span>
+
+  public void updateTiFlashReplicaStatus() {
+<span class="fc" id="L499">    ByteSequence prefix =</span>
+<span class="fc" id="L500">        ByteSequence.from(TIFLASH_TABLE_SYNC_PROGRESS_PATH, StandardCharsets.UTF_8);</span>
+<span class="pc bpc" id="L501" title="1 of 2 branches missed.">    for (int i = 0; i &lt; 5; i++) {</span>
+      CompletableFuture&lt;GetResponse&gt; resp;
+      try {
+<span class="fc" id="L504">        resp =</span>
+<span class="fc" id="L505">            etcdClient.getKVClient().get(prefix, GetOption.newBuilder().withPrefix(prefix).build());</span>
+<span class="nc" id="L506">      } catch (Exception e) {</span>
+<span class="nc" id="L507">        logger.info(&quot;get tiflash table replica sync progress failed, continue checking.&quot;, e);</span>
+<span class="nc" id="L508">        continue;</span>
+<span class="fc" id="L509">      }</span>
+      GetResponse getResp;
+      try {
+<span class="fc" id="L512">        getResp = resp.get();</span>
+<span class="nc" id="L513">      } catch (InterruptedException e) {</span>
+<span class="nc" id="L514">        Thread.currentThread().interrupt();</span>
+<span class="nc" id="L515">        continue;</span>
+<span class="fc" id="L516">      } catch (ExecutionException e) {</span>
+<span class="fc" id="L517">        throw new GrpcException(&quot;failed to update tiflash replica&quot;, e);</span>
+<span class="fc" id="L518">      }</span>
+<span class="fc" id="L519">      ConcurrentMap&lt;Long, Double&gt; progressMap = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="pc bpc" id="L520" title="1 of 2 branches missed.">      for (KeyValue kv : getResp.getKvs()) {</span>
+        long tableId;
+        try {
+<span class="nc" id="L523">          tableId =</span>
+<span class="nc" id="L524">              Long.parseLong(</span>
+<span class="nc" id="L525">                  kv.getKey().toString().substring(TIFLASH_TABLE_SYNC_PROGRESS_PATH.length()));</span>
+<span class="nc" id="L526">        } catch (Exception e) {</span>
+<span class="nc" id="L527">          logger.info(</span>
+<span class="nc" id="L528">              &quot;invalid tiflash table replica sync progress key. key = &quot; + kv.getKey().toString());</span>
+<span class="nc" id="L529">          continue;</span>
+<span class="nc" id="L530">        }</span>
+        double progress;
+        try {
+<span class="nc" id="L533">          progress = Double.parseDouble(kv.getValue().toString());</span>
+<span class="nc" id="L534">        } catch (Exception e) {</span>
+<span class="nc" id="L535">          logger.info(</span>
+              &quot;invalid tiflash table replica sync progress value. value = &quot;
+<span class="nc" id="L537">                  + kv.getValue().toString());</span>
+<span class="nc" id="L538">          continue;</span>
+<span class="nc" id="L539">        }</span>
+<span class="nc" id="L540">        progressMap.put(tableId, progress);</span>
+<span class="nc" id="L541">      }</span>
+<span class="fc" id="L542">      tiflashReplicaMap = progressMap;</span>
+<span class="fc" id="L543">      break;</span>
+    }
+<span class="fc" id="L545">  }</span>
+
+  public double getTiFlashReplicaProgress(long tableId) {
+<span class="nc" id="L548">    return tiflashReplicaMap.getOrDefault(tableId, 0.0);</span>
+  }
+
+  @Override
+  protected PDBlockingStub getBlockingStub() {
+<span class="pc bpc" id="L553" title="1 of 2 branches missed.">    if (pdClientWrapper == null) {</span>
+<span class="nc" id="L554">      throw new GrpcException(&quot;PDClient may not be initialized&quot;);</span>
+    }
+<span class="fc" id="L556">    return pdClientWrapper.getBlockingStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS);</span>
+  }
+
+  @Override
+  protected PDFutureStub getAsyncStub() {
+<span class="pc bpc" id="L561" title="1 of 2 branches missed.">    if (pdClientWrapper == null) {</span>
+<span class="nc" id="L562">      throw new GrpcException(&quot;PDClient may not be initialized&quot;);</span>
+    }
+<span class="fc" id="L564">    return pdClientWrapper.getAsyncStub().withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS);</span>
+  }
+
+  private void initCluster() {
+<span class="fc" id="L568">    logger.info(&quot;init cluster: start&quot;);</span>
+<span class="fc" id="L569">    GetMembersResponse resp = null;</span>
+<span class="fc" id="L570">    List&lt;URI&gt; pdAddrs = new ArrayList&lt;&gt;(getConf().getPdAddrs());</span>
+    // shuffle PD addresses so that clients call getMembers from different PD
+<span class="fc" id="L572">    Collections.shuffle(pdAddrs);</span>
+<span class="fc" id="L573">    this.pdAddrs = pdAddrs;</span>
+<span class="fc" id="L574">    this.etcdClient =</span>
+<span class="fc" id="L575">        Client.builder()</span>
+<span class="fc" id="L576">            .endpoints(pdAddrs)</span>
+<span class="fc" id="L577">            .executorService(</span>
+<span class="fc" id="L578">                Executors.newCachedThreadPool(</span>
+                    new ThreadFactoryBuilder()
+<span class="fc" id="L580">                        .setNameFormat(&quot;etcd-conn-manager-pool-%d&quot;)</span>
+<span class="fc" id="L581">                        .setDaemon(true)</span>
+<span class="fc" id="L582">                        .build()))</span>
+<span class="fc" id="L583">            .build();</span>
+<span class="fc" id="L584">    logger.info(&quot;init host mapping: start&quot;);</span>
+<span class="fc" id="L585">    this.hostMapping =</span>
+<span class="fc" id="L586">        Optional.ofNullable(getConf().getHostMapping())</span>
+<span class="fc" id="L587">            .orElseGet(() -&gt; new DefaultHostMapping(this.etcdClient, conf.getNetworkMappingName()));</span>
+<span class="fc" id="L588">    logger.info(&quot;init host mapping: end&quot;);</span>
+    // The first request may cost too much latency
+<span class="fc" id="L590">    long originTimeout = this.timeout;</span>
+<span class="fc" id="L591">    this.timeout = 2000;</span>
+<span class="pc bpc" id="L592" title="1 of 2 branches missed.">    for (URI u : pdAddrs) {</span>
+<span class="fc" id="L593">      logger.info(&quot;get members with pd &quot; + u + &quot;: start&quot;);</span>
+<span class="fc" id="L594">      resp = getMembers(u);</span>
+<span class="fc" id="L595">      logger.info(&quot;get members with pd &quot; + u + &quot;: end&quot;);</span>
+<span class="pc bpc" id="L596" title="1 of 2 branches missed.">      if (resp != null) {</span>
+<span class="fc" id="L597">        break;</span>
+      }
+<span class="nc" id="L599">    }</span>
+<span class="pc bpc" id="L600" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L601">      logger.error(&quot;Could not get leader member with: &quot; + pdAddrs);</span>
+    }
+
+<span class="fc" id="L604">    this.timeout = originTimeout;</span>
+<span class="fc" id="L605">    checkNotNull(resp, &quot;Failed to init client for PD cluster.&quot;);</span>
+<span class="fc" id="L606">    long clusterId = resp.getHeader().getClusterId();</span>
+<span class="fc" id="L607">    header = RequestHeader.newBuilder().setClusterId(clusterId).build();</span>
+<span class="fc" id="L608">    tsoReq = TsoRequest.newBuilder().setHeader(header).setCount(1).build();</span>
+<span class="fc" id="L609">    this.tiflashReplicaMap = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L610">    this.pdAddrs =</span>
+<span class="fc" id="L611">        resp.getMembersList()</span>
+<span class="fc" id="L612">            .stream()</span>
+<span class="fc" id="L613">            .map(mem -&gt; addrToUri(mem.getClientUrls(0)))</span>
+<span class="fc" id="L614">            .collect(Collectors.toList());</span>
+<span class="fc" id="L615">    logger.info(&quot;init cluster with address: &quot; + this.pdAddrs);</span>
+
+<span class="fc" id="L617">    String leaderUrlStr = resp.getLeader().getClientUrls(0);</span>
+<span class="fc" id="L618">    leaderUrlStr = uriToAddr(addrToUri(leaderUrlStr));</span>
+<span class="fc" id="L619">    logger.info(&quot;createLeaderClientWrapper with leader &quot; + leaderUrlStr + &quot;: start&quot;);</span>
+<span class="fc" id="L620">    createLeaderClientWrapper(leaderUrlStr);</span>
+<span class="fc" id="L621">    logger.info(&quot;createLeaderClientWrapper with leader &quot; + leaderUrlStr + &quot;: end&quot;);</span>
+<span class="fc" id="L622">    service =</span>
+<span class="fc" id="L623">        Executors.newSingleThreadScheduledExecutor(</span>
+            new ThreadFactoryBuilder()
+<span class="fc" id="L625">                .setNameFormat(&quot;PDClient-update-leader-pool-%d&quot;)</span>
+<span class="fc" id="L626">                .setDaemon(true)</span>
+<span class="fc" id="L627">                .build());</span>
+<span class="fc" id="L628">    service.scheduleAtFixedRate(</span>
+        () -&gt; {
+          // Wrap this with a try catch block in case schedule update fails
+          try {
+<span class="fc" id="L632">            tryUpdateLeader();</span>
+<span class="nc" id="L633">          } catch (Exception e) {</span>
+<span class="nc" id="L634">            logger.warn(&quot;Update leader failed&quot;, e);</span>
+<span class="fc" id="L635">          }</span>
+<span class="fc" id="L636">        },</span>
+        10,
+        10,
+        TimeUnit.SECONDS);
+<span class="fc" id="L640">    tiflashReplicaService =</span>
+<span class="fc" id="L641">        Executors.newSingleThreadScheduledExecutor(</span>
+            new ThreadFactoryBuilder()
+<span class="fc" id="L643">                .setNameFormat(&quot;PDClient-tiflash-replica-pool-%d&quot;)</span>
+<span class="fc" id="L644">                .setDaemon(true)</span>
+<span class="fc" id="L645">                .build());</span>
+<span class="fc" id="L646">    tiflashReplicaService.scheduleAtFixedRate(</span>
+        this::updateTiFlashReplicaStatus, 10, 10, TimeUnit.SECONDS);
+<span class="fc" id="L648">    logger.info(&quot;init cluster: finish&quot;);</span>
+<span class="fc" id="L649">  }</span>
+
+  static class PDClientWrapper {
+    private final String leaderInfo;
+    private final PDBlockingStub blockingStub;
+    private final PDFutureStub asyncStub;
+    private final long createTime;
+    private final String storeAddress;
+
+    PDClientWrapper(
+<span class="fc" id="L659">        String leaderInfo, String storeAddress, ManagedChannel clientChannel, long createTime) {</span>
+<span class="pc bpc" id="L660" title="1 of 2 branches missed.">      if (!storeAddress.equals(leaderInfo)) {</span>
+<span class="nc" id="L661">        Metadata header = new Metadata();</span>
+<span class="nc" id="L662">        header.put(TiConfiguration.PD_FORWARD_META_DATA_KEY, addrToUri(leaderInfo).toString());</span>
+<span class="nc" id="L663">        this.blockingStub =</span>
+<span class="nc" id="L664">            MetadataUtils.attachHeaders(PDGrpc.newBlockingStub(clientChannel), header);</span>
+<span class="nc" id="L665">        this.asyncStub = MetadataUtils.attachHeaders(PDGrpc.newFutureStub(clientChannel), header);</span>
+<span class="nc" id="L666">      } else {</span>
+<span class="fc" id="L667">        this.blockingStub = PDGrpc.newBlockingStub(clientChannel);</span>
+<span class="fc" id="L668">        this.asyncStub = PDGrpc.newFutureStub(clientChannel);</span>
+      }
+<span class="fc" id="L670">      this.leaderInfo = leaderInfo;</span>
+<span class="fc" id="L671">      this.storeAddress = storeAddress;</span>
+<span class="fc" id="L672">      this.createTime = createTime;</span>
+<span class="fc" id="L673">    }</span>
+
+    String getLeaderInfo() {
+<span class="fc" id="L676">      return leaderInfo;</span>
+    }
+
+    String getStoreAddress() {
+<span class="fc" id="L680">      return storeAddress;</span>
+    }
+
+    PDBlockingStub getBlockingStub() {
+<span class="fc" id="L684">      return blockingStub;</span>
+    }
+
+    PDFutureStub getAsyncStub() {
+<span class="fc" id="L688">      return asyncStub;</span>
+    }
+
+    long getCreateTime() {
+<span class="nc" id="L692">      return createTime;</span>
+    }
+
+    @Override
+    public String toString() {
+<span class="fc" id="L697">      return &quot;[leaderInfo: &quot; + leaderInfo + &quot;, storeAddress: &quot; + storeAddress + &quot;]&quot;;</span>
+    }
+  }
+
+  private Metapb.Region decodeRegion(Metapb.Region region) {
+<span class="fc bfc" id="L702" title="All 2 branches covered.">    final boolean isRawRegion = conf.getKvMode() == KVMode.RAW;</span>
+    Metapb.Region.Builder builder =
+<span class="fc" id="L704">        Metapb.Region.newBuilder()</span>
+<span class="fc" id="L705">            .setId(region.getId())</span>
+<span class="fc" id="L706">            .setRegionEpoch(region.getRegionEpoch())</span>
+<span class="fc" id="L707">            .addAllPeers(region.getPeersList());</span>
+
+<span class="pc bpc" id="L709" title="1 of 4 branches missed.">    if (region.getStartKey().isEmpty() || isRawRegion) {</span>
+<span class="fc" id="L710">      builder.setStartKey(region.getStartKey());</span>
+    } else {
+<span class="fc" id="L712">      byte[] decodedStartKey = BytesCodec.readBytes(new CodecDataInput(region.getStartKey()));</span>
+<span class="fc" id="L713">      builder.setStartKey(ByteString.copyFrom(decodedStartKey));</span>
+    }
+
+<span class="pc bpc" id="L716" title="1 of 4 branches missed.">    if (region.getEndKey().isEmpty() || isRawRegion) {</span>
+<span class="fc" id="L717">      builder.setEndKey(region.getEndKey());</span>
+    } else {
+<span class="fc" id="L719">      byte[] decodedEndKey = BytesCodec.readBytes(new CodecDataInput(region.getEndKey()));</span>
+<span class="fc" id="L720">      builder.setEndKey(ByteString.copyFrom(decodedEndKey));</span>
+    }
+
+<span class="fc" id="L723">    return builder.build();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

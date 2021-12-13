@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>KeyRangeUtils.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.util</a> &gt; <span class="el_source">KeyRangeUtils.java</span></div><h1>KeyRangeUtils.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.util;
+
+import static org.tikv.common.key.Key.toRawKey;
+
+import com.google.common.collect.BoundType;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Range;
+import com.google.protobuf.ByteString;
+import java.util.List;
+import org.tikv.common.exception.TiClientInternalException;
+import org.tikv.common.key.Key;
+import org.tikv.kvproto.Coprocessor.KeyRange;
+
+<span class="nc" id="L29">public class KeyRangeUtils {</span>
+  public static Range&lt;Key&gt; makeRange(ByteString startKey, ByteString endKey) {
+<span class="fc" id="L31">    return Range.closedOpen(toRawKey(startKey, true), toRawKey(endKey));</span>
+  }
+
+  /**
+   * Build a Coprocessor Range with CLOSED_OPEN endpoints
+   *
+   * @param startKey startKey
+   * @param endKey endKey
+   * @return a CLOSED_OPEN range for coprocessor
+   */
+  public static KeyRange makeCoprocRange(ByteString startKey, ByteString endKey) {
+<span class="nc" id="L42">    return KeyRange.newBuilder().setStart(startKey).setEnd(endKey).build();</span>
+  }
+
+  /**
+   * Build a Coprocessor Range
+   *
+   * @param range Range with Comparable endpoints
+   * @return a CLOSED_OPEN range for coprocessor
+   */
+  public static KeyRange makeCoprocRange(Range&lt;Key&gt; range) {
+<span class="nc bnc" id="L52" title="All 4 branches missed.">    if (!range.hasLowerBound() || !range.hasUpperBound()) {</span>
+<span class="nc" id="L53">      throw new TiClientInternalException(&quot;range is not bounded&quot;);</span>
+    }
+<span class="nc bnc" id="L55" title="All 2 branches missed.">    if (range.lowerBoundType().equals(BoundType.OPEN)</span>
+<span class="nc bnc" id="L56" title="All 2 branches missed.">        || range.upperBoundType().equals(BoundType.CLOSED)) {</span>
+<span class="nc" id="L57">      throw new TiClientInternalException(&quot;range must be CLOSED_OPEN&quot;);</span>
+    }
+<span class="nc" id="L59">    return makeCoprocRange(</span>
+<span class="nc" id="L60">        range.lowerEndpoint().toByteString(), range.upperEndpoint().toByteString());</span>
+  }
+
+  /**
+   * Merge potential discrete ranges into one large range.
+   *
+   * @param ranges the range list to merge
+   * @return the minimal range which encloses all ranges in this range list.
+   */
+  public static List&lt;KeyRange&gt; mergeRanges(List&lt;KeyRange&gt; ranges) {
+<span class="nc bnc" id="L70" title="All 6 branches missed.">    if (ranges == null || ranges.isEmpty() || ranges.size() == 1) {</span>
+<span class="nc" id="L71">      return ranges;</span>
+    }
+
+<span class="nc" id="L74">    KeyRange first = ranges.get(0);</span>
+<span class="nc" id="L75">    Key lowMin = toRawKey(first.getStart(), true);</span>
+<span class="nc" id="L76">    Key upperMax = toRawKey(first.getEnd(), false);</span>
+
+<span class="nc bnc" id="L78" title="All 2 branches missed.">    for (int i = 1; i &lt; ranges.size(); i++) {</span>
+<span class="nc" id="L79">      KeyRange keyRange = ranges.get(i);</span>
+<span class="nc" id="L80">      Key start = toRawKey(keyRange.getStart(), true);</span>
+<span class="nc" id="L81">      Key end = toRawKey(keyRange.getEnd(), false);</span>
+<span class="nc bnc" id="L82" title="All 2 branches missed.">      if (start.compareTo(lowMin) &lt; 0) {</span>
+<span class="nc" id="L83">        lowMin = start;</span>
+      }
+<span class="nc bnc" id="L85" title="All 2 branches missed.">      if (end.compareTo(upperMax) &gt; 0) {</span>
+<span class="nc" id="L86">        upperMax = end;</span>
+      }
+    }
+
+<span class="nc" id="L90">    ImmutableList.Builder&lt;KeyRange&gt; rangeBuilder = ImmutableList.builder();</span>
+<span class="nc" id="L91">    rangeBuilder.add(makeCoprocRange(lowMin.toByteString(), upperMax.toByteString()));</span>
+<span class="nc" id="L92">    return rangeBuilder.build();</span>
+  }
+
+  /**
+   * Merge SORTED potential discrete ranges into one large range.
+   *
+   * @param ranges the sorted range list to merge
+   * @return the minimal range which encloses all ranges in this range list.
+   */
+  public static List&lt;KeyRange&gt; mergeSortedRanges(List&lt;KeyRange&gt; ranges) {
+<span class="nc" id="L102">    return mergeSortedRanges(ranges, 1);</span>
+  }
+
+  /**
+   * Merge SORTED potential discrete ranges into no more than {@code splitNum} large range.
+   *
+   * @param ranges the sorted range list to merge
+   * @param splitNum upper bound of number of ranges to merge into
+   * @return the minimal range which encloses all ranges in this range list.
+   */
+  public static List&lt;KeyRange&gt; mergeSortedRanges(List&lt;KeyRange&gt; ranges, int splitNum) {
+<span class="nc bnc" id="L113" title="All 2 branches missed.">    if (splitNum &lt;= 0) {</span>
+<span class="nc" id="L114">      throw new RuntimeException(&quot;Cannot split ranges by non-positive integer&quot;);</span>
+    }
+<span class="nc bnc" id="L116" title="All 6 branches missed.">    if (ranges == null || ranges.isEmpty() || ranges.size() &lt;= splitNum) {</span>
+<span class="nc" id="L117">      return ranges;</span>
+    }
+    // use ceil for split step
+<span class="nc" id="L120">    int step = (ranges.size() + splitNum - 1) / splitNum;</span>
+<span class="nc" id="L121">    ImmutableList.Builder&lt;KeyRange&gt; rangeBuilder = ImmutableList.builder();</span>
+<span class="nc bnc" id="L122" title="All 2 branches missed.">    for (int i = 0, nowPos = 0; i &lt; splitNum; i++) {</span>
+<span class="nc" id="L123">      int nextPos = Math.min(nowPos + step - 1, ranges.size() - 1);</span>
+<span class="nc" id="L124">      KeyRange first = ranges.get(nowPos);</span>
+<span class="nc" id="L125">      KeyRange last = ranges.get(nextPos);</span>
+
+<span class="nc" id="L127">      Key lowerMin = toRawKey(first.getStart(), true);</span>
+<span class="nc" id="L128">      Key upperMax = toRawKey(last.getEnd(), false);</span>
+
+<span class="nc" id="L130">      rangeBuilder.add(makeCoprocRange(lowerMin.toByteString(), upperMax.toByteString()));</span>
+<span class="nc" id="L131">      nowPos = nowPos + step;</span>
+    }
+<span class="nc" id="L133">    return rangeBuilder.build();</span>
+  }
+
+  static String formatByteString(ByteString key) {
+<span class="nc" id="L137">    StringBuilder sb = new StringBuilder();</span>
+<span class="nc bnc" id="L138" title="All 2 branches missed.">    for (int i = 0; i &lt; key.size(); i++) {</span>
+<span class="nc" id="L139">      sb.append(key.byteAt(i) &amp; 0xff);</span>
+<span class="nc bnc" id="L140" title="All 2 branches missed.">      if (i &lt; key.size() - 1) {</span>
+<span class="nc" id="L141">        sb.append(&quot;,&quot;);</span>
+      }
+    }
+<span class="nc" id="L144">    return sb.toString();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

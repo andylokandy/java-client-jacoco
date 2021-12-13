@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Store.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.replica</a> &gt; <span class="el_source">Store.java</span></div><h1>Store.java</h1><pre class="source lang-java linenums">package org.tikv.common.replica;
+
+import static com.google.common.base.MoreObjects.toStringHelper;
+
+import java.util.List;
+import org.tikv.kvproto.Metapb;
+
+public class Store {
+  public static class Label {
+    private final org.tikv.kvproto.Metapb.StoreLabel label;
+
+<span class="nc" id="L12">    Label(org.tikv.kvproto.Metapb.StoreLabel label) {</span>
+<span class="nc" id="L13">      this.label = label;</span>
+<span class="nc" id="L14">    }</span>
+
+    public String getKey() {
+<span class="nc" id="L17">      return label.getKey();</span>
+    }
+
+    public String getValue() {
+<span class="nc" id="L21">      return label.getValue();</span>
+    }
+  }
+
+<span class="nc" id="L25">  public enum State {</span>
+<span class="nc" id="L26">    Unknown,</span>
+<span class="nc" id="L27">    Up,</span>
+<span class="nc" id="L28">    Offline,</span>
+<span class="nc" id="L29">    Tombstone</span>
+  }
+
+<span class="fc" id="L32">  private static final Label[] EMPTY_LABELS = new Label[0];</span>
+  private Label[] labels;
+  private final Metapb.Peer peer;
+  private final Metapb.Store store;
+  private final boolean isLeader;
+
+  Store(
+      final org.tikv.kvproto.Metapb.Peer peer,
+      final org.tikv.kvproto.Metapb.Store store,
+<span class="fc" id="L41">      boolean isLeader) {</span>
+<span class="fc" id="L42">    this.peer = peer;</span>
+<span class="fc" id="L43">    this.store = store;</span>
+<span class="fc" id="L44">    this.isLeader = isLeader;</span>
+<span class="fc" id="L45">  }</span>
+
+  public Metapb.Peer getPeer() {
+<span class="fc" id="L48">    return peer;</span>
+  }
+
+  public Label[] getLabels() {
+<span class="nc bnc" id="L52" title="All 2 branches missed.">    if (labels == null) {</span>
+<span class="nc" id="L53">      List&lt;Metapb.StoreLabel&gt; labelList = store.getLabelsList();</span>
+<span class="nc bnc" id="L54" title="All 2 branches missed.">      if (labelList.isEmpty()) {</span>
+<span class="nc" id="L55">        labels = EMPTY_LABELS;</span>
+      } else {
+<span class="nc" id="L57">        labels = labelList.stream().map(Label::new).toArray(Label[]::new);</span>
+      }
+    }
+<span class="nc" id="L60">    return labels;</span>
+  }
+
+  public boolean isLearner() {
+<span class="pc bpc" id="L64" title="1 of 2 branches missed.">    return peer.getRole() == Metapb.PeerRole.Learner;</span>
+  }
+
+  public boolean isLeader() {
+<span class="nc" id="L68">    return isLeader;</span>
+  }
+
+  public boolean isFollower() {
+<span class="nc bnc" id="L72" title="All 4 branches missed.">    return peer.getRole() == Metapb.PeerRole.Voter &amp;&amp; !isLeader;</span>
+  }
+
+  public long getId() {
+<span class="nc" id="L76">    return store.getId();</span>
+  }
+
+  public String getAddress() {
+<span class="nc" id="L80">    return store.getAddress();</span>
+  }
+
+  public String getVersion() {
+<span class="nc" id="L84">    return store.getVersion();</span>
+  }
+
+  public State getState() {
+<span class="nc bnc" id="L88" title="All 4 branches missed.">    switch (store.getState()) {</span>
+      case Up:
+<span class="nc" id="L90">        return State.Up;</span>
+      case Offline:
+<span class="nc" id="L92">        return State.Offline;</span>
+      case Tombstone:
+<span class="nc" id="L94">        return State.Tombstone;</span>
+      default:
+<span class="nc" id="L96">        return State.Unknown;</span>
+    }
+  }
+
+  public boolean equals(Object o) {
+<span class="pc bpc" id="L101" title="1 of 2 branches missed.">    if (!(o instanceof Store)) {</span>
+<span class="nc" id="L102">      return false;</span>
+    }
+<span class="fc" id="L104">    Store other = (Store) o;</span>
+<span class="fc" id="L105">    return this.peer.equals(other.peer);</span>
+  }
+
+  public String toString() {
+<span class="nc" id="L109">    return toStringHelper(this).add(&quot;peer&quot;, peer).add(&quot;store&quot;, store).toString();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

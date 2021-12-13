@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CacheInvalidateEvent.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.event</a> &gt; <span class="el_source">CacheInvalidateEvent.java</span></div><h1>CacheInvalidateEvent.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.event;
+
+import java.io.Serializable;
+
+public class CacheInvalidateEvent implements Serializable {
+  private final long regionId;
+  private final long storeId;
+  private final CacheType cacheType;
+  private boolean invalidateRegion;
+  private boolean invalidateStore;
+
+  public CacheInvalidateEvent(
+<span class="nc" id="L28">      long regionId, long storeId, boolean updateRegion, boolean updateStore, CacheType type) {</span>
+<span class="nc" id="L29">    this.regionId = regionId;</span>
+<span class="nc" id="L30">    this.storeId = storeId;</span>
+<span class="nc" id="L31">    this.cacheType = type;</span>
+<span class="nc bnc" id="L32" title="All 2 branches missed.">    if (updateRegion) {</span>
+<span class="nc" id="L33">      invalidateRegion();</span>
+    }
+
+<span class="nc bnc" id="L36" title="All 2 branches missed.">    if (updateStore) {</span>
+<span class="nc" id="L37">      invalidateStore();</span>
+    }
+<span class="nc" id="L39">  }</span>
+
+  public long getRegionId() {
+<span class="nc" id="L42">    return regionId;</span>
+  }
+
+  public long getStoreId() {
+<span class="nc" id="L46">    return storeId;</span>
+  }
+
+  @Override
+  public boolean equals(Object obj) {
+<span class="nc bnc" id="L51" title="All 2 branches missed.">    if (obj == this) {</span>
+<span class="nc" id="L52">      return true;</span>
+<span class="nc bnc" id="L53" title="All 2 branches missed.">    } else if (obj instanceof CacheInvalidateEvent) {</span>
+<span class="nc" id="L54">      CacheInvalidateEvent event = (CacheInvalidateEvent) obj;</span>
+<span class="nc bnc" id="L55" title="All 2 branches missed.">      return event.getRegionId() == getRegionId()</span>
+<span class="nc bnc" id="L56" title="All 2 branches missed.">          &amp;&amp; event.getStoreId() == getStoreId()</span>
+<span class="nc bnc" id="L57" title="All 2 branches missed.">          &amp;&amp; event.getCacheType() == getCacheType();</span>
+    }
+<span class="nc" id="L59">    return false;</span>
+  }
+
+  @Override
+  public int hashCode() {
+<span class="nc" id="L64">    int result = 1106;</span>
+<span class="nc" id="L65">    result += result * 31 + getStoreId();</span>
+<span class="nc" id="L66">    result += result * 31 + getRegionId();</span>
+<span class="nc" id="L67">    result += result * 31 + getCacheType().name().hashCode();</span>
+<span class="nc" id="L68">    return result;</span>
+  }
+
+  public void invalidateRegion() {
+<span class="nc" id="L72">    invalidateRegion = true;</span>
+<span class="nc" id="L73">  }</span>
+
+  public void invalidateStore() {
+<span class="nc" id="L76">    invalidateStore = true;</span>
+<span class="nc" id="L77">  }</span>
+
+  public boolean shouldUpdateRegion() {
+<span class="nc" id="L80">    return invalidateRegion;</span>
+  }
+
+  public boolean shouldUpdateStore() {
+<span class="nc" id="L84">    return invalidateStore;</span>
+  }
+
+  public CacheType getCacheType() {
+<span class="nc" id="L88">    return cacheType;</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L93">    return String.format(&quot;RegionId=%d,StoreId=%d,Type=%s&quot;, regionId, storeId, cacheType.name());</span>
+  }
+
+<span class="nc" id="L96">  public enum CacheType implements Serializable {</span>
+<span class="nc" id="L97">    REGION_STORE,</span>
+<span class="nc" id="L98">    REQ_FAILED,</span>
+<span class="nc" id="L99">    LEADER</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

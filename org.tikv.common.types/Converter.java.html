@@ -1,0 +1,365 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Converter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.types</a> &gt; <span class="el_source">Converter.java</span></div><h1>Converter.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.types;
+
+import static java.util.Objects.requireNonNull;
+import static org.tikv.common.types.TimeType.HOUR;
+import static org.tikv.common.types.TimeType.MICROSECOND;
+import static org.tikv.common.types.TimeType.MINUTE;
+import static org.tikv.common.types.TimeType.SECOND;
+
+import com.google.common.primitives.UnsignedLong;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.sql.Date;
+import java.sql.Timestamp;
+import java.util.Arrays;
+import org.joda.time.DateTime;
+import org.joda.time.DateTimeZone;
+import org.joda.time.format.DateTimeFormat;
+import org.joda.time.format.DateTimeFormatter;
+import org.tikv.common.ExtendedDateTime;
+import org.tikv.common.exception.ConvertNotSupportException;
+import org.tikv.common.exception.ConvertOverflowException;
+import org.tikv.common.exception.TypeException;
+
+<span class="nc" id="L42">public class Converter {</span>
+
+<span class="nc" id="L44">  static final DateTimeFormatter UTC_TIME_FORMATTER =</span>
+<span class="nc" id="L45">      DateTimeFormat.forPattern(&quot;yyyy-MM-dd HH:mm:ss&quot;).withZone(DateTimeZone.UTC);</span>
+<span class="nc" id="L46">  private static final DateTimeZone localTimeZone = DateTimeZone.getDefault();</span>
+<span class="nc" id="L47">  private static final DateTimeFormatter localDateTimeFormatter =</span>
+<span class="nc" id="L48">      DateTimeFormat.forPattern(&quot;yyyy-MM-dd HH:mm:ss&quot;).withZone(localTimeZone);</span>
+<span class="nc" id="L49">  private static final DateTimeFormatter localDateFormatter =</span>
+<span class="nc" id="L50">      DateTimeFormat.forPattern(&quot;yyyy-MM-dd&quot;).withZone(localTimeZone);</span>
+
+  public static Long safeConvertToSigned(Object value, Long lowerBound, Long upperBound)
+      throws ConvertNotSupportException, ConvertOverflowException {
+    Long result;
+<span class="nc bnc" id="L55" title="All 2 branches missed.">    if (value instanceof Boolean) {</span>
+<span class="nc bnc" id="L56" title="All 2 branches missed.">      if ((Boolean) value) {</span>
+<span class="nc" id="L57">        result = 1L;</span>
+      } else {
+<span class="nc" id="L59">        result = 0L;</span>
+      }
+<span class="nc bnc" id="L61" title="All 2 branches missed.">    } else if (value instanceof Byte) {</span>
+<span class="nc" id="L62">      result = ((Byte) value).longValue();</span>
+<span class="nc bnc" id="L63" title="All 2 branches missed.">    } else if (value instanceof Short) {</span>
+<span class="nc" id="L64">      result = ((Short) value).longValue();</span>
+<span class="nc bnc" id="L65" title="All 2 branches missed.">    } else if (value instanceof Integer) {</span>
+<span class="nc" id="L66">      result = ((Integer) value).longValue();</span>
+<span class="nc bnc" id="L67" title="All 2 branches missed.">    } else if (value instanceof Long) {</span>
+<span class="nc" id="L68">      result = (Long) value;</span>
+<span class="nc bnc" id="L69" title="All 2 branches missed.">    } else if (value instanceof Float) {</span>
+<span class="nc" id="L70">      result = floatToLong((Float) value);</span>
+<span class="nc bnc" id="L71" title="All 2 branches missed.">    } else if (value instanceof Double) {</span>
+<span class="nc" id="L72">      result = doubleToLong((Double) value);</span>
+<span class="nc bnc" id="L73" title="All 2 branches missed.">    } else if (value instanceof String) {</span>
+<span class="nc" id="L74">      result = stringToLong((String) value);</span>
+    } else {
+<span class="nc" id="L76">      throw new ConvertNotSupportException(value.getClass().getName(), &quot;SIGNED&quot;);</span>
+    }
+
+<span class="nc bnc" id="L79" title="All 2 branches missed.">    if (result &lt; lowerBound) {</span>
+<span class="nc" id="L80">      throw ConvertOverflowException.newLowerBoundException(result, lowerBound);</span>
+    }
+
+<span class="nc bnc" id="L83" title="All 2 branches missed.">    if (result &gt; upperBound) {</span>
+<span class="nc" id="L84">      throw ConvertOverflowException.newUpperBoundException(result, upperBound);</span>
+    }
+<span class="nc" id="L86">    return result;</span>
+  }
+
+  public static Long safeConvertToUnsigned(Object value, Long upperBound)
+      throws ConvertNotSupportException, ConvertOverflowException {
+    Long result;
+<span class="nc bnc" id="L92" title="All 2 branches missed.">    if (value instanceof Boolean) {</span>
+<span class="nc bnc" id="L93" title="All 2 branches missed.">      if ((Boolean) value) {</span>
+<span class="nc" id="L94">        result = 1L;</span>
+      } else {
+<span class="nc" id="L96">        result = 0L;</span>
+      }
+<span class="nc bnc" id="L98" title="All 2 branches missed.">    } else if (value instanceof Byte) {</span>
+<span class="nc" id="L99">      result = ((Byte) value).longValue();</span>
+<span class="nc bnc" id="L100" title="All 2 branches missed.">    } else if (value instanceof Short) {</span>
+<span class="nc" id="L101">      result = ((Short) value).longValue();</span>
+<span class="nc bnc" id="L102" title="All 2 branches missed.">    } else if (value instanceof Integer) {</span>
+<span class="nc" id="L103">      result = ((Integer) value).longValue();</span>
+<span class="nc bnc" id="L104" title="All 2 branches missed.">    } else if (value instanceof Long) {</span>
+<span class="nc" id="L105">      result = (Long) value;</span>
+<span class="nc bnc" id="L106" title="All 2 branches missed.">    } else if (value instanceof Float) {</span>
+<span class="nc" id="L107">      result = floatToLong((Float) value);</span>
+<span class="nc bnc" id="L108" title="All 2 branches missed.">    } else if (value instanceof Double) {</span>
+<span class="nc" id="L109">      result = doubleToLong((Double) value);</span>
+<span class="nc bnc" id="L110" title="All 2 branches missed.">    } else if (value instanceof String) {</span>
+<span class="nc" id="L111">      UnsignedLong unsignedLong = stringToUnsignedLong((String) value);</span>
+<span class="nc" id="L112">      result = unsignedLong.longValue();</span>
+<span class="nc" id="L113">    } else {</span>
+<span class="nc" id="L114">      throw new ConvertNotSupportException(value.getClass().getName(), &quot;UNSIGNED&quot;);</span>
+    }
+
+<span class="nc" id="L117">    long lowerBound = 0L;</span>
+<span class="nc bnc" id="L118" title="All 2 branches missed.">    if (Long.compareUnsigned(result, lowerBound) &lt; 0) {</span>
+<span class="nc" id="L119">      throw ConvertOverflowException.newLowerBoundException(result, lowerBound);</span>
+    }
+
+<span class="nc bnc" id="L122" title="All 2 branches missed.">    if (Long.compareUnsigned(result, upperBound) &gt; 0) {</span>
+<span class="nc" id="L123">      throw ConvertOverflowException.newUpperBoundException(result, upperBound);</span>
+    }
+<span class="nc" id="L125">    return result;</span>
+  }
+
+  public static Long floatToLong(Float v) {
+<span class="nc" id="L129">    return (long) Math.round(v);</span>
+  }
+
+  public static Long doubleToLong(Double v) {
+<span class="nc" id="L133">    return Math.round(v);</span>
+  }
+
+  public static Long stringToLong(String v) {
+<span class="nc" id="L137">    return Long.parseLong(v);</span>
+  }
+
+  public static Double stringToDouble(String v) {
+<span class="nc" id="L141">    return Double.parseDouble(v);</span>
+  }
+
+  public static UnsignedLong stringToUnsignedLong(String v) {
+<span class="nc" id="L145">    return UnsignedLong.valueOf(v);</span>
+  }
+
+  public static long convertToLong(Object val) {
+<span class="nc" id="L149">    requireNonNull(val, &quot;val is null&quot;);</span>
+<span class="nc bnc" id="L150" title="All 2 branches missed.">    if (val instanceof Number) {</span>
+<span class="nc" id="L151">      return ((Number) val).longValue();</span>
+<span class="nc bnc" id="L152" title="All 2 branches missed.">    } else if (val instanceof String) {</span>
+<span class="nc" id="L153">      return Long.parseLong(val.toString());</span>
+    }
+<span class="nc" id="L155">    throw new TypeException(</span>
+<span class="nc" id="L156">        String.format(&quot;Cannot cast %s to long&quot;, val.getClass().getSimpleName()));</span>
+  }
+
+  public static double convertToDouble(Object val) {
+<span class="nc" id="L160">    requireNonNull(val, &quot;val is null&quot;);</span>
+<span class="nc bnc" id="L161" title="All 2 branches missed.">    if (val instanceof Number) {</span>
+<span class="nc" id="L162">      return ((Number) val).doubleValue();</span>
+<span class="nc bnc" id="L163" title="All 2 branches missed.">    } else if (val instanceof String) {</span>
+<span class="nc" id="L164">      return Double.parseDouble(val.toString());</span>
+    }
+<span class="nc" id="L166">    throw new TypeException(</span>
+<span class="nc" id="L167">        String.format(&quot;Cannot cast %s to double&quot;, val.getClass().getSimpleName()));</span>
+  }
+
+  public static String convertToString(Object val) {
+<span class="nc" id="L171">    requireNonNull(val, &quot;val is null&quot;);</span>
+<span class="nc" id="L172">    return val.toString();</span>
+  }
+
+  public static byte[] convertToBytes(Object val) {
+<span class="nc" id="L176">    requireNonNull(val, &quot;val is null&quot;);</span>
+<span class="nc bnc" id="L177" title="All 2 branches missed.">    if (val instanceof byte[]) {</span>
+<span class="nc" id="L178">      return (byte[]) val;</span>
+<span class="nc bnc" id="L179" title="All 2 branches missed.">    } else if (val instanceof String) {</span>
+<span class="nc" id="L180">      return ((String) val).getBytes();</span>
+    }
+<span class="nc" id="L182">    throw new TypeException(</span>
+<span class="nc" id="L183">        String.format(&quot;Cannot cast %s to bytes&quot;, val.getClass().getSimpleName()));</span>
+  }
+
+  static byte[] convertToBytes(Object val, int prefixLength) {
+<span class="nc" id="L187">    requireNonNull(val, &quot;val is null&quot;);</span>
+<span class="nc bnc" id="L188" title="All 2 branches missed.">    if (val instanceof byte[]) {</span>
+<span class="nc" id="L189">      byte[] valByte = (byte[]) val;</span>
+<span class="nc" id="L190">      return Arrays.copyOf(valByte, Math.min(valByte.length, prefixLength));</span>
+<span class="nc bnc" id="L191" title="All 2 branches missed.">    } else if (val instanceof String) {</span>
+<span class="nc" id="L192">      String valStr = (String) val;</span>
+<span class="nc" id="L193">      return Arrays.copyOf(((String) val).getBytes(), Math.min(valStr.length(), prefixLength));</span>
+    }
+<span class="nc" id="L195">    throw new TypeException(</span>
+<span class="nc" id="L196">        String.format(&quot;Cannot cast %s to bytes&quot;, val.getClass().getSimpleName()));</span>
+  }
+
+  static byte[] convertUtf8ToBytes(Object val, int prefixLength) {
+<span class="nc" id="L200">    requireNonNull(val, &quot;val is null&quot;);</span>
+<span class="nc bnc" id="L201" title="All 2 branches missed.">    if (val instanceof byte[]) {</span>
+<span class="nc" id="L202">      byte[] valByte = (byte[]) val;</span>
+<span class="nc" id="L203">      return new String(valByte)</span>
+<span class="nc" id="L204">          .substring(0, Math.min(valByte.length, prefixLength))</span>
+<span class="nc" id="L205">          .getBytes(StandardCharsets.UTF_8);</span>
+<span class="nc bnc" id="L206" title="All 2 branches missed.">    } else if (val instanceof String) {</span>
+<span class="nc" id="L207">      String valStr = (String) val;</span>
+<span class="nc" id="L208">      return valStr</span>
+<span class="nc" id="L209">          .substring(0, Math.min(valStr.length(), prefixLength))</span>
+<span class="nc" id="L210">          .getBytes(StandardCharsets.UTF_8);</span>
+    }
+<span class="nc" id="L212">    throw new TypeException(</span>
+<span class="nc" id="L213">        String.format(&quot;Cannot cast %s to bytes&quot;, val.getClass().getSimpleName()));</span>
+  }
+
+  public static DateTimeZone getLocalTimezone() {
+<span class="nc" id="L217">    return localTimeZone;</span>
+  }
+
+  static DateTime strToDateTime(String value, DateTimeFormatter formatter) {
+<span class="nc" id="L221">    return DateTime.parse(value, formatter);</span>
+  }
+
+  /**
+   * Convert an object to Datetime. If constant is a string, it parses as local timezone. If it is
+   * an long, it parsed as UTC epoch. If it is a TimeStamp, it parses as local timezone.
+   *
+   * @param val value to be converted to DateTime
+   * @return joda.time.DateTime indicating local Datetime
+   */
+  public static ExtendedDateTime convertToDateTime(Object val) {
+<span class="nc" id="L232">    requireNonNull(val, &quot;val is null&quot;);</span>
+<span class="nc bnc" id="L233" title="All 2 branches missed.">    if (val instanceof DateTime) {</span>
+<span class="nc" id="L234">      return new ExtendedDateTime((DateTime) val);</span>
+<span class="nc bnc" id="L235" title="All 2 branches missed.">    } else if (val instanceof String) {</span>
+      // interpret string as in local timezone
+      try {
+<span class="nc" id="L238">        return new ExtendedDateTime(strToDateTime((String) val, localDateTimeFormatter));</span>
+<span class="nc" id="L239">      } catch (Exception e) {</span>
+<span class="nc" id="L240">        throw new TypeException(String.format(&quot;Error parsing string %s to datetime&quot;, val), e);</span>
+      }
+<span class="nc bnc" id="L242" title="All 2 branches missed.">    } else if (val instanceof Long) {</span>
+<span class="nc" id="L243">      return new ExtendedDateTime(new DateTime((long) val));</span>
+<span class="nc bnc" id="L244" title="All 2 branches missed.">    } else if (val instanceof Timestamp) {</span>
+<span class="nc" id="L245">      Timestamp timestamp = (Timestamp) val;</span>
+<span class="nc" id="L246">      DateTime dateTime = new DateTime(timestamp.getTime());</span>
+<span class="nc" id="L247">      int nanos = timestamp.getNanos();</span>
+<span class="nc" id="L248">      return new ExtendedDateTime(dateTime, (nanos / 1000) % 1000);</span>
+<span class="nc bnc" id="L249" title="All 2 branches missed.">    } else if (val instanceof Date) {</span>
+<span class="nc" id="L250">      return new ExtendedDateTime(new DateTime(((Date) val).getTime()));</span>
+    } else {
+<span class="nc" id="L252">      throw new TypeException(&quot;Can not cast Object to LocalDateTime &quot;);</span>
+    }
+  }
+
+  /**
+   * Convert an object to Date If constant is a string, it parses as local timezone If it is an
+   * long, it parsed as UTC epoch
+   *
+   * @param val value to be converted to DateTime
+   * @return java.sql.Date indicating Date
+   */
+  public static Date convertToDate(Object val) {
+<span class="nc" id="L264">    requireNonNull(val, &quot;val is null&quot;);</span>
+<span class="nc bnc" id="L265" title="All 2 branches missed.">    if (val instanceof Date) {</span>
+<span class="nc" id="L266">      return (Date) val;</span>
+<span class="nc bnc" id="L267" title="All 2 branches missed.">    } else if (val instanceof String) {</span>
+      try {
+<span class="nc" id="L269">        return new Date(DateTime.parse((String) val, localDateFormatter).toDate().getTime());</span>
+<span class="nc" id="L270">      } catch (Exception e) {</span>
+<span class="nc" id="L271">        throw new TypeException(String.format(&quot;Error parsing string %s to date&quot;, val), e);</span>
+      }
+<span class="nc bnc" id="L273" title="All 2 branches missed.">    } else if (val instanceof Integer) {</span>
+      // when the val is a Integer, it is only have year part of a Date.
+<span class="nc" id="L275">      return new Date((Integer) val, 0, 0);</span>
+<span class="nc bnc" id="L276" title="All 2 branches missed.">    } else if (val instanceof Long) {</span>
+<span class="nc" id="L277">      return new Date((long) val);</span>
+<span class="nc bnc" id="L278" title="All 2 branches missed.">    } else if (val instanceof Timestamp) {</span>
+<span class="nc" id="L279">      return new Date(((Timestamp) val).getTime());</span>
+<span class="nc bnc" id="L280" title="All 2 branches missed.">    } else if (val instanceof DateTime) {</span>
+<span class="nc" id="L281">      return new Date(((DateTime) val).getMillis());</span>
+    } else {
+<span class="nc" id="L283">      throw new TypeException(&quot;Can not cast Object to LocalDate&quot;);</span>
+    }
+  }
+
+  public static BigDecimal convertToBigDecimal(Object val) {
+<span class="nc" id="L288">    requireNonNull(val, &quot;val is null&quot;);</span>
+<span class="nc bnc" id="L289" title="All 2 branches missed.">    if (val instanceof BigDecimal) {</span>
+<span class="nc" id="L290">      return (BigDecimal) val;</span>
+<span class="nc bnc" id="L291" title="All 4 branches missed.">    } else if (val instanceof Double || val instanceof Float) {</span>
+<span class="nc" id="L292">      return new BigDecimal((Double) val);</span>
+<span class="nc bnc" id="L293" title="All 2 branches missed.">    } else if (val instanceof BigInteger) {</span>
+<span class="nc" id="L294">      return new BigDecimal((BigInteger) val);</span>
+<span class="nc bnc" id="L295" title="All 2 branches missed.">    } else if (val instanceof Number) {</span>
+<span class="nc" id="L296">      return new BigDecimal(((Number) val).longValue());</span>
+<span class="nc bnc" id="L297" title="All 2 branches missed.">    } else if (val instanceof String) {</span>
+<span class="nc" id="L298">      return new BigDecimal((String) val);</span>
+    } else {
+<span class="nc" id="L300">      throw new TypeException(&quot;can not cast non Number type to Double&quot;);</span>
+    }
+  }
+
+  public static String convertDurationToStr(long nanos, int decimal) {
+<span class="nc" id="L305">    int sign = 1, hours, minutes, seconds, frac;</span>
+<span class="nc bnc" id="L306" title="All 2 branches missed.">    if (nanos &lt; 0) {</span>
+<span class="nc" id="L307">      nanos = -nanos;</span>
+<span class="nc" id="L308">      sign = -1;</span>
+    }
+<span class="nc" id="L310">    hours = (int) (nanos / HOUR);</span>
+<span class="nc" id="L311">    nanos -= hours * HOUR;</span>
+<span class="nc" id="L312">    minutes = (int) (nanos / MINUTE);</span>
+<span class="nc" id="L313">    nanos -= minutes * MINUTE;</span>
+<span class="nc" id="L314">    seconds = (int) (nanos / SECOND);</span>
+<span class="nc" id="L315">    nanos -= seconds * SECOND;</span>
+<span class="nc" id="L316">    frac = (int) (nanos / MICROSECOND);</span>
+<span class="nc" id="L317">    StringBuilder sb = new StringBuilder();</span>
+<span class="nc bnc" id="L318" title="All 2 branches missed.">    if (sign &lt; 0) {</span>
+<span class="nc" id="L319">      sb.append('-');</span>
+    }
+<span class="nc" id="L321">    sb.append(String.format(&quot;%02d:%02d:%02d&quot;, hours, minutes, seconds));</span>
+<span class="nc bnc" id="L322" title="All 2 branches missed.">    if (decimal &gt; 0) {</span>
+<span class="nc" id="L323">      sb.append('.');</span>
+<span class="nc" id="L324">      sb.append(String.format(&quot;%06d&quot;, frac), 0, decimal);</span>
+    }
+<span class="nc" id="L326">    return sb.toString();</span>
+  }
+
+  public static long convertStrToDuration(String value) {
+    // value should be in form of 12:59:59.000 or 12:59:59
+    // length expect to be 3.
+    try {
+<span class="nc" id="L333">      String[] splitBySemiColon = value.split(&quot;:&quot;);</span>
+<span class="nc bnc" id="L334" title="All 2 branches missed.">      if (splitBySemiColon.length != 3)</span>
+<span class="nc" id="L335">        throw new IllegalArgumentException(</span>
+<span class="nc" id="L336">            String.format(&quot;%s is not a valid time type in mysql&quot;, value));</span>
+      int sign, hour, minute, second, frac;
+<span class="nc" id="L338">      sign = 1;</span>
+<span class="nc" id="L339">      hour = Integer.parseInt(splitBySemiColon[0]);</span>
+<span class="nc bnc" id="L340" title="All 2 branches missed.">      if (hour &lt; 0) {</span>
+<span class="nc" id="L341">        sign = -1;</span>
+<span class="nc" id="L342">        hour -= hour;</span>
+      }
+<span class="nc" id="L344">      minute = Integer.parseInt(splitBySemiColon[1]);</span>
+<span class="nc bnc" id="L345" title="All 2 branches missed.">      if (splitBySemiColon[2].contains(&quot;.&quot;)) {</span>
+<span class="nc" id="L346">        String[] splitByDot = splitBySemiColon[2].split(&quot;\\.&quot;);</span>
+<span class="nc" id="L347">        second = Integer.parseInt(splitByDot[0]);</span>
+<span class="nc" id="L348">        frac = Integer.parseInt(splitByDot[1]);</span>
+<span class="nc" id="L349">      } else {</span>
+<span class="nc" id="L350">        second = Integer.parseInt(splitBySemiColon[2]);</span>
+<span class="nc" id="L351">        frac = 0;</span>
+      }
+<span class="nc" id="L353">      return ((long) hour * HOUR</span>
+              + (long) minute * MINUTE
+              + (long) second * SECOND
+              + (long) frac * MICROSECOND)
+          * sign;
+<span class="nc" id="L358">    } catch (Exception e) {</span>
+<span class="nc" id="L359">      throw new IllegalArgumentException(</span>
+<span class="nc" id="L360">          String.format(</span>
+              &quot;%s is not a valid format. Either hh:mm:ss.mmm or hh:mm:ss is accepted.&quot;, value));
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

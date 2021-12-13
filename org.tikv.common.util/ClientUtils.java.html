@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ClientUtils.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.util</a> &gt; <span class="el_source">ClientUtils.java</span></div><h1>ClientUtils.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2021 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.util;
+
+import com.google.protobuf.ByteString;
+import java.util.*;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import org.tikv.common.exception.TiKVException;
+import org.tikv.common.region.RegionManager;
+import org.tikv.common.region.RegionStoreClient;
+import org.tikv.common.region.TiRegion;
+import org.tikv.kvproto.Kvrpcpb;
+
+<span class="nc" id="L31">public class ClientUtils {</span>
+  /**
+   * Append batch to list and split them according to batch limit
+   *
+   * @param backOffer backOffer
+   * @param batches a grouped batch
+   * @param region region
+   * @param keys keys
+   * @param batchMaxSizeInBytes batch max limit
+   */
+  public static void appendBatches(
+      BackOffer backOffer,
+      List&lt;Batch&gt; batches,
+      TiRegion region,
+      List&lt;ByteString&gt; keys,
+      int batchMaxSizeInBytes,
+      int batchLimit) {
+<span class="pc bpc" id="L48" title="1 of 2 branches missed.">    if (keys == null) {</span>
+<span class="nc" id="L49">      return;</span>
+    }
+<span class="fc" id="L51">    int len = keys.size();</span>
+<span class="fc bfc" id="L52" title="All 2 branches covered.">    for (int start = 0, end; start &lt; len; start = end) {</span>
+<span class="fc" id="L53">      int size = 0;</span>
+<span class="fc" id="L54">      for (end = start;</span>
+<span class="pc bpc" id="L55" title="2 of 6 branches missed.">          end &lt; len &amp;&amp; size &lt; batchMaxSizeInBytes &amp;&amp; end - start &lt; batchLimit;</span>
+<span class="fc" id="L56">          end++) {</span>
+<span class="fc" id="L57">        size += keys.get(end).size();</span>
+      }
+<span class="fc" id="L59">      Batch batch = new Batch(backOffer, region, keys.subList(start, end));</span>
+<span class="fc" id="L60">      batches.add(batch);</span>
+    }
+<span class="fc" id="L62">  }</span>
+
+  /**
+   * Append batch to list and split them according to batch limit
+   *
+   * @param backOffer backOffer
+   * @param batches a grouped batch
+   * @param region region
+   * @param keys keys
+   * @param values values
+   * @param batchMaxSizeInBytes batch max limit
+   */
+  public static void appendBatches(
+      BackOffer backOffer,
+      List&lt;Batch&gt; batches,
+      TiRegion region,
+      List&lt;ByteString&gt; keys,
+      List&lt;ByteString&gt; values,
+      int batchMaxSizeInBytes,
+      int batchLimit) {
+<span class="pc bpc" id="L82" title="1 of 2 branches missed.">    if (keys == null) {</span>
+<span class="nc" id="L83">      return;</span>
+    }
+<span class="fc" id="L85">    int len = keys.size();</span>
+<span class="fc bfc" id="L86" title="All 2 branches covered.">    for (int start = 0, end; start &lt; len; start = end) {</span>
+<span class="fc" id="L87">      int size = 0;</span>
+<span class="fc" id="L88">      for (end = start;</span>
+<span class="pc bpc" id="L89" title="2 of 6 branches missed.">          end &lt; len &amp;&amp; size &lt; batchMaxSizeInBytes &amp;&amp; end - start &lt; batchLimit;</span>
+<span class="fc" id="L90">          end++) {</span>
+<span class="fc" id="L91">        size += keys.get(end).size();</span>
+<span class="fc" id="L92">        size += values.get(end).size();</span>
+      }
+<span class="fc" id="L94">      Batch batch =</span>
+<span class="fc" id="L95">          new Batch(backOffer, region, keys.subList(start, end), values.subList(start, end));</span>
+<span class="fc" id="L96">      batches.add(batch);</span>
+    }
+<span class="fc" id="L98">  }</span>
+
+  public static List&lt;Batch&gt; getBatches(
+      BackOffer backOffer,
+      List&lt;ByteString&gt; keys,
+      int batchSize,
+      int batchLimit,
+      RegionStoreClient.RegionStoreClientBuilder clientBuilder) {
+<span class="fc" id="L106">    Map&lt;TiRegion, List&lt;ByteString&gt;&gt; groupKeys =</span>
+<span class="fc" id="L107">        groupKeysByRegion(clientBuilder.getRegionManager(), keys, backOffer);</span>
+<span class="fc" id="L108">    List&lt;Batch&gt; retryBatches = new ArrayList&lt;&gt;();</span>
+
+<span class="fc bfc" id="L110" title="All 2 branches covered.">    for (Map.Entry&lt;TiRegion, List&lt;ByteString&gt;&gt; entry : groupKeys.entrySet()) {</span>
+<span class="fc" id="L111">      appendBatches(</span>
+<span class="fc" id="L112">          backOffer, retryBatches, entry.getKey(), entry.getValue(), batchSize, batchLimit);</span>
+<span class="fc" id="L113">    }</span>
+
+<span class="fc" id="L115">    return retryBatches;</span>
+  }
+
+  public static Map&lt;TiRegion, List&lt;ByteString&gt;&gt; groupKeysByRegion(
+      RegionManager regionManager, Set&lt;ByteString&gt; keys, BackOffer backoffer) {
+<span class="fc" id="L120">    return groupKeysByRegion(regionManager, new ArrayList&lt;&gt;(keys), backoffer, true);</span>
+  }
+
+  public static Map&lt;TiRegion, List&lt;ByteString&gt;&gt; groupKeysByRegion(
+      RegionManager regionManager, List&lt;ByteString&gt; keys, BackOffer backoffer) {
+<span class="fc" id="L125">    return groupKeysByRegion(regionManager, keys, backoffer, false);</span>
+  }
+
+  /**
+   * Group by list of keys according to its region
+   *
+   * @param keys keys
+   * @return a mapping of keys and their region
+   */
+  public static Map&lt;TiRegion, List&lt;ByteString&gt;&gt; groupKeysByRegion(
+      RegionManager regionManager, List&lt;ByteString&gt; keys, BackOffer backoffer, boolean sorted) {
+<span class="fc" id="L136">    Map&lt;TiRegion, List&lt;ByteString&gt;&gt; groups = new HashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L137" title="All 2 branches covered.">    if (!sorted) {</span>
+<span class="fc" id="L138">      keys.sort((k1, k2) -&gt; FastByteComparisons.compareTo(k1.toByteArray(), k2.toByteArray()));</span>
+    }
+<span class="fc" id="L140">    TiRegion lastRegion = null;</span>
+<span class="fc bfc" id="L141" title="All 2 branches covered.">    for (ByteString key : keys) {</span>
+<span class="pc bpc" id="L142" title="1 of 4 branches missed.">      if (lastRegion == null || !lastRegion.contains(key)) {</span>
+<span class="fc" id="L143">        lastRegion = regionManager.getRegionByKey(key, backoffer);</span>
+      }
+<span class="fc" id="L145">      groups.computeIfAbsent(lastRegion, k -&gt; new ArrayList&lt;&gt;()).add(key);</span>
+<span class="fc" id="L146">    }</span>
+<span class="fc" id="L147">    return groups;</span>
+  }
+
+  public static List&lt;Kvrpcpb.KvPair&gt; getKvPairs(
+      ExecutorCompletionService&lt;List&lt;Kvrpcpb.KvPair&gt;&gt; completionService,
+      List&lt;Batch&gt; batches,
+      int backOff) {
+    try {
+<span class="nc" id="L155">      List&lt;Kvrpcpb.KvPair&gt; result = new ArrayList&lt;&gt;();</span>
+<span class="nc bnc" id="L156" title="All 2 branches missed.">      for (int i = 0; i &lt; batches.size(); i++) {</span>
+<span class="nc" id="L157">        result.addAll(completionService.take().get(backOff, TimeUnit.MILLISECONDS));</span>
+      }
+<span class="nc" id="L159">      return result;</span>
+<span class="nc" id="L160">    } catch (InterruptedException e) {</span>
+<span class="nc" id="L161">      Thread.currentThread().interrupt();</span>
+<span class="nc" id="L162">      throw new TiKVException(&quot;Current thread interrupted.&quot;, e);</span>
+<span class="nc" id="L163">    } catch (TimeoutException e) {</span>
+<span class="nc" id="L164">      throw new TiKVException(&quot;TimeOut Exceeded for current operation. &quot;, e);</span>
+<span class="nc" id="L165">    } catch (ExecutionException e) {</span>
+<span class="nc" id="L166">      throw new TiKVException(&quot;Execution exception met.&quot;, e);</span>
+    }
+  }
+
+  public static &lt;T&gt; void getTasks(
+      ExecutorCompletionService&lt;List&lt;T&gt;&gt; completionService,
+      Queue&lt;List&lt;T&gt;&gt; taskQueue,
+      List&lt;T&gt; batches,
+      long backOff) {
+    try {
+<span class="fc bfc" id="L176" title="All 2 branches covered.">      for (int i = 0; i &lt; batches.size(); i++) {</span>
+<span class="fc" id="L177">        Future&lt;List&lt;T&gt;&gt; future = completionService.poll(backOff, TimeUnit.MILLISECONDS);</span>
+<span class="pc bpc" id="L178" title="1 of 2 branches missed.">        if (future == null) {</span>
+<span class="nc" id="L179">          throw new TiKVException(&quot;TimeOut Exceeded for current operation.&quot;);</span>
+        }
+<span class="fc" id="L181">        List&lt;T&gt; task = future.get();</span>
+<span class="pc bpc" id="L182" title="1 of 2 branches missed.">        if (!task.isEmpty()) {</span>
+<span class="nc" id="L183">          taskQueue.offer(task);</span>
+        }
+      }
+<span class="nc" id="L186">    } catch (InterruptedException e) {</span>
+<span class="nc" id="L187">      Thread.currentThread().interrupt();</span>
+<span class="nc" id="L188">      throw new TiKVException(&quot;Current thread interrupted.&quot;, e);</span>
+<span class="nc" id="L189">    } catch (ExecutionException e) {</span>
+<span class="nc" id="L190">      throw new TiKVException(&quot;Execution exception met.&quot;, e);</span>
+<span class="fc" id="L191">    }</span>
+<span class="fc" id="L192">  }</span>
+
+  public static &lt;T, U&gt; List&lt;U&gt; getTasksWithOutput(
+      ExecutorCompletionService&lt;Pair&lt;List&lt;T&gt;, List&lt;U&gt;&gt;&gt; completionService,
+      Queue&lt;List&lt;T&gt;&gt; taskQueue,
+      List&lt;T&gt; batches,
+      long backOff) {
+    try {
+<span class="fc" id="L200">      List&lt;U&gt; result = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L201" title="All 2 branches covered.">      for (int i = 0; i &lt; batches.size(); i++) {</span>
+<span class="fc" id="L202">        Future&lt;Pair&lt;List&lt;T&gt;, List&lt;U&gt;&gt;&gt; future =</span>
+<span class="fc" id="L203">            completionService.poll(backOff, TimeUnit.MILLISECONDS);</span>
+<span class="pc bpc" id="L204" title="1 of 2 branches missed.">        if (future == null) {</span>
+<span class="nc" id="L205">          throw new TiKVException(&quot;TimeOut Exceeded for current operation.&quot;);</span>
+        }
+<span class="fc" id="L207">        Pair&lt;List&lt;T&gt;, List&lt;U&gt;&gt; task = future.get();</span>
+<span class="pc bpc" id="L208" title="1 of 2 branches missed.">        if (!task.first.isEmpty()) {</span>
+<span class="nc" id="L209">          taskQueue.offer(task.first);</span>
+        } else {
+<span class="fc" id="L211">          result.addAll(task.second);</span>
+        }
+      }
+<span class="fc" id="L214">      return result;</span>
+<span class="nc" id="L215">    } catch (InterruptedException e) {</span>
+<span class="nc" id="L216">      Thread.currentThread().interrupt();</span>
+<span class="nc" id="L217">      throw new TiKVException(&quot;Current thread interrupted.&quot;, e);</span>
+<span class="nc" id="L218">    } catch (ExecutionException e) {</span>
+<span class="nc" id="L219">      throw new TiKVException(&quot;Execution exception met.&quot;, e);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

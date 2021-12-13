@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>KeyUtils.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.codec</a> &gt; <span class="el_source">KeyUtils.java</span></div><h1>KeyUtils.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.codec;
+
+import com.google.common.primitives.UnsignedBytes;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.TextFormat;
+import org.tikv.kvproto.Coprocessor;
+
+<span class="nc" id="L23">public class KeyUtils {</span>
+
+  public static String formatBytes(byte[] bytes) {
+<span class="nc bnc" id="L26" title="All 2 branches missed.">    if (bytes == null) return &quot;null&quot;;</span>
+<span class="nc" id="L27">    StringBuilder sb = new StringBuilder();</span>
+<span class="nc bnc" id="L28" title="All 2 branches missed.">    for (int i = 0; i &lt; bytes.length; i++) {</span>
+<span class="nc" id="L29">      int unsignedByte = UnsignedBytes.toInt(bytes[i]);</span>
+<span class="nc" id="L30">      sb.append(unsignedByte);</span>
+<span class="nc bnc" id="L31" title="All 2 branches missed.">      if (i != bytes.length - 1) {</span>
+<span class="nc" id="L32">        sb.append(&quot;,&quot;);</span>
+      }
+    }
+<span class="nc" id="L35">    return sb.toString();</span>
+  }
+
+  public static String formatBytes(ByteString bytes) {
+<span class="nc bnc" id="L39" title="All 2 branches missed.">    if (bytes == null) return &quot;null&quot;;</span>
+<span class="nc" id="L40">    return formatBytes(bytes.toByteArray());</span>
+  }
+
+  public static String formatBytes(Coprocessor.KeyRange keyRange) {
+<span class="nc" id="L44">    return &quot;([&quot; + formatBytes(keyRange.getStart()) + &quot;], [&quot; + formatBytes(keyRange.getEnd()) + &quot;])&quot;;</span>
+  }
+
+  public static String formatBytesUTF8(byte[] bytes) {
+<span class="pc bpc" id="L48" title="1 of 2 branches missed.">    if (bytes == null) return &quot;null&quot;;</span>
+<span class="fc" id="L49">    return TextFormat.escapeBytes(bytes);</span>
+  }
+
+  public static String formatBytesUTF8(ByteString bytes) {
+<span class="pc bpc" id="L53" title="1 of 2 branches missed.">    if (bytes == null) return &quot;null&quot;;</span>
+<span class="fc" id="L54">    return formatBytesUTF8(bytes.toByteArray());</span>
+  }
+
+  public static String formatBytesUTF8(Coprocessor.KeyRange keyRange) {
+<span class="nc" id="L58">    return &quot;([&quot;</span>
+<span class="nc" id="L59">        + formatBytesUTF8(keyRange.getStart())</span>
+        + &quot;], [&quot;
+<span class="nc" id="L61">        + formatBytesUTF8(keyRange.getEnd())</span>
+        + &quot;])&quot;;
+  }
+
+  public static boolean hasPrefix(ByteString str, ByteString prefix) {
+<span class="nc bnc" id="L66" title="All 2 branches missed.">    if (prefix.size() &gt; str.size()) {</span>
+<span class="nc" id="L67">      return false;</span>
+    }
+<span class="nc bnc" id="L69" title="All 2 branches missed.">    for (int i = 0; i &lt; prefix.size(); i++) {</span>
+<span class="nc bnc" id="L70" title="All 2 branches missed.">      if (str.byteAt(i) != prefix.byteAt(i)) {</span>
+<span class="nc" id="L71">        return false;</span>
+      }
+    }
+<span class="nc" id="L74">    return true;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

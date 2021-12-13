@@ -1,0 +1,656 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TiKVScanAnalyzer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.predicates</a> &gt; <span class="el_source">TiKVScanAnalyzer.java</span></div><h1>TiKVScanAnalyzer.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.predicates;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static java.util.Objects.requireNonNull;
+import static org.tikv.common.predicates.PredicateUtils.expressionToIndexRanges;
+import static org.tikv.common.util.KeyRangeUtils.makeCoprocRange;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.BoundType;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Range;
+import com.pingcap.tidb.tipb.EncodeType;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.exception.TiClientInternalException;
+import org.tikv.common.expression.Expression;
+import org.tikv.common.expression.PartitionPruner;
+import org.tikv.common.expression.visitor.IndexMatcher;
+import org.tikv.common.key.IndexScanKeyRangeBuilder;
+import org.tikv.common.key.Key;
+import org.tikv.common.key.RowKey;
+import org.tikv.common.key.TypedKey;
+import org.tikv.common.meta.TiColumnInfo;
+import org.tikv.common.meta.TiDAGRequest;
+import org.tikv.common.meta.TiDAGRequest.IndexScanType;
+import org.tikv.common.meta.TiIndexColumn;
+import org.tikv.common.meta.TiIndexInfo;
+import org.tikv.common.meta.TiPartitionDef;
+import org.tikv.common.meta.TiTableInfo;
+import org.tikv.common.meta.TiTimestamp;
+import org.tikv.common.region.TiStoreType;
+import org.tikv.common.statistics.IndexStatistics;
+import org.tikv.common.statistics.TableStatistics;
+import org.tikv.common.util.Pair;
+import org.tikv.kvproto.Coprocessor.KeyRange;
+
+<span class="nc bnc" id="L59" title="All 2 branches missed.">public class TiKVScanAnalyzer {</span>
+  private static final double INDEX_SCAN_COST_FACTOR = 1.2;
+  private static final double TABLE_SCAN_COST_FACTOR = 1.0;
+  private static final double DOUBLE_READ_COST_FACTOR = TABLE_SCAN_COST_FACTOR * 3;
+  private static final long TABLE_PREFIX_SIZE = 8;
+  private static final long INDEX_PREFIX_SIZE = 8;
+
+  @VisibleForTesting
+  public static ScanSpec extractConditions(
+      List&lt;Expression&gt; conditions, TiTableInfo table, TiIndexInfo index) {
+    // 0. Different than TiDB implementation, here logic has been unified for TableScan and
+    // IndexScan by
+    // adding fake index on clustered table's pk
+    // 1. Generate access point based on equal conditions
+    // 2. Cut access point condition if index is not continuous
+    // 3. Push back prefix index conditions since prefix index retrieve more result than needed
+    // 4. For remaining indexes (since access conditions consume some index, and they will
+    // not be used in filter push down later), find continuous matching index until first unmatched
+    // 5. Push back index related filter if prefix index, for remaining filters
+    // Equal conditions needs to be process first according to index sequence
+    // When index is null, no access condition can be applied
+<span class="nc" id="L80">    ScanSpec.Builder specBuilder = new ScanSpec.Builder(table, index);</span>
+<span class="nc bnc" id="L81" title="All 2 branches missed.">    if (index != null) {</span>
+<span class="nc" id="L82">      Set&lt;Expression&gt; visited = new HashSet&lt;&gt;();</span>
+      IndexMatchingLoop:
+<span class="nc bnc" id="L84" title="All 2 branches missed.">      for (int i = 0; i &lt; index.getIndexColumns().size(); i++) {</span>
+        // for each index column try matches an equal condition
+        // and push remaining back
+        // TODO: if more than one equal conditions match an
+        // index, it likely yields nothing. Maybe a check needed
+        // to simplify it to a false condition
+<span class="nc" id="L90">        TiIndexColumn col = index.getIndexColumns().get(i);</span>
+<span class="nc" id="L91">        IndexMatcher eqMatcher = IndexMatcher.equalOnlyMatcher(col);</span>
+<span class="nc" id="L92">        boolean found = false;</span>
+        // For first prefix index encountered, it equals to a range
+        // and we cannot push equal conditions further
+<span class="nc bnc" id="L95" title="All 2 branches missed.">        for (Expression cond : conditions) {</span>
+<span class="nc bnc" id="L96" title="All 2 branches missed.">          if (visited.contains(cond)) {</span>
+<span class="nc" id="L97">            continue;</span>
+          }
+<span class="nc bnc" id="L99" title="All 2 branches missed.">          if (eqMatcher.match(cond)) {</span>
+<span class="nc" id="L100">            specBuilder.addPointPredicate(col, cond);</span>
+<span class="nc bnc" id="L101" title="All 2 branches missed.">            if (col.isPrefixIndex()) {</span>
+<span class="nc" id="L102">              specBuilder.addResidualPredicate(cond);</span>
+<span class="nc" id="L103">              break IndexMatchingLoop;</span>
+            }
+<span class="nc" id="L105">            visited.add(cond);</span>
+<span class="nc" id="L106">            found = true;</span>
+<span class="nc" id="L107">            break;</span>
+          }
+<span class="nc" id="L109">        }</span>
+<span class="nc bnc" id="L110" title="All 2 branches missed.">        if (!found) {</span>
+          // For first &quot;broken index chain piece&quot;
+          // search for a matching range condition
+<span class="nc" id="L113">          IndexMatcher matcher = IndexMatcher.matcher(col);</span>
+<span class="nc bnc" id="L114" title="All 2 branches missed.">          for (Expression cond : conditions) {</span>
+<span class="nc bnc" id="L115" title="All 2 branches missed.">            if (visited.contains(cond)) {</span>
+<span class="nc" id="L116">              continue;</span>
+            }
+<span class="nc bnc" id="L118" title="All 2 branches missed.">            if (matcher.match(cond)) {</span>
+<span class="nc" id="L119">              specBuilder.addRangePredicate(col, cond);</span>
+<span class="nc bnc" id="L120" title="All 2 branches missed.">              if (col.isPrefixIndex()) {</span>
+<span class="nc" id="L121">                specBuilder.addResidualPredicate(cond);</span>
+<span class="nc" id="L122">                break;</span>
+              }
+            }
+<span class="nc" id="L125">          }</span>
+<span class="nc" id="L126">          break;</span>
+        }
+      }
+    }
+
+<span class="nc" id="L131">    specBuilder.addAllPredicates(conditions);</span>
+<span class="nc" id="L132">    return specBuilder.build();</span>
+  }
+
+  // build a scan for debug purpose.
+  public TiDAGRequest buildTiDAGReq(
+      List&lt;TiColumnInfo&gt; columnList,
+      List&lt;Expression&gt; conditions,
+      TiTableInfo table,
+      TiTimestamp ts,
+      TiDAGRequest dagRequest) {
+<span class="nc" id="L142">    return buildTiDAGReq(true, true, false, columnList, conditions, table, null, ts, dagRequest);</span>
+  }
+
+  // Build scan plan picking access path with lowest cost by estimation
+  public TiDAGRequest buildTiDAGReq(
+      boolean allowIndexScan,
+      boolean canUseTiKV,
+      boolean canUseTiFlash,
+      List&lt;TiColumnInfo&gt; columnList,
+      List&lt;Expression&gt; conditions,
+      TiTableInfo table,
+      TableStatistics tableStatistics,
+      TiTimestamp ts,
+      TiDAGRequest dagRequest) {
+
+<span class="nc" id="L157">    TiKVScanPlan minPlan = null;</span>
+<span class="nc bnc" id="L158" title="All 2 branches missed.">    if (canUseTiKV) {</span>
+<span class="nc" id="L159">      minPlan = buildTableScan(conditions, table, tableStatistics);</span>
+    }
+<span class="nc bnc" id="L161" title="All 2 branches missed.">    if (canUseTiFlash) {</span>
+      // it is possible that only TiFlash plan exists due to isolation read.
+<span class="nc" id="L163">      TiKVScanPlan plan = buildTiFlashScan(columnList, conditions, table, tableStatistics);</span>
+<span class="nc bnc" id="L164" title="All 4 branches missed.">      if (minPlan == null || plan.getCost() &lt; minPlan.getCost()) {</span>
+<span class="nc" id="L165">        minPlan = plan;</span>
+      }
+<span class="nc bnc" id="L167" title="All 4 branches missed.">    } else if (canUseTiKV &amp;&amp; allowIndexScan) {</span>
+<span class="nc" id="L168">      minPlan.getFilters().forEach(dagRequest::addDowngradeFilter);</span>
+<span class="nc" id="L169">      double minCost = minPlan.getCost();</span>
+<span class="nc bnc" id="L170" title="All 2 branches missed.">      for (TiIndexInfo index : table.getIndices()) {</span>
+<span class="nc" id="L171">        TiKVScanPlan plan =</span>
+<span class="nc" id="L172">            buildIndexScan(columnList, conditions, index, table, tableStatistics, false);</span>
+<span class="nc bnc" id="L173" title="All 2 branches missed.">        if (plan.getCost() &lt; minCost) {</span>
+<span class="nc" id="L174">          minPlan = plan;</span>
+<span class="nc" id="L175">          minCost = plan.getCost();</span>
+        }
+<span class="nc" id="L177">      }</span>
+    }
+<span class="nc bnc" id="L179" title="All 2 branches missed.">    if (minPlan == null) {</span>
+<span class="nc" id="L180">      throw new TiClientInternalException(</span>
+<span class="nc" id="L181">          &quot;No valid plan found for table '&quot; + table.getName() + &quot;'&quot;);</span>
+    }
+
+<span class="nc" id="L184">    TiStoreType minPlanStoreType = minPlan.getStoreType();</span>
+    // TiKV should not use CHBlock as Encode Type.
+<span class="nc bnc" id="L186" title="All 2 branches missed.">    if (minPlanStoreType == TiStoreType.TiKV</span>
+<span class="nc bnc" id="L187" title="All 2 branches missed.">        &amp;&amp; dagRequest.getEncodeType() == EncodeType.TypeCHBlock) {</span>
+<span class="nc" id="L188">      dagRequest.setEncodeType(EncodeType.TypeChunk);</span>
+    }
+    // Set DAG Request's store type as minPlan's store type.
+<span class="nc" id="L191">    dagRequest.setStoreType(minPlanStoreType);</span>
+
+<span class="nc" id="L193">    dagRequest.addRanges(minPlan.getKeyRanges());</span>
+<span class="nc" id="L194">    dagRequest.setPrunedParts(minPlan.getPrunedParts());</span>
+<span class="nc" id="L195">    dagRequest.addFilters(new ArrayList&lt;&gt;(minPlan.getFilters()));</span>
+<span class="nc bnc" id="L196" title="All 2 branches missed.">    if (minPlan.isIndexScan()) {</span>
+<span class="nc" id="L197">      dagRequest.setIndexInfo(minPlan.getIndex());</span>
+      // need to set isDoubleRead to true for dagRequest in case of double read
+<span class="nc" id="L199">      dagRequest.setIsDoubleRead(minPlan.isDoubleRead());</span>
+    }
+
+<span class="nc" id="L202">    dagRequest.setTableInfo(table);</span>
+<span class="nc" id="L203">    dagRequest.setStartTs(ts);</span>
+<span class="nc" id="L204">    dagRequest.setEstimatedCount(minPlan.getEstimatedRowCount());</span>
+<span class="nc" id="L205">    return dagRequest;</span>
+  }
+
+  private TiKVScanPlan buildTableScan(
+      List&lt;Expression&gt; conditions, TiTableInfo table, TableStatistics tableStatistics) {
+<span class="nc" id="L210">    TiIndexInfo pkIndex = TiIndexInfo.generateFakePrimaryKeyIndex(table);</span>
+<span class="nc" id="L211">    return buildIndexScan(table.getColumns(), conditions, pkIndex, table, tableStatistics, false);</span>
+  }
+
+  private TiKVScanPlan buildTiFlashScan(
+      List&lt;TiColumnInfo&gt; columnList,
+      List&lt;Expression&gt; conditions,
+      TiTableInfo table,
+      TableStatistics tableStatistics) {
+<span class="nc" id="L219">    TiIndexInfo pkIndex = TiIndexInfo.generateFakePrimaryKeyIndex(table);</span>
+<span class="nc" id="L220">    return buildIndexScan(columnList, conditions, pkIndex, table, tableStatistics, true);</span>
+  }
+
+  TiKVScanPlan buildIndexScan(
+      List&lt;TiColumnInfo&gt; columnList,
+      List&lt;Expression&gt; conditions,
+      TiIndexInfo index,
+      TiTableInfo table,
+      TableStatistics tableStatistics,
+      boolean useTiFlash) {
+<span class="nc" id="L230">    requireNonNull(table, &quot;Table cannot be null to encoding keyRange&quot;);</span>
+<span class="nc" id="L231">    requireNonNull(conditions, &quot;conditions cannot be null to encoding keyRange&quot;);</span>
+
+<span class="nc" id="L233">    TiKVScanPlan.Builder planBuilder = TiKVScanPlan.Builder.newBuilder(table.getName());</span>
+<span class="nc" id="L234">    ScanSpec result = extractConditions(conditions, table, index);</span>
+
+<span class="nc" id="L236">    double cost = SelectivityCalculator.calcPseudoSelectivity(result);</span>
+<span class="nc" id="L237">    planBuilder.setCost(cost);</span>
+
+<span class="nc" id="L239">    List&lt;IndexRange&gt; irs =</span>
+<span class="nc" id="L240">        expressionToIndexRanges(</span>
+<span class="nc" id="L241">            result.getPointPredicates(), result.getRangePredicate(), table, index);</span>
+
+<span class="nc" id="L243">    List&lt;TiPartitionDef&gt; prunedParts = null;</span>
+    // apply partition pruning here.
+<span class="nc bnc" id="L245" title="All 2 branches missed.">    if (table.getPartitionInfo() != null) {</span>
+<span class="nc" id="L246">      prunedParts = PartitionPruner.prune(table, conditions);</span>
+    }
+<span class="nc" id="L248">    planBuilder.setFilters(result.getResidualPredicates()).setPrunedParts(prunedParts);</span>
+
+    // table name and columns
+<span class="nc" id="L251">    long tableColSize = table.getEstimatedRowSizeInByte() + TABLE_PREFIX_SIZE;</span>
+
+<span class="nc bnc" id="L253" title="All 4 branches missed.">    if (index == null || index.isFakePrimaryKey()) {</span>
+<span class="nc" id="L254">      planBuilder</span>
+<span class="nc" id="L255">          .setDoubleRead(false)</span>
+<span class="nc" id="L256">          .setKeyRanges(buildTableScanKeyRange(table, irs, prunedParts));</span>
+<span class="nc bnc" id="L257" title="All 2 branches missed.">      if (useTiFlash) {</span>
+        // TiFlash is a columnar storage engine
+<span class="nc" id="L259">        long colSize =</span>
+<span class="nc" id="L260">            columnList.stream().mapToLong(TiColumnInfo::getSize).sum() + TABLE_PREFIX_SIZE;</span>
+<span class="nc" id="L261">        return planBuilder</span>
+<span class="nc" id="L262">            .setStoreType(TiStoreType.TiFlash)</span>
+<span class="nc" id="L263">            .calculateCostAndEstimateCount(tableStatistics, colSize)</span>
+<span class="nc" id="L264">            .build();</span>
+      } else {
+<span class="nc" id="L266">        return planBuilder.calculateCostAndEstimateCount(tableStatistics, tableColSize).build();</span>
+      }
+    } else {
+      // TiFlash does not support index scan.
+<span class="nc bnc" id="L270" title="All 4 branches missed.">      assert (!useTiFlash);</span>
+<span class="nc" id="L271">      long indexSize = index.getIndexColumnSize() + TABLE_PREFIX_SIZE + INDEX_PREFIX_SIZE;</span>
+<span class="nc" id="L272">      return planBuilder</span>
+<span class="nc" id="L273">          .setIndex(index)</span>
+<span class="nc bnc" id="L274" title="All 2 branches missed.">          .setDoubleRead(!isCoveringIndex(columnList, index, table.isPkHandle()))</span>
+          // table name, index and handle column
+<span class="nc" id="L276">          .calculateCostAndEstimateCount(tableStatistics, conditions, irs, indexSize, tableColSize)</span>
+<span class="nc" id="L277">          .setKeyRanges(buildIndexScanKeyRange(table, index, irs, prunedParts))</span>
+<span class="nc" id="L278">          .build();</span>
+    }
+  }
+
+  private Pair&lt;Key, Key&gt; buildTableScanKeyRangePerId(long id, IndexRange ir) {
+    Key startKey;
+    Key endKey;
+<span class="nc bnc" id="L285" title="All 2 branches missed.">    if (ir.hasAccessKey()) {</span>
+<span class="nc" id="L286">      checkArgument(</span>
+<span class="nc bnc" id="L287" title="All 2 branches missed.">          !ir.hasRange(), &quot;Table scan must have one and only one access condition / point&quot;);</span>
+
+<span class="nc" id="L289">      Key key = ir.getAccessKey();</span>
+<span class="nc" id="L290">      checkArgument(key instanceof TypedKey, &quot;Table scan key range must be typed key&quot;);</span>
+<span class="nc" id="L291">      TypedKey typedKey = (TypedKey) key;</span>
+<span class="nc" id="L292">      startKey = RowKey.toRowKey(id, typedKey);</span>
+<span class="nc" id="L293">      endKey = startKey.next();</span>
+<span class="nc bnc" id="L294" title="All 2 branches missed.">    } else if (ir.hasRange()) {</span>
+<span class="nc" id="L295">      checkArgument(</span>
+<span class="nc bnc" id="L296" title="All 2 branches missed.">          !ir.hasAccessKey(), &quot;Table scan must have one and only one access condition / point&quot;);</span>
+<span class="nc" id="L297">      Range&lt;TypedKey&gt; r = ir.getRange();</span>
+
+<span class="nc bnc" id="L299" title="All 2 branches missed.">      if (!r.hasLowerBound()) {</span>
+        // -INF
+<span class="nc" id="L301">        startKey = RowKey.createMin(id);</span>
+      } else {
+        // Comparison with null should be filtered since it yields unknown always
+<span class="nc" id="L304">        startKey = RowKey.toRowKey(id, r.lowerEndpoint());</span>
+<span class="nc bnc" id="L305" title="All 2 branches missed.">        if (r.lowerBoundType().equals(BoundType.OPEN)) {</span>
+<span class="nc" id="L306">          startKey = startKey.next();</span>
+        }
+      }
+
+<span class="nc bnc" id="L310" title="All 2 branches missed.">      if (!r.hasUpperBound()) {</span>
+        // INF
+<span class="nc" id="L312">        endKey = RowKey.createBeyondMax(id);</span>
+      } else {
+<span class="nc" id="L314">        endKey = RowKey.toRowKey(id, r.upperEndpoint());</span>
+<span class="nc bnc" id="L315" title="All 2 branches missed.">        if (r.upperBoundType().equals(BoundType.CLOSED)) {</span>
+<span class="nc" id="L316">          endKey = endKey.next();</span>
+        }
+      }
+<span class="nc" id="L319">    } else {</span>
+<span class="nc" id="L320">      throw new TiClientInternalException(&quot;Empty access conditions&quot;);</span>
+    }
+<span class="nc" id="L322">    return new Pair&lt;&gt;(startKey, endKey);</span>
+  }
+
+  private Map&lt;Long, List&lt;KeyRange&gt;&gt; buildTableScanKeyRangeWithIds(
+      List&lt;Long&gt; ids, List&lt;IndexRange&gt; indexRanges) {
+<span class="nc" id="L327">    Map&lt;Long, List&lt;KeyRange&gt;&gt; idRanges = new HashMap&lt;&gt;(ids.size());</span>
+<span class="nc bnc" id="L328" title="All 2 branches missed.">    for (Long id : ids) {</span>
+<span class="nc" id="L329">      List&lt;KeyRange&gt; ranges = new ArrayList&lt;&gt;(indexRanges.size());</span>
+<span class="nc" id="L330">      indexRanges.forEach(</span>
+          (ir) -&gt; {
+<span class="nc" id="L332">            Pair&lt;Key, Key&gt; pairKey = buildTableScanKeyRangePerId(id, ir);</span>
+<span class="nc" id="L333">            Key startKey = pairKey.first;</span>
+<span class="nc" id="L334">            Key endKey = pairKey.second;</span>
+            // This range only possible when &lt; MIN or &gt; MAX
+<span class="nc bnc" id="L336" title="All 2 branches missed.">            if (!startKey.equals(endKey)) {</span>
+<span class="nc" id="L337">              ranges.add(makeCoprocRange(startKey.toByteString(), endKey.toByteString()));</span>
+            }
+<span class="nc" id="L339">          });</span>
+
+<span class="nc" id="L341">      idRanges.put(id, ranges);</span>
+<span class="nc" id="L342">    }</span>
+<span class="nc" id="L343">    return idRanges;</span>
+  }
+
+  @VisibleForTesting
+  Map&lt;Long, List&lt;KeyRange&gt;&gt; buildTableScanKeyRange(
+      TiTableInfo table, List&lt;IndexRange&gt; indexRanges, List&lt;TiPartitionDef&gt; prunedParts) {
+<span class="nc" id="L349">    requireNonNull(table, &quot;Table is null&quot;);</span>
+<span class="nc" id="L350">    requireNonNull(indexRanges, &quot;indexRanges is null&quot;);</span>
+
+<span class="nc bnc" id="L352" title="All 2 branches missed.">    if (table.isPartitionEnabled()) {</span>
+<span class="nc" id="L353">      List&lt;Long&gt; ids = new ArrayList&lt;&gt;();</span>
+<span class="nc bnc" id="L354" title="All 2 branches missed.">      for (TiPartitionDef pDef : prunedParts) {</span>
+<span class="nc" id="L355">        ids.add(pDef.getId());</span>
+<span class="nc" id="L356">      }</span>
+<span class="nc" id="L357">      return buildTableScanKeyRangeWithIds(ids, indexRanges);</span>
+    } else {
+<span class="nc" id="L359">      return buildTableScanKeyRangeWithIds(ImmutableList.of(table.getId()), indexRanges);</span>
+    }
+  }
+
+  @VisibleForTesting
+  private Map&lt;Long, List&lt;KeyRange&gt;&gt; buildIndexScanKeyRangeWithIds(
+      List&lt;Long&gt; ids, TiIndexInfo index, List&lt;IndexRange&gt; indexRanges) {
+<span class="nc" id="L366">    Map&lt;Long, List&lt;KeyRange&gt;&gt; idRanges = new HashMap&lt;&gt;();</span>
+<span class="nc bnc" id="L367" title="All 2 branches missed.">    for (long id : ids) {</span>
+<span class="nc" id="L368">      List&lt;KeyRange&gt; ranges = new ArrayList&lt;&gt;(indexRanges.size());</span>
+<span class="nc bnc" id="L369" title="All 2 branches missed.">      for (IndexRange ir : indexRanges) {</span>
+<span class="nc" id="L370">        IndexScanKeyRangeBuilder indexScanKeyRangeBuilder =</span>
+            new IndexScanKeyRangeBuilder(id, index, ir);
+<span class="nc" id="L372">        ranges.add(indexScanKeyRangeBuilder.compute());</span>
+<span class="nc" id="L373">      }</span>
+
+<span class="nc" id="L375">      idRanges.put(id, ranges);</span>
+<span class="nc" id="L376">    }</span>
+<span class="nc" id="L377">    return idRanges;</span>
+  }
+
+  @VisibleForTesting
+  Map&lt;Long, List&lt;KeyRange&gt;&gt; buildIndexScanKeyRange(
+      TiTableInfo table,
+      TiIndexInfo index,
+      List&lt;IndexRange&gt; indexRanges,
+      List&lt;TiPartitionDef&gt; prunedParts) {
+<span class="nc" id="L386">    requireNonNull(table, &quot;Table cannot be null to encoding keyRange&quot;);</span>
+<span class="nc" id="L387">    requireNonNull(index, &quot;Index cannot be null to encoding keyRange&quot;);</span>
+<span class="nc" id="L388">    requireNonNull(indexRanges, &quot;indexRanges cannot be null to encoding keyRange&quot;);</span>
+
+<span class="nc bnc" id="L390" title="All 2 branches missed.">    if (table.isPartitionEnabled()) {</span>
+<span class="nc" id="L391">      List&lt;Long&gt; ids = new ArrayList&lt;&gt;();</span>
+<span class="nc bnc" id="L392" title="All 2 branches missed.">      for (TiPartitionDef pDef : prunedParts) {</span>
+<span class="nc" id="L393">        ids.add(pDef.getId());</span>
+<span class="nc" id="L394">      }</span>
+<span class="nc" id="L395">      return buildIndexScanKeyRangeWithIds(ids, index, indexRanges);</span>
+    } else {
+<span class="nc" id="L397">      return buildIndexScanKeyRangeWithIds(ImmutableList.of(table.getId()), index, indexRanges);</span>
+    }
+  }
+
+  // If all the columns requested in the select list of query, are available in the index, then the
+  // query engine doesn't have to lookup the table again compared with double read.
+  boolean isCoveringIndex(
+      List&lt;TiColumnInfo&gt; columns, TiIndexInfo indexColumns, boolean pkIsHandle) {
+<span class="nc bnc" id="L405" title="All 2 branches missed.">    if (columns.isEmpty()) {</span>
+<span class="nc" id="L406">      return false;</span>
+    }
+
+<span class="nc" id="L409">    Map&lt;String, TiIndexColumn&gt; colInIndex =</span>
+        indexColumns
+<span class="nc" id="L411">            .getIndexColumns()</span>
+<span class="nc" id="L412">            .stream()</span>
+<span class="nc" id="L413">            .collect(Collectors.toMap(TiIndexColumn::getName, col -&gt; col));</span>
+<span class="nc bnc" id="L414" title="All 2 branches missed.">    for (TiColumnInfo colInfo : columns) {</span>
+<span class="nc bnc" id="L415" title="All 4 branches missed.">      if (pkIsHandle &amp;&amp; colInfo.isPrimaryKey()) {</span>
+<span class="nc" id="L416">        continue;</span>
+      }
+<span class="nc bnc" id="L418" title="All 2 branches missed.">      if (colInfo.getId() == -1) {</span>
+<span class="nc" id="L419">        continue;</span>
+      }
+<span class="nc" id="L421">      boolean colNotInIndex = false;</span>
+<span class="nc bnc" id="L422" title="All 2 branches missed.">      if (colInIndex.containsKey(colInfo.getName())) {</span>
+<span class="nc" id="L423">        TiIndexColumn indexCol = colInIndex.get(colInfo.getName());</span>
+<span class="nc" id="L424">        boolean isFullLength =</span>
+<span class="nc bnc" id="L425" title="All 4 branches missed.">            indexCol.isLengthUnspecified() || indexCol.getLength() == colInfo.getType().getLength();</span>
+<span class="nc bnc" id="L426" title="All 4 branches missed.">        if (!colInfo.getName().equalsIgnoreCase(indexCol.getName()) || !isFullLength) {</span>
+<span class="nc" id="L427">          colNotInIndex = true;</span>
+        }
+<span class="nc" id="L429">      } else {</span>
+<span class="nc" id="L430">        colNotInIndex = true;</span>
+      }
+<span class="nc bnc" id="L432" title="All 2 branches missed.">      if (colNotInIndex) {</span>
+<span class="nc" id="L433">        return false;</span>
+      }
+<span class="nc" id="L435">    }</span>
+<span class="nc" id="L436">    return true;</span>
+  }
+
+  public static class TiKVScanPlan {
+    private final Map&lt;Long, List&lt;KeyRange&gt;&gt; keyRanges;
+    private final Set&lt;Expression&gt; filters;
+    private final double cost;
+    private final TiIndexInfo index;
+    private final boolean isDoubleRead;
+    private final double estimatedRowCount;
+    private final List&lt;TiPartitionDef&gt; prunedParts;
+    private final TiStoreType storeType;
+
+    private TiKVScanPlan(
+        Map&lt;Long, List&lt;KeyRange&gt;&gt; keyRanges,
+        Set&lt;Expression&gt; filters,
+        TiIndexInfo index,
+        double cost,
+        boolean isDoubleRead,
+        double estimatedRowCount,
+        List&lt;TiPartitionDef&gt; partDefs,
+<span class="nc" id="L457">        TiStoreType storeType) {</span>
+<span class="nc" id="L458">      this.filters = filters;</span>
+<span class="nc" id="L459">      this.keyRanges = keyRanges;</span>
+<span class="nc" id="L460">      this.cost = cost;</span>
+<span class="nc" id="L461">      this.index = index;</span>
+<span class="nc" id="L462">      this.isDoubleRead = isDoubleRead;</span>
+<span class="nc" id="L463">      this.estimatedRowCount = estimatedRowCount;</span>
+<span class="nc" id="L464">      this.prunedParts = partDefs;</span>
+<span class="nc" id="L465">      this.storeType = storeType;</span>
+<span class="nc" id="L466">    }</span>
+
+    public double getEstimatedRowCount() {
+<span class="nc" id="L469">      return estimatedRowCount;</span>
+    }
+
+    public Map&lt;Long, List&lt;KeyRange&gt;&gt; getKeyRanges() {
+<span class="nc" id="L473">      return keyRanges;</span>
+    }
+
+    public Set&lt;Expression&gt; getFilters() {
+<span class="nc" id="L477">      return filters;</span>
+    }
+
+    public double getCost() {
+<span class="nc" id="L481">      return cost;</span>
+    }
+
+    public boolean isIndexScan() {
+<span class="nc bnc" id="L485" title="All 4 branches missed.">      return index != null &amp;&amp; !index.isFakePrimaryKey();</span>
+    }
+
+    public TiIndexInfo getIndex() {
+<span class="nc" id="L489">      return index;</span>
+    }
+
+    public boolean isDoubleRead() {
+<span class="nc" id="L493">      return isDoubleRead;</span>
+    }
+
+    public List&lt;TiPartitionDef&gt; getPrunedParts() {
+<span class="nc" id="L497">      return prunedParts;</span>
+    }
+
+    public TiStoreType getStoreType() {
+<span class="nc" id="L501">      return storeType;</span>
+    }
+
+    public static class Builder {
+      private final String tableName;
+<span class="nc" id="L506">      private final Logger logger = LoggerFactory.getLogger(getClass().getName());</span>
+      private Map&lt;Long, List&lt;KeyRange&gt;&gt; keyRanges;
+      private Set&lt;Expression&gt; filters;
+      private double cost;
+      private TiIndexInfo index;
+      private boolean isDoubleRead;
+<span class="nc" id="L512">      private double estimatedRowCount = -1;</span>
+      private List&lt;TiPartitionDef&gt; prunedParts;
+<span class="nc" id="L514">      private TiStoreType storeType = TiStoreType.TiKV;</span>
+
+<span class="nc" id="L516">      private Builder(String tableName) {</span>
+<span class="nc" id="L517">        this.tableName = tableName;</span>
+<span class="nc" id="L518">      }</span>
+
+      public static Builder newBuilder(String tableName) {
+<span class="nc" id="L521">        return new Builder(tableName);</span>
+      }
+
+      public Builder setKeyRanges(Map&lt;Long, List&lt;KeyRange&gt;&gt; keyRanges) {
+<span class="nc" id="L525">        this.keyRanges = keyRanges;</span>
+<span class="nc" id="L526">        return this;</span>
+      }
+
+      public Builder setFilters(Set&lt;Expression&gt; filters) {
+<span class="nc" id="L530">        this.filters = filters;</span>
+<span class="nc" id="L531">        return this;</span>
+      }
+
+      public Builder setCost(double cost) {
+<span class="nc" id="L535">        this.cost = cost;</span>
+<span class="nc" id="L536">        return this;</span>
+      }
+
+      public Builder setIndex(TiIndexInfo index) {
+<span class="nc" id="L540">        this.index = index;</span>
+<span class="nc" id="L541">        return this;</span>
+      }
+
+      public Builder setDoubleRead(boolean doubleRead) {
+<span class="nc" id="L545">        isDoubleRead = doubleRead;</span>
+<span class="nc" id="L546">        return this;</span>
+      }
+
+      public Builder setEstimatedRowCount(double estimatedRowCount) {
+<span class="nc" id="L550">        this.estimatedRowCount = estimatedRowCount;</span>
+<span class="nc" id="L551">        return this;</span>
+      }
+
+      public Builder setPrunedParts(List&lt;TiPartitionDef&gt; prunedParts) {
+<span class="nc" id="L555">        this.prunedParts = prunedParts;</span>
+<span class="nc" id="L556">        return this;</span>
+      }
+
+      public Builder setStoreType(TiStoreType storeType) {
+<span class="nc" id="L560">        this.storeType = storeType;</span>
+<span class="nc" id="L561">        return this;</span>
+      }
+
+      public TiKVScanPlan build() {
+<span class="nc" id="L565">        return new TiKVScanPlan(</span>
+            keyRanges,
+            filters,
+            index,
+            cost,
+            isDoubleRead,
+            estimatedRowCount,
+            prunedParts,
+            storeType);
+      }
+
+      private void debug(IndexScanType scanType) {
+        String plan, desc;
+<span class="nc bnc" id="L578" title="All 4 branches missed.">        switch (scanType) {</span>
+          case TABLE_SCAN:
+<span class="nc" id="L580">            plan = &quot;TableScan&quot;;</span>
+<span class="nc" id="L581">            desc = storeType.toString();</span>
+<span class="nc" id="L582">            break;</span>
+          case INDEX_SCAN:
+<span class="nc" id="L584">            plan = &quot;IndexScan&quot;;</span>
+<span class="nc" id="L585">            desc = index.getName();</span>
+<span class="nc" id="L586">            break;</span>
+          case COVERING_INDEX_SCAN:
+<span class="nc" id="L588">            plan = &quot;CoveringIndexScan&quot;;</span>
+<span class="nc" id="L589">            desc = index.getName();</span>
+<span class="nc" id="L590">            break;</span>
+          default:
+            // should not reach
+<span class="nc" id="L593">            plan = &quot;None&quot;;</span>
+<span class="nc" id="L594">            desc = &quot;&quot;;</span>
+        }
+<span class="nc" id="L596">        logger.debug(</span>
+            &quot;[Table:&quot;
+                + tableName
+                + &quot;][&quot;
+                + plan
+                + &quot;:&quot;
+                + desc
+                + &quot;] cost=&quot;
+                + cost
+                + &quot; estimated row count=&quot;
+                + estimatedRowCount);
+<span class="nc" id="L607">      }</span>
+
+      // TODO: Fine-grained statistics usage
+      Builder calculateCostAndEstimateCount(TableStatistics tableStatistics, long tableColSize) {
+<span class="nc" id="L611">        cost = 100.0;</span>
+<span class="nc" id="L612">        cost *= tableColSize * TABLE_SCAN_COST_FACTOR;</span>
+<span class="nc bnc" id="L613" title="All 2 branches missed.">        if (tableStatistics != null) {</span>
+<span class="nc" id="L614">          estimatedRowCount = tableStatistics.getCount();</span>
+        }
+<span class="nc" id="L616">        debug(IndexScanType.TABLE_SCAN);</span>
+<span class="nc" id="L617">        return this;</span>
+      }
+
+      Builder calculateCostAndEstimateCount(
+          TableStatistics tableStatistics,
+          List&lt;Expression&gt; conditions,
+          List&lt;IndexRange&gt; irs,
+          long indexSize,
+          long tableColSize) {
+<span class="nc bnc" id="L626" title="All 2 branches missed.">        if (tableStatistics != null) {</span>
+<span class="nc" id="L627">          double totalRowCount = tableStatistics.getCount();</span>
+<span class="nc" id="L628">          IndexStatistics indexStatistics = tableStatistics.getIndexHistMap().get(index.getId());</span>
+<span class="nc bnc" id="L629" title="All 2 branches missed.">          if (indexStatistics != null) {</span>
+<span class="nc" id="L630">            totalRowCount = indexStatistics.getHistogram().totalRowCount();</span>
+          }
+<span class="nc bnc" id="L632" title="All 2 branches missed.">          if (conditions.isEmpty()) {</span>
+<span class="nc" id="L633">            cost = 100.0; // Full index scan cost</span>
+            // TODO: Fine-grained statistics usage
+<span class="nc" id="L635">            estimatedRowCount = totalRowCount;</span>
+<span class="nc bnc" id="L636" title="All 2 branches missed.">          } else if (indexStatistics != null) {</span>
+<span class="nc" id="L637">            double idxRangeRowCnt = indexStatistics.getRowCount(irs);</span>
+            // guess the percentage of rows hit
+<span class="nc" id="L639">            cost = 100.0 * idxRangeRowCnt / totalRowCount;</span>
+<span class="nc" id="L640">            estimatedRowCount = idxRangeRowCnt;</span>
+          }
+
+<span class="nc bnc" id="L643" title="All 2 branches missed.">          if (isDoubleRead) {</span>
+<span class="nc" id="L644">            cost *= tableColSize * DOUBLE_READ_COST_FACTOR + indexSize * INDEX_SCAN_COST_FACTOR;</span>
+<span class="nc" id="L645">            debug(IndexScanType.INDEX_SCAN);</span>
+          } else {
+<span class="nc" id="L647">            cost *= indexSize * INDEX_SCAN_COST_FACTOR;</span>
+<span class="nc" id="L648">            debug(IndexScanType.COVERING_INDEX_SCAN);</span>
+          }
+        }
+<span class="nc" id="L651">        return this;</span>
+      }
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

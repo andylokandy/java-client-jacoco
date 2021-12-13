@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RegionCache.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.region</a> &gt; <span class="el_source">RegionCache.java</span></div><h1>RegionCache.java</h1><pre class="source lang-java linenums">package org.tikv.common.region;
+
+import static org.tikv.common.codec.KeyUtils.formatBytesUTF8;
+import static org.tikv.common.util.KeyRangeUtils.makeRange;
+
+import com.google.common.collect.RangeMap;
+import com.google.common.collect.TreeRangeMap;
+import com.google.protobuf.ByteString;
+import java.util.HashMap;
+import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.key.Key;
+import org.tikv.common.util.BackOffer;
+
+public class RegionCache {
+<span class="fc" id="L17">  private static final Logger logger = LoggerFactory.getLogger(RegionCache.class);</span>
+
+  private final Map&lt;Long, TiRegion&gt; regionCache;
+  private final Map&lt;Long, TiStore&gt; storeCache;
+  private final RangeMap&lt;Key, Long&gt; keyToRegionIdCache;
+
+<span class="fc" id="L23">  public RegionCache() {</span>
+<span class="fc" id="L24">    regionCache = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L25">    storeCache = new HashMap&lt;&gt;();</span>
+
+<span class="fc" id="L27">    keyToRegionIdCache = TreeRangeMap.create();</span>
+<span class="fc" id="L28">  }</span>
+
+  public synchronized TiRegion getRegionByKey(ByteString key, BackOffer backOffer) {
+    Long regionId;
+<span class="fc bfc" id="L32" title="All 2 branches covered.">    if (key.isEmpty()) {</span>
+      // if key is empty, it must be the start key.
+<span class="fc" id="L34">      regionId = keyToRegionIdCache.get(Key.toRawKey(key, true));</span>
+    } else {
+<span class="fc" id="L36">      regionId = keyToRegionIdCache.get(Key.toRawKey(key));</span>
+    }
+<span class="pc bpc" id="L38" title="1 of 2 branches missed.">    if (logger.isDebugEnabled()) {</span>
+<span class="nc" id="L39">      logger.debug(</span>
+<span class="nc" id="L40">          String.format(&quot;getRegionByKey key[%s] -&gt; ID[%s]&quot;, formatBytesUTF8(key), regionId));</span>
+    }
+
+<span class="fc bfc" id="L43" title="All 2 branches covered.">    if (regionId == null) {</span>
+<span class="fc" id="L44">      return null;</span>
+    }
+    TiRegion region;
+<span class="fc" id="L47">    region = regionCache.get(regionId);</span>
+<span class="pc bpc" id="L48" title="1 of 2 branches missed.">    if (logger.isDebugEnabled()) {</span>
+<span class="nc" id="L49">      logger.debug(String.format(&quot;getRegionByKey ID[%s] -&gt; Region[%s]&quot;, regionId, region));</span>
+    }
+<span class="fc" id="L51">    return region;</span>
+  }
+
+  public synchronized TiRegion putRegion(TiRegion region) {
+<span class="pc bpc" id="L55" title="1 of 2 branches missed.">    if (logger.isDebugEnabled()) {</span>
+<span class="nc" id="L56">      logger.debug(&quot;putRegion: &quot; + region);</span>
+    }
+<span class="fc" id="L58">    TiRegion oldRegion = regionCache.get(region.getId());</span>
+<span class="pc bpc" id="L59" title="1 of 2 branches missed.">    if (oldRegion != null) {</span>
+<span class="nc bnc" id="L60" title="All 2 branches missed.">      if (oldRegion.getMeta().equals(region.getMeta())) {</span>
+<span class="nc" id="L61">        return oldRegion;</span>
+      } else {
+<span class="nc" id="L63">        invalidateRegion(oldRegion);</span>
+      }
+    }
+<span class="fc" id="L66">    regionCache.put(region.getId(), region);</span>
+<span class="fc" id="L67">    keyToRegionIdCache.put(makeRange(region.getStartKey(), region.getEndKey()), region.getId());</span>
+<span class="fc" id="L68">    return region;</span>
+  }
+
+  @Deprecated
+  public synchronized TiRegion getRegionById(long regionId) {
+<span class="nc" id="L73">    TiRegion region = regionCache.get(regionId);</span>
+<span class="nc bnc" id="L74" title="All 2 branches missed.">    if (logger.isDebugEnabled()) {</span>
+<span class="nc" id="L75">      logger.debug(String.format(&quot;getRegionByKey ID[%s] -&gt; Region[%s]&quot;, regionId, region));</span>
+    }
+<span class="nc" id="L77">    return region;</span>
+  }
+
+  /** Removes region associated with regionId from regionCache. */
+  public synchronized void invalidateRegion(TiRegion region) {
+    try {
+<span class="pc bpc" id="L83" title="1 of 2 branches missed.">      if (logger.isDebugEnabled()) {</span>
+<span class="nc" id="L84">        logger.debug(String.format(&quot;invalidateRegion ID[%s]&quot;, region.getId()));</span>
+      }
+<span class="fc" id="L86">      TiRegion oldRegion = regionCache.get(region.getId());</span>
+<span class="pc bpc" id="L87" title="3 of 4 branches missed.">      if (oldRegion != null &amp;&amp; oldRegion == region) {</span>
+<span class="nc" id="L88">        keyToRegionIdCache.remove(makeRange(region.getStartKey(), region.getEndKey()));</span>
+<span class="nc" id="L89">        regionCache.remove(region.getId());</span>
+      }
+<span class="nc" id="L91">    } catch (Exception ignore) {</span>
+<span class="fc" id="L92">    }</span>
+<span class="fc" id="L93">  }</span>
+
+  public synchronized void insertRegionToCache(TiRegion region) {
+    try {
+<span class="nc" id="L97">      TiRegion oldRegion = regionCache.get(region.getId());</span>
+<span class="nc bnc" id="L98" title="All 2 branches missed.">      if (oldRegion != null) {</span>
+<span class="nc" id="L99">        keyToRegionIdCache.remove(makeRange(oldRegion.getStartKey(), oldRegion.getEndKey()));</span>
+      }
+<span class="nc" id="L101">      regionCache.put(region.getId(), region);</span>
+<span class="nc" id="L102">      keyToRegionIdCache.put(makeRange(region.getStartKey(), region.getEndKey()), region.getId());</span>
+<span class="nc" id="L103">    } catch (Exception ignore) {</span>
+<span class="nc" id="L104">    }</span>
+<span class="nc" id="L105">  }</span>
+
+  public synchronized boolean updateRegion(TiRegion expected, TiRegion region) {
+    try {
+<span class="nc bnc" id="L109" title="All 2 branches missed.">      if (logger.isDebugEnabled()) {</span>
+<span class="nc" id="L110">        logger.debug(String.format(&quot;invalidateRegion ID[%s]&quot;, region.getId()));</span>
+      }
+<span class="nc" id="L112">      TiRegion oldRegion = regionCache.get(region.getId());</span>
+<span class="nc bnc" id="L113" title="All 2 branches missed.">      if (!expected.getMeta().equals(oldRegion.getMeta())) {</span>
+<span class="nc" id="L114">        return false;</span>
+      } else {
+<span class="nc bnc" id="L116" title="All 2 branches missed.">        if (oldRegion != null) {</span>
+<span class="nc" id="L117">          keyToRegionIdCache.remove(makeRange(oldRegion.getStartKey(), oldRegion.getEndKey()));</span>
+        }
+<span class="nc" id="L119">        regionCache.put(region.getId(), region);</span>
+<span class="nc" id="L120">        keyToRegionIdCache.put(makeRange(region.getStartKey(), region.getEndKey()), region.getId());</span>
+<span class="nc" id="L121">        return true;</span>
+      }
+<span class="nc" id="L123">    } catch (Exception ignore) {</span>
+<span class="nc" id="L124">      return false;</span>
+    }
+  }
+
+  public synchronized boolean updateStore(TiStore oldStore, TiStore newStore) {
+<span class="pc bpc" id="L129" title="1 of 2 branches missed.">    if (!newStore.isValid()) {</span>
+<span class="nc" id="L130">      return false;</span>
+    }
+<span class="pc bpc" id="L132" title="1 of 2 branches missed.">    if (oldStore == null) {</span>
+<span class="fc" id="L133">      storeCache.put(newStore.getId(), newStore);</span>
+<span class="fc" id="L134">      return true;</span>
+    }
+<span class="nc" id="L136">    TiStore originStore = storeCache.get(oldStore.getId());</span>
+<span class="nc bnc" id="L137" title="All 2 branches missed.">    if (originStore.equals(oldStore)) {</span>
+<span class="nc" id="L138">      storeCache.put(newStore.getId(), newStore);</span>
+<span class="nc" id="L139">      oldStore.markInvalid();</span>
+<span class="nc" id="L140">      return true;</span>
+    }
+<span class="nc" id="L142">    return false;</span>
+  }
+
+  public synchronized void invalidateStore(long storeId) {
+<span class="fc" id="L146">    TiStore store = storeCache.remove(storeId);</span>
+<span class="pc bpc" id="L147" title="1 of 2 branches missed.">    if (store != null) {</span>
+<span class="fc" id="L148">      store.markInvalid();</span>
+    }
+<span class="fc" id="L150">  }</span>
+
+  public synchronized TiStore getStoreById(long id) {
+<span class="fc" id="L153">    return storeCache.get(id);</span>
+  }
+
+  public synchronized boolean putStore(long id, TiStore store) {
+<span class="fc" id="L157">    TiStore oldStore = storeCache.get(id);</span>
+<span class="pc bpc" id="L158" title="1 of 2 branches missed.">    if (oldStore != null) {</span>
+<span class="nc bnc" id="L159" title="All 2 branches missed.">      if (oldStore.equals(store)) {</span>
+<span class="nc" id="L160">        return false;</span>
+      } else {
+<span class="nc" id="L162">        oldStore.markInvalid();</span>
+      }
+    }
+<span class="fc" id="L165">    storeCache.put(id, store);</span>
+<span class="fc" id="L166">    return true;</span>
+  }
+
+  public synchronized void clearAll() {
+<span class="fc" id="L170">    keyToRegionIdCache.clear();</span>
+<span class="fc" id="L171">    regionCache.clear();</span>
+<span class="fc" id="L172">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

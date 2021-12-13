@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>StringType.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.types</a> &gt; <span class="el_source">StringType.java</span></div><h1>StringType.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.types;
+
+import java.nio.charset.StandardCharsets;
+import org.tikv.common.codec.CodecDataInput;
+import org.tikv.common.exception.ConvertNotSupportException;
+import org.tikv.common.exception.ConvertOverflowException;
+import org.tikv.common.meta.TiColumnInfo;
+
+public class StringType extends BytesType {
+
+<span class="nc" id="L28">  public static final StringType VARCHAR = new StringType(MySQLType.TypeVarchar);</span>
+<span class="nc" id="L29">  public static final StringType CHAR = new StringType(MySQLType.TypeString);</span>
+<span class="nc" id="L30">  public static final StringType VAR_STRING = new StringType(MySQLType.TypeVarString);</span>
+
+<span class="nc" id="L32">  public static final MySQLType[] subTypes =</span>
+      new MySQLType[] {MySQLType.TypeVarchar, MySQLType.TypeString, MySQLType.TypeVarString};
+
+  protected StringType(MySQLType tp) {
+<span class="nc" id="L36">    super(tp);</span>
+<span class="nc" id="L37">  }</span>
+
+  public StringType(TiColumnInfo.InternalTypeHolder holder) {
+<span class="nc" id="L40">    super(holder);</span>
+<span class="nc" id="L41">  }</span>
+
+  @Override
+  public boolean isPushDownSupported() {
+<span class="nc" id="L45">    return true;</span>
+  }
+
+  @Override
+  protected Object doConvertToTiDBType(Object value) throws ConvertNotSupportException {
+<span class="nc" id="L50">    return convertToString(value);</span>
+  }
+
+  @Override
+  public String getName() {
+<span class="nc bnc" id="L55" title="All 2 branches missed.">    if (length != -1) {</span>
+<span class="nc" id="L56">      return String.format(&quot;VARCHAR(%d)&quot;, length);</span>
+    }
+<span class="nc" id="L58">    return &quot;VARCHAR&quot;;</span>
+  }
+
+  private String convertToString(Object value) throws ConvertNotSupportException {
+    String result;
+<span class="nc bnc" id="L63" title="All 2 branches missed.">    if (value instanceof Boolean) {</span>
+<span class="nc bnc" id="L64" title="All 2 branches missed.">      if ((Boolean) value) {</span>
+<span class="nc" id="L65">        result = &quot;1&quot;;</span>
+      } else {
+<span class="nc" id="L67">        result = &quot;0&quot;;</span>
+      }
+<span class="nc bnc" id="L69" title="All 2 branches missed.">    } else if (value instanceof Byte) {</span>
+<span class="nc" id="L70">      result = value.toString();</span>
+<span class="nc bnc" id="L71" title="All 2 branches missed.">    } else if (value instanceof Short) {</span>
+<span class="nc" id="L72">      result = value.toString();</span>
+<span class="nc bnc" id="L73" title="All 2 branches missed.">    } else if (value instanceof Integer) {</span>
+<span class="nc" id="L74">      result = value.toString();</span>
+<span class="nc bnc" id="L75" title="All 2 branches missed.">    } else if (value instanceof Long) {</span>
+<span class="nc" id="L76">      result = value.toString();</span>
+<span class="nc bnc" id="L77" title="All 4 branches missed.">    } else if (value instanceof Float || value instanceof Double) {</span>
+      // TODO: a little complicated, e.g.
+      // 3.4028235E38 -&gt; 340282350000000000000000000000000000000
+<span class="nc" id="L80">      throw new ConvertNotSupportException(value.getClass().getName(), this.getClass().getName());</span>
+<span class="nc bnc" id="L81" title="All 2 branches missed.">    } else if (value instanceof String) {</span>
+<span class="nc" id="L82">      result = value.toString();</span>
+<span class="nc bnc" id="L83" title="All 2 branches missed.">    } else if (value instanceof java.math.BigDecimal) {</span>
+<span class="nc" id="L84">      result = value.toString();</span>
+<span class="nc bnc" id="L85" title="All 2 branches missed.">    } else if (value instanceof java.sql.Date) {</span>
+<span class="nc" id="L86">      result = value.toString();</span>
+<span class="nc bnc" id="L87" title="All 2 branches missed.">    } else if (value instanceof java.sql.Timestamp) {</span>
+<span class="nc" id="L88">      result = value.toString();</span>
+<span class="nc bnc" id="L89" title="All 2 branches missed.">      if (((java.sql.Timestamp) value).getNanos() == 0) {</span>
+        // remove `.0` according to mysql's format
+<span class="nc" id="L91">        int len = result.length();</span>
+<span class="nc" id="L92">        result = result.substring(0, len - 2);</span>
+<span class="nc" id="L93">      }</span>
+    } else {
+<span class="nc" id="L95">      throw new ConvertNotSupportException(value.getClass().getName(), this.getClass().getName());</span>
+    }
+
+<span class="nc bnc" id="L98" title="All 2 branches missed.">    if (result.length() &gt; this.getLength()) {</span>
+<span class="nc" id="L99">      throw ConvertOverflowException.newMaxLengthException(result, this.getLength());</span>
+    }
+
+<span class="nc" id="L102">    return result;</span>
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  protected Object decodeNotNull(int flag, CodecDataInput cdi) {
+<span class="nc" id="L108">    return new String((byte[]) super.decodeNotNull(flag, cdi), StandardCharsets.UTF_8);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

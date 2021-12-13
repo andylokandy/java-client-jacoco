@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RangeColumnPartitionPruner.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.expression</a> &gt; <span class="el_source">RangeColumnPartitionPruner.java</span></div><h1>RangeColumnPartitionPruner.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.expression;
+
+import static org.tikv.common.expression.PartitionPruner.extractLogicalOrComparisonExpr;
+
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.RangeSet;
+import com.google.common.collect.TreeRangeSet;
+import java.util.*;
+import org.tikv.common.expression.ComparisonBinaryExpression.NormalizedPredicate;
+import org.tikv.common.expression.visitor.DefaultVisitor;
+import org.tikv.common.expression.visitor.PrunedPartitionBuilder;
+import org.tikv.common.key.TypedKey;
+import org.tikv.common.meta.TiPartitionDef;
+import org.tikv.common.meta.TiPartitionInfo;
+import org.tikv.common.meta.TiTableInfo;
+import org.tikv.common.parser.TiParser;
+import org.tikv.common.predicates.PredicateUtils;
+
+@SuppressWarnings(&quot;UnstableApiUsage&quot;)
+public class RangeColumnPartitionPruner
+    extends DefaultVisitor&lt;Set&lt;Integer&gt;, LogicalBinaryExpression&gt; {
+  private final int partsSize;
+  private final TiPartitionInfo partInfo;
+  private final Map&lt;String, List&lt;Expression&gt;&gt; partExprsPerColumnRef;
+
+<span class="nc" id="L41">  RangeColumnPartitionPruner(TiTableInfo tableInfo) {</span>
+<span class="nc" id="L42">    this.partExprsPerColumnRef = new HashMap&lt;&gt;();</span>
+<span class="nc" id="L43">    this.partInfo = tableInfo.getPartitionInfo();</span>
+<span class="nc" id="L44">    TiParser parser = new TiParser(tableInfo);</span>
+<span class="nc bnc" id="L45" title="All 2 branches missed.">    for (int i = 0; i &lt; partInfo.getColumns().size(); i++) {</span>
+<span class="nc" id="L46">      List&lt;Expression&gt; partExprs = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L47">      String colRefName = partInfo.getColumns().get(i);</span>
+<span class="nc" id="L48">      PartitionPruner.generateRangeExprs(partInfo, partExprs, parser, colRefName, i);</span>
+<span class="nc" id="L49">      partExprsPerColumnRef.put(colRefName, partExprs);</span>
+    }
+<span class="nc" id="L51">    this.partsSize = tableInfo.getPartitionInfo().getDefs().size();</span>
+<span class="nc" id="L52">  }</span>
+
+  @Override
+  protected Set&lt;Integer&gt; visit(LogicalBinaryExpression node, LogicalBinaryExpression parent) {
+<span class="nc" id="L56">    Expression left = node.getLeft();</span>
+<span class="nc" id="L57">    Expression right = node.getRight();</span>
+<span class="nc" id="L58">    Set&lt;Integer&gt; partsIsCoveredByLeft = left.accept(this, node);</span>
+<span class="nc" id="L59">    Set&lt;Integer&gt; partsIsCoveredByRight = right.accept(this, node);</span>
+<span class="nc bnc" id="L60" title="All 3 branches missed.">    switch (node.getCompType()) {</span>
+      case OR:
+<span class="nc" id="L62">        partsIsCoveredByLeft.addAll(partsIsCoveredByRight);</span>
+<span class="nc" id="L63">        return partsIsCoveredByLeft;</span>
+      case AND:
+<span class="nc" id="L65">        Set&lt;Integer&gt; partsIsCoveredByBoth = new HashSet&lt;&gt;();</span>
+<span class="nc bnc" id="L66" title="All 2 branches missed.">        for (int i = 0; i &lt; partsSize; i++) {</span>
+<span class="nc bnc" id="L67" title="All 4 branches missed.">          if (partsIsCoveredByLeft.contains(i) &amp;&amp; partsIsCoveredByRight.contains(i)) {</span>
+<span class="nc" id="L68">            partsIsCoveredByBoth.add(i);</span>
+          }
+        }
+<span class="nc" id="L71">        return partsIsCoveredByBoth;</span>
+    }
+
+<span class="nc" id="L74">    throw new UnsupportedOperationException(&quot;cannot access here&quot;);</span>
+  }
+
+  @Override
+  protected Set&lt;Integer&gt; visit(ComparisonBinaryExpression node, LogicalBinaryExpression parent) {
+<span class="nc" id="L79">    NormalizedPredicate predicate = node.normalize();</span>
+<span class="nc bnc" id="L80" title="All 2 branches missed.">    if (predicate == null) {</span>
+<span class="nc" id="L81">      throw new UnsupportedOperationException(</span>
+<span class="nc" id="L82">          String.format(&quot;ComparisonBinaryExpression %s cannot be normalized&quot;, node.toString()));</span>
+    }
+<span class="nc" id="L84">    String colRefName = predicate.getColumnRef().getName();</span>
+<span class="nc" id="L85">    List&lt;Expression&gt; partExprs = partExprsPerColumnRef.get(colRefName);</span>
+<span class="nc" id="L86">    Set&lt;Integer&gt; partDefs = new HashSet&lt;&gt;();</span>
+<span class="nc bnc" id="L87" title="All 2 branches missed.">    if (partExprs == null) {</span>
+<span class="nc bnc" id="L88" title="All 3 branches missed.">      switch (parent.getCompType()) {</span>
+        case OR:
+<span class="nc" id="L90">          return partDefs;</span>
+        case AND:
+<span class="nc bnc" id="L92" title="All 2 branches missed.">          for (int i = 0; i &lt; partsSize; i++) {</span>
+<span class="nc" id="L93">            partDefs.add(i);</span>
+          }
+<span class="nc" id="L95">          return partDefs;</span>
+      }
+    }
+<span class="nc" id="L98">    Objects.requireNonNull(partExprs, &quot;partition expression cannot be null&quot;);</span>
+<span class="nc bnc" id="L99" title="All 2 branches missed.">    for (int i = 0; i &lt; partsSize; i++) {</span>
+<span class="nc" id="L100">      PrunedPartitionBuilder rangeBuilder =</span>
+<span class="nc" id="L101">          new PrunedPartitionBuilder(ImmutableSet.of(predicate.getColumnRef()));</span>
+<span class="nc" id="L102">      RangeSet&lt;TypedKey&gt; partExprRange = rangeBuilder.buildRange(partExprs.get(i));</span>
+<span class="nc" id="L103">      RangeSet&lt;TypedKey&gt; filterRange = rangeBuilder.buildRange(node);</span>
+<span class="nc" id="L104">      RangeSet&lt;TypedKey&gt; copy = TreeRangeSet.create(partExprRange);</span>
+<span class="nc" id="L105">      copy.removeAll(filterRange.complement());</span>
+      // part expr and filter is connected
+<span class="nc bnc" id="L107" title="All 2 branches missed.">      if (!copy.isEmpty()) {</span>
+<span class="nc" id="L108">        partDefs.add(i);</span>
+      }
+    }
+<span class="nc" id="L111">    return partDefs;</span>
+  }
+
+  public List&lt;TiPartitionDef&gt; prune(List&lt;Expression&gt; filters) {
+<span class="nc" id="L115">    filters = extractLogicalOrComparisonExpr(filters);</span>
+<span class="nc" id="L116">    Expression cnfExpr = PredicateUtils.mergeCNFExpressions(filters);</span>
+<span class="nc bnc" id="L117" title="All 2 branches missed.">    if (cnfExpr == null) {</span>
+<span class="nc" id="L118">      return partInfo.getDefs();</span>
+    }
+<span class="nc" id="L120">    Set&lt;Integer&gt; partsIdx = cnfExpr.accept(this, null);</span>
+<span class="nc" id="L121">    List&lt;TiPartitionDef&gt; pDefs = new ArrayList&lt;&gt;();</span>
+<span class="nc bnc" id="L122" title="All 2 branches missed.">    for (int i = 0; i &lt; partsSize; i++) {</span>
+<span class="nc bnc" id="L123" title="All 2 branches missed.">      if (partsIdx.contains(i)) {</span>
+        // part range is empty indicates this partition can be pruned.
+<span class="nc" id="L125">        pDefs.add(partInfo.getDefs().get(i));</span>
+      }
+    }
+<span class="nc" id="L128">    return pDefs;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

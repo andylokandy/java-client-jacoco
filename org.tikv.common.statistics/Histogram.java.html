@@ -1,0 +1,283 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Histogram.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.statistics</a> &gt; <span class="el_source">Histogram.java</span></div><h1>Histogram.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2018 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.statistics;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
+import org.tikv.common.key.Key;
+
+/**
+ * Histogram represents core statistics for a column or index.
+ *
+ * &lt;p&gt;Each Histogram will have at most 256 buckets, each bucket contains a lower bound, a upper
+ * bound and the number of rows contain in such bound. With this information, SQL layer will be able
+ * to estimate how many rows will a index scan selects and determine which index to use will have
+ * the lowest cost.
+ *
+ * @see Bucket for moreinformation on the core data structure.
+ */
+<span class="nc bnc" id="L35" title="All 2 branches missed.">public class Histogram {</span>
+
+  private final long id; // Column ID
+  private final long numberOfDistinctValue; // Number of distinct values.
+  private final long nullCount;
+  private final long lastUpdateVersion;
+  private List&lt;Bucket&gt; buckets; // Histogram bucket list.
+
+  private Histogram(
+      long id,
+      long numberOfDistinctValue,
+      List&lt;Bucket&gt; buckets,
+      long nullCount,
+<span class="nc" id="L48">      long lastUpdateVersion) {</span>
+<span class="nc" id="L49">    this.id = id;</span>
+<span class="nc" id="L50">    this.numberOfDistinctValue = numberOfDistinctValue;</span>
+<span class="nc" id="L51">    this.buckets = buckets;</span>
+<span class="nc" id="L52">    this.nullCount = nullCount;</span>
+<span class="nc" id="L53">    this.lastUpdateVersion = lastUpdateVersion;</span>
+<span class="nc" id="L54">  }</span>
+
+  public static Builder newBuilder() {
+<span class="nc" id="L57">    return new Builder();</span>
+  }
+
+  public long getNumberOfDistinctValue() {
+<span class="nc" id="L61">    return numberOfDistinctValue;</span>
+  }
+
+  public List&lt;Bucket&gt; getBuckets() {
+<span class="nc" id="L65">    return buckets;</span>
+  }
+
+  public long getNullCount() {
+<span class="nc" id="L69">    return nullCount;</span>
+  }
+
+  public long getLastUpdateVersion() {
+<span class="nc" id="L73">    return lastUpdateVersion;</span>
+  }
+
+  public long getId() {
+<span class="nc" id="L77">    return id;</span>
+  }
+
+  /** equalRowCount estimates the row count where the column equals to value. */
+  private double equalRowCount(Key values) {
+<span class="nc" id="L82">    int index = lowerBound(values);</span>
+    // index not in range
+<span class="nc bnc" id="L84" title="All 2 branches missed.">    if (index == -buckets.size() - 1) {</span>
+<span class="nc" id="L85">      return 0;</span>
+    }
+    // index found
+<span class="nc bnc" id="L88" title="All 2 branches missed.">    if (index &gt;= 0) {</span>
+<span class="nc" id="L89">      return buckets.get(index).getRepeats();</span>
+    }
+    // index not found
+<span class="nc" id="L92">    index = -index - 1;</span>
+    int cmp;
+<span class="nc bnc" id="L94" title="All 2 branches missed.">    if (buckets.get(index).getLowerBound() == null) {</span>
+<span class="nc" id="L95">      cmp = 1;</span>
+    } else {
+<span class="nc" id="L97">      Objects.requireNonNull(buckets.get(index).getLowerBound());</span>
+<span class="nc" id="L98">      cmp = values.compareTo(buckets.get(index).getLowerBound());</span>
+    }
+<span class="nc bnc" id="L100" title="All 2 branches missed.">    if (cmp &lt; 0) {</span>
+<span class="nc" id="L101">      return 0;</span>
+    }
+<span class="nc" id="L103">    return totalRowCount() / numberOfDistinctValue;</span>
+  }
+
+  /** greaterRowCount estimates the row count where the column greater than value. */
+  private double greaterRowCount(Key values) {
+<span class="nc" id="L108">    double lessCount = lessRowCount(values);</span>
+<span class="nc" id="L109">    double equalCount = equalRowCount(values);</span>
+    double greaterCount;
+<span class="nc" id="L111">    greaterCount = totalRowCount() - lessCount - equalCount;</span>
+<span class="nc bnc" id="L112" title="All 2 branches missed.">    if (greaterCount &lt; 0) {</span>
+<span class="nc" id="L113">      greaterCount = 0;</span>
+    }
+<span class="nc" id="L115">    return greaterCount;</span>
+  }
+
+  /** greaterAndEqRowCount estimates the row count where the column less than or equal to value. */
+  private double greaterAndEqRowCount(Key values) {
+<span class="nc" id="L120">    double greaterCount = greaterRowCount(values);</span>
+<span class="nc" id="L121">    double equalCount = equalRowCount(values);</span>
+<span class="nc" id="L122">    return greaterCount + equalCount;</span>
+  }
+
+  /** lessRowCount estimates the row count where the column less than values. */
+  private double lessRowCount(Key values) {
+<span class="nc bnc" id="L127" title="All 2 branches missed.">    if (values.compareTo(Key.NULL) &lt;= 0) {</span>
+<span class="nc" id="L128">      return 0;</span>
+    }
+<span class="nc" id="L130">    int index = lowerBound(values);</span>
+    // index not in range
+<span class="nc bnc" id="L132" title="All 2 branches missed.">    if (index == -buckets.size() - 1) {</span>
+<span class="nc" id="L133">      return totalRowCount();</span>
+    }
+<span class="nc bnc" id="L135" title="All 2 branches missed.">    if (index &lt; 0) {</span>
+<span class="nc" id="L136">      index = -index - 1;</span>
+    } else {
+<span class="nc" id="L138">      return buckets.get(index).count - buckets.get(index).getRepeats();</span>
+    }
+<span class="nc" id="L140">    double curCount = buckets.get(index).count;</span>
+<span class="nc" id="L141">    double preCount = 0;</span>
+<span class="nc bnc" id="L142" title="All 2 branches missed.">    if (index &gt; 0) {</span>
+<span class="nc" id="L143">      preCount = buckets.get(index - 1).count;</span>
+    }
+<span class="nc" id="L145">    double lessThanBucketValueCount = curCount + nullCount - buckets.get(index).getRepeats();</span>
+<span class="nc" id="L146">    Key lowerBound = buckets.get(index).getLowerBound();</span>
+    int c;
+<span class="nc bnc" id="L148" title="All 2 branches missed.">    if (lowerBound != null) {</span>
+<span class="nc" id="L149">      c = values.compareTo(lowerBound);</span>
+    } else {
+<span class="nc" id="L151">      c = 1;</span>
+    }
+<span class="nc bnc" id="L153" title="All 2 branches missed.">    if (c &lt; 0) {</span>
+<span class="nc" id="L154">      return preCount;</span>
+    }
+<span class="nc" id="L156">    return (preCount + lessThanBucketValueCount) / 2;</span>
+  }
+
+  /** lessAndEqRowCount estimates the row count where the column less than or equal to value. */
+  public double lessAndEqRowCount(Key values) {
+<span class="nc" id="L161">    double lessCount = lessRowCount(values);</span>
+<span class="nc" id="L162">    double equalCount = equalRowCount(values);</span>
+<span class="nc" id="L163">    return lessCount + equalCount;</span>
+  }
+
+  /**
+   * betweenRowCount estimates the row count where column greater than or equal to a and less than
+   * b.
+   */
+  double betweenRowCount(Key a, Key b) {
+<span class="nc" id="L171">    double lessCountA = lessRowCount(a);</span>
+<span class="nc" id="L172">    double lessCountB = lessRowCount(b);</span>
+    // If lessCountA is not less than lessCountB, it may be that they fall to the same bucket and we
+    // cannot estimate the fraction, so we use `totalCount / NDV` to estimate the row count, but the
+    // result should not be greater than lessCountB.
+<span class="nc bnc" id="L176" title="All 2 branches missed.">    if (lessCountA &gt;= lessCountB) {</span>
+<span class="nc" id="L177">      return Math.min(lessCountB, totalRowCount() / numberOfDistinctValue);</span>
+    }
+<span class="nc" id="L179">    return lessCountB - lessCountA;</span>
+  }
+
+  public double totalRowCount() {
+<span class="nc bnc" id="L183" title="All 2 branches missed.">    if (buckets.isEmpty()) {</span>
+<span class="nc" id="L184">      return 0;</span>
+    }
+<span class="nc" id="L186">    return buckets.get(buckets.size() - 1).count + nullCount;</span>
+  }
+
+  /**
+   * lowerBound returns the smallest index of the searched key and returns (-[insertion point] - 1)
+   * if the key is not found in buckets where [insertion point] denotes the index of the first
+   * element greater than the key
+   */
+  private int lowerBound(Key key) {
+<span class="nc bnc" id="L195" title="All 2 branches missed.">    if (buckets.isEmpty()) {</span>
+<span class="nc" id="L196">      return -1;</span>
+    }
+<span class="nc bnc" id="L198" title="All 4 branches missed.">    assert key.getClass() == buckets.get(0).getUpperBound().getClass();</span>
+<span class="nc" id="L199">    return Arrays.binarySearch(buckets.toArray(), new Bucket(key));</span>
+  }
+
+  /**
+   * mergeBuckets is used to merge every two neighbor buckets.
+   *
+   * @param bucketIdx: index of the last bucket.
+   */
+  public void mergeBlock(int bucketIdx) {
+<span class="nc" id="L208">    int curBuck = 0;</span>
+<span class="nc bnc" id="L209" title="All 2 branches missed.">    for (int i = 0; i + 1 &lt;= bucketIdx; i += 2) {</span>
+<span class="nc" id="L210">      buckets.set(</span>
+          curBuck++,
+          new Bucket(
+<span class="nc" id="L213">              buckets.get(i + 1).count,</span>
+<span class="nc" id="L214">              buckets.get(i + 1).getRepeats(),</span>
+<span class="nc" id="L215">              buckets.get(i + 1).getLowerBound(),</span>
+<span class="nc" id="L216">              buckets.get(i).getUpperBound()));</span>
+    }
+<span class="nc bnc" id="L218" title="All 2 branches missed.">    if (bucketIdx % 2 == 0) {</span>
+<span class="nc" id="L219">      buckets.set(curBuck++, buckets.get(bucketIdx));</span>
+    }
+<span class="nc" id="L221">    buckets = buckets.subList(0, curBuck);</span>
+<span class="nc" id="L222">  }</span>
+
+  /** getIncreaseFactor will return a factor of data increasing after the last analysis. */
+  double getIncreaseFactor(long totalCount) {
+<span class="nc" id="L226">    long columnCount = buckets.get(buckets.size() - 1).count + nullCount;</span>
+<span class="nc bnc" id="L227" title="All 2 branches missed.">    if (columnCount == 0) {</span>
+<span class="nc" id="L228">      return 1.0;</span>
+    }
+<span class="nc" id="L230">    return (double) totalCount / (double) columnCount;</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L235">    return &quot;Histogram {\n id:&quot;</span>
+        + id
+        + &quot;,\n ndv:&quot;
+        + numberOfDistinctValue
+        + &quot;,\n nullCount:&quot;
+        + nullCount
+        + &quot;, buckets:[&quot;
+        + buckets
+        + &quot;]\n}&quot;;
+  }
+
+<span class="nc" id="L246">  public static class Builder {</span>
+    private long id;
+    private long NDV;
+<span class="nc" id="L249">    private List&lt;Bucket&gt; buckets = new ArrayList&lt;&gt;();</span>
+    private long nullCount;
+    private long lastUpdateVersion;
+
+    public Builder setId(long id) {
+<span class="nc" id="L254">      this.id = id;</span>
+<span class="nc" id="L255">      return this;</span>
+    }
+
+    public Builder setNDV(long NDV) {
+<span class="nc" id="L259">      this.NDV = NDV;</span>
+<span class="nc" id="L260">      return this;</span>
+    }
+
+    public Builder setBuckets(List&lt;Bucket&gt; buckets) {
+<span class="nc" id="L264">      this.buckets = new ArrayList&lt;&gt;(buckets);</span>
+<span class="nc" id="L265">      return this;</span>
+    }
+
+    public Builder setNullCount(long nullCount) {
+<span class="nc" id="L269">      this.nullCount = nullCount;</span>
+<span class="nc" id="L270">      return this;</span>
+    }
+
+    public Builder setLastUpdateVersion(long lastUpdateVersion) {
+<span class="nc" id="L274">      this.lastUpdateVersion = lastUpdateVersion;</span>
+<span class="nc" id="L275">      return this;</span>
+    }
+
+    public Histogram build() {
+<span class="nc" id="L279">      return new Histogram(id, NDV, buckets, nullCount, lastUpdateVersion);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

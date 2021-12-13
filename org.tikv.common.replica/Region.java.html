@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Region.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.replica</a> &gt; <span class="el_source">Region.java</span></div><h1>Region.java</h1><pre class="source lang-java linenums">package org.tikv.common.replica;
+
+import static com.google.common.base.MoreObjects.toStringHelper;
+
+import java.util.Iterator;
+import java.util.List;
+import org.tikv.common.region.TiStore;
+import org.tikv.kvproto.Metapb;
+
+public class Region {
+  private final Metapb.Region region;
+  private final Store[] stores;
+  private Store leaderStore;
+
+  public Region(
+      final Metapb.Region region,
+      final Metapb.Peer leader,
+      final List&lt;Metapb.Peer&gt; peers,
+<span class="fc" id="L19">      final List&lt;TiStore&gt; stores) {</span>
+<span class="fc" id="L20">    this.region = region;</span>
+<span class="fc" id="L21">    this.stores = new Store[stores.size()];</span>
+<span class="fc" id="L22">    Iterator&lt;Metapb.Peer&gt; peer = peers.iterator();</span>
+<span class="fc" id="L23">    Iterator&lt;TiStore&gt; store = stores.iterator();</span>
+<span class="fc bfc" id="L24" title="All 2 branches covered.">    for (int idx = 0; idx &lt; peers.size(); idx++) {</span>
+<span class="fc" id="L25">      Metapb.Peer currentPeer = peer.next();</span>
+<span class="fc" id="L26">      boolean isLeader = currentPeer.equals(leader);</span>
+<span class="fc" id="L27">      this.stores[idx] = new Store(currentPeer, store.next().getStore(), isLeader);</span>
+<span class="fc bfc" id="L28" title="All 2 branches covered.">      if (isLeader) {</span>
+<span class="fc" id="L29">        leaderStore = this.stores[idx];</span>
+      }
+    }
+<span class="fc" id="L32">  }</span>
+
+  public Store[] getStores() {
+<span class="fc" id="L35">    return stores;</span>
+  }
+
+  public Store getLeader() {
+<span class="fc" id="L39">    return leaderStore;</span>
+  }
+
+  public long getId() {
+<span class="nc" id="L43">    return region.getId();</span>
+  }
+
+  public byte[] getStartKey() {
+<span class="nc" id="L47">    return region.getStartKey().toByteArray();</span>
+  }
+
+  public byte[] getEndKey() {
+<span class="nc" id="L51">    return region.getEndKey().toByteArray();</span>
+  }
+
+  public String toString() {
+<span class="nc" id="L55">    return toStringHelper(this).add(&quot;region&quot;, region).add(&quot;stores&quot;, stores).toString();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

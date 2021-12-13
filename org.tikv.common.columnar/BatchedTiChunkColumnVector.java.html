@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BatchedTiChunkColumnVector.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.columnar</a> &gt; <span class="el_source">BatchedTiChunkColumnVector.java</span></div><h1>BatchedTiChunkColumnVector.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2019 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.columnar;
+
+import java.math.BigDecimal;
+import java.util.Arrays;
+import java.util.List;
+
+/** An implementation of {@link TiColumnVector}. All data is stored in TiDB chunk format. */
+public class BatchedTiChunkColumnVector extends TiColumnVector {
+  private final List&lt;TiChunkColumnVector&gt; childColumns;
+  private final int numOfNulls;
+  private final int[] rightEndpoints;
+
+  public BatchedTiChunkColumnVector(List&lt;TiChunkColumnVector&gt; child, int numOfRows) {
+<span class="nc" id="L29">    super(child.get(0).dataType(), numOfRows);</span>
+<span class="nc" id="L30">    this.childColumns = child;</span>
+<span class="nc" id="L31">    this.numOfNulls =</span>
+        child
+<span class="nc" id="L33">            .stream()</span>
+<span class="nc" id="L34">            .reduce(</span>
+<span class="nc" id="L35">                0,</span>
+<span class="nc" id="L36">                (partialAgeResult, columnVector) -&gt; partialAgeResult + columnVector.numNulls(),</span>
+                Integer::sum);
+<span class="nc" id="L38">    int right = 0;</span>
+<span class="nc" id="L39">    this.rightEndpoints = new int[child.size() + 1];</span>
+<span class="nc" id="L40">    this.rightEndpoints[0] = 0;</span>
+<span class="nc bnc" id="L41" title="All 2 branches missed.">    for (int i = 1; i &lt; rightEndpoints.length; i++) {</span>
+<span class="nc" id="L42">      right += child.get(i - 1).numOfRows();</span>
+<span class="nc" id="L43">      this.rightEndpoints[i] = right;</span>
+    }
+<span class="nc" id="L45">  }</span>
+
+  public final String typeName() {
+<span class="nc" id="L48">    return dataType().getType().name();</span>
+  }
+
+  // TODO: once we switch off_heap mode, we need control memory access pattern.
+<span class="nc" id="L52">  public void free() {}</span>
+
+  /**
+   * Cleans up memory for this column vector. The column vector is not usable after this.
+   *
+   * &lt;p&gt;This overwrites `AutoCloseable.close` to remove the `throws` clause, as column vector is
+   * in-memory and we don't expect any exception to happen during closing.
+   */
+  @Override
+<span class="nc" id="L61">  public void close() {}</span>
+
+  /** Returns true if this column vector contains any null values. */
+  @Override
+  public boolean hasNull() {
+<span class="nc bnc" id="L66" title="All 2 branches missed.">    return numOfNulls &gt; 0;</span>
+  }
+
+  /** Returns the number of nulls in this column vector. */
+  @Override
+  public int numNulls() {
+<span class="nc" id="L72">    return numOfNulls;</span>
+  }
+
+  private int[] getColumnVectorIdxAndRowId(int rowId) {
+<span class="nc" id="L76">    int offset = Arrays.binarySearch(this.rightEndpoints, rowId);</span>
+    int idx;
+<span class="nc bnc" id="L78" title="All 2 branches missed.">    if (offset &gt;= 0) {</span>
+<span class="nc" id="L79">      idx = offset;</span>
+    } else {
+<span class="nc" id="L81">      idx = -(offset + 2);</span>
+    }
+<span class="nc bnc" id="L83" title="All 4 branches missed.">    if (idx &gt;= childColumns.size() || idx &lt; 0) {</span>
+<span class="nc" id="L84">      throw new UnsupportedOperationException(&quot;Something goes wrong, it should never happen&quot;);</span>
+    }
+<span class="nc" id="L86">    return new int[] {idx, rowId - rightEndpoints[idx]};</span>
+  }
+
+  /** Returns whether the value at rowId is NULL. */
+  @Override
+  public boolean isNullAt(int rowId) {
+<span class="nc" id="L92">    int[] pair = getColumnVectorIdxAndRowId(rowId);</span>
+<span class="nc" id="L93">    return childColumns.get(pair[0]).isNullAt(pair[1]);</span>
+  }
+
+  /**
+   * Returns the boolean type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  @Override
+  public boolean getBoolean(int rowId) {
+<span class="nc" id="L102">    int[] pair = getColumnVectorIdxAndRowId(rowId);</span>
+<span class="nc" id="L103">    return childColumns.get(pair[0]).getBoolean(pair[1]);</span>
+  }
+
+  /**
+   * Returns the byte type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  @Override
+  public byte getByte(int rowId) {
+<span class="nc" id="L112">    int[] pair = getColumnVectorIdxAndRowId(rowId);</span>
+<span class="nc" id="L113">    return childColumns.get(pair[0]).getByte(pair[1]);</span>
+  }
+
+  /**
+   * Returns the short type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  @Override
+  public short getShort(int rowId) {
+<span class="nc" id="L122">    int[] pair = getColumnVectorIdxAndRowId(rowId);</span>
+<span class="nc" id="L123">    return childColumns.get(pair[0]).getShort(pair[1]);</span>
+  }
+
+  /**
+   * Returns the int type value for rowId. The return value is undefined and can be anything, if the
+   * slot for rowId is null.
+   */
+  @Override
+  public int getInt(int rowId) {
+<span class="nc" id="L132">    int[] pair = getColumnVectorIdxAndRowId(rowId);</span>
+<span class="nc" id="L133">    return childColumns.get(pair[0]).getInt(pair[1]);</span>
+  }
+
+  /**
+   * Returns the long type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  @Override
+  public long getLong(int rowId) {
+<span class="nc" id="L142">    int[] pair = getColumnVectorIdxAndRowId(rowId);</span>
+<span class="nc" id="L143">    return childColumns.get(pair[0]).getLong(pair[1]);</span>
+  }
+
+  /**
+   * Returns the float type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  @Override
+  public float getFloat(int rowId) {
+<span class="nc" id="L152">    int[] pair = getColumnVectorIdxAndRowId(rowId);</span>
+<span class="nc" id="L153">    return childColumns.get(pair[0]).getFloat(pair[1]);</span>
+  }
+
+  /**
+   * Returns the double type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  @Override
+  public double getDouble(int rowId) {
+<span class="nc" id="L162">    int[] pair = getColumnVectorIdxAndRowId(rowId);</span>
+<span class="nc" id="L163">    return childColumns.get(pair[0]).getDouble(pair[1]);</span>
+  }
+
+  /**
+   * Returns the decimal type value for rowId. If the slot for rowId is null, it should return null.
+   */
+  @Override
+  public BigDecimal getDecimal(int rowId, int precision, int scale) {
+<span class="nc" id="L171">    int[] pair = getColumnVectorIdxAndRowId(rowId);</span>
+<span class="nc" id="L172">    return childColumns.get(pair[0]).getDecimal(pair[1], precision, scale);</span>
+  }
+
+  /**
+   * Returns the string type value for rowId. If the slot for rowId is null, it should return null.
+   * Note that the returned UTF8String may point to the data of this column vector, please copy it
+   * if you want to keep it after this column vector is freed.
+   */
+  @Override
+  public String getUTF8String(int rowId) {
+<span class="nc" id="L182">    int[] pair = getColumnVectorIdxAndRowId(rowId);</span>
+<span class="nc" id="L183">    return childColumns.get(pair[0]).getUTF8String(pair[1]);</span>
+  }
+
+  /**
+   * Returns the binary type value for rowId. If the slot for rowId is null, it should return null.
+   */
+  @Override
+  public byte[] getBinary(int rowId) {
+<span class="nc" id="L191">    int[] pair = getColumnVectorIdxAndRowId(rowId);</span>
+<span class="nc" id="L192">    return childColumns.get(pair[0]).getBinary(pair[1]);</span>
+  }
+
+  /** @return child [[TiColumnVector]] at the given ordinal. */
+  @Override
+  protected TiColumnVector getChild(int ordinal) {
+<span class="nc" id="L198">    throw new UnsupportedOperationException(</span>
+        &quot;TiChunkBatchColumnVector does not support this operation&quot;);
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

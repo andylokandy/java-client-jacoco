@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BackOffFunction.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.util</a> &gt; <span class="el_source">BackOffFunction.java</span></div><h1>BackOffFunction.java</h1><pre class="source lang-java linenums">package org.tikv.common.util;
+
+import java.util.concurrent.ThreadLocalRandom;
+
+public class BackOffFunction {
+  private final int base;
+  private final int cap;
+  private final BackOffer.BackOffStrategy strategy;
+  private long lastSleep;
+  private int attempts;
+
+<span class="fc" id="L12">  private BackOffFunction(int base, int cap, BackOffer.BackOffStrategy strategy) {</span>
+<span class="fc" id="L13">    this.base = base;</span>
+<span class="fc" id="L14">    this.cap = cap;</span>
+<span class="fc" id="L15">    this.strategy = strategy;</span>
+<span class="fc" id="L16">    lastSleep = base;</span>
+<span class="fc" id="L17">  }</span>
+
+  public static BackOffFunction create(int base, int cap, BackOffer.BackOffStrategy strategy) {
+<span class="fc" id="L20">    return new BackOffFunction(base, cap, strategy);</span>
+  }
+
+  /**
+   * Do back off in exponential with optional jitters according to different back off strategies.
+   * See http://www.awsarchitectureblog.com/2015/03/backoff.html
+   */
+  long getSleepMs(long maxSleepMs) {
+<span class="fc" id="L28">    long sleep = 0;</span>
+<span class="fc" id="L29">    long v = expo(base, cap, attempts);</span>
+<span class="pc bpc" id="L30" title="3 of 5 branches missed.">    switch (strategy) {</span>
+      case NoJitter:
+<span class="fc" id="L32">        sleep = v;</span>
+<span class="fc" id="L33">        break;</span>
+      case FullJitter:
+<span class="nc" id="L35">        sleep = ThreadLocalRandom.current().nextLong(v);</span>
+<span class="nc" id="L36">        break;</span>
+      case EqualJitter:
+<span class="fc" id="L38">        sleep = v / 2 + ThreadLocalRandom.current().nextLong(v / 2);</span>
+<span class="fc" id="L39">        break;</span>
+      case DecorrJitter:
+<span class="nc" id="L41">        sleep = Math.min(cap, base + ThreadLocalRandom.current().nextLong(lastSleep * 3 - base));</span>
+        break;
+    }
+
+<span class="pc bpc" id="L45" title="3 of 4 branches missed.">    if (maxSleepMs &gt; 0 &amp;&amp; sleep &gt; maxSleepMs) {</span>
+<span class="nc" id="L46">      sleep = maxSleepMs;</span>
+    }
+
+<span class="fc" id="L49">    attempts++;</span>
+<span class="fc" id="L50">    lastSleep = sleep;</span>
+<span class="fc" id="L51">    return lastSleep;</span>
+  }
+
+  private int expo(int base, int cap, int n) {
+<span class="fc" id="L55">    return (int) Math.min(cap, base * Math.pow(2.0d, n));</span>
+  }
+
+<span class="fc" id="L58">  public enum BackOffFuncType {</span>
+<span class="fc" id="L59">    BoTiKVRPC,</span>
+<span class="fc" id="L60">    BoTxnLock,</span>
+<span class="fc" id="L61">    BoTxnLockFast,</span>
+<span class="fc" id="L62">    BoPDRPC,</span>
+<span class="fc" id="L63">    BoRegionMiss,</span>
+<span class="fc" id="L64">    BoUpdateLeader,</span>
+<span class="fc" id="L65">    BoServerBusy,</span>
+<span class="fc" id="L66">    BoTxnNotFound,</span>
+<span class="fc" id="L67">    BoCheckTimeout</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

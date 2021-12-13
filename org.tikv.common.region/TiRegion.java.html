@@ -1,0 +1,316 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TiRegion.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.region</a> &gt; <span class="el_source">TiRegion.java</span></div><h1>TiRegion.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.region;
+
+import com.google.protobuf.ByteString;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.TiConfiguration;
+import org.tikv.common.codec.KeyUtils;
+import org.tikv.common.exception.TiClientInternalException;
+import org.tikv.common.key.Key;
+import org.tikv.common.replica.ReplicaSelector;
+import org.tikv.common.util.FastByteComparisons;
+import org.tikv.common.util.KeyRangeUtils;
+import org.tikv.kvproto.Kvrpcpb;
+import org.tikv.kvproto.Kvrpcpb.IsolationLevel;
+import org.tikv.kvproto.Metapb;
+import org.tikv.kvproto.Metapb.Peer;
+import org.tikv.kvproto.Metapb.Region;
+
+public class TiRegion implements Serializable {
+<span class="fc" id="L43">  private static final Logger logger = LoggerFactory.getLogger(TiRegion.class);</span>
+
+  private final Region meta;
+  private final IsolationLevel isolationLevel;
+  private final Kvrpcpb.CommandPri commandPri;
+  private final TiConfiguration conf;
+  private final Peer leader;
+  private final ReplicaSelector replicaSelector;
+  private final List&lt;Peer&gt; replicaList;
+  private int replicaIdx;
+  private final List&lt;Peer&gt; peers;
+  private final List&lt;TiStore&gt; stores;
+
+  public TiRegion(
+<span class="fc" id="L57">      TiConfiguration conf, Region meta, Peer leader, List&lt;Peer&gt; peers, List&lt;TiStore&gt; stores) {</span>
+<span class="fc" id="L58">    this.conf = Objects.requireNonNull(conf, &quot;conf is null&quot;);</span>
+<span class="fc" id="L59">    this.meta = Objects.requireNonNull(meta, &quot;meta is null&quot;);</span>
+<span class="fc" id="L60">    this.isolationLevel = conf.getIsolationLevel();</span>
+<span class="fc" id="L61">    this.commandPri = conf.getCommandPriority();</span>
+<span class="fc" id="L62">    this.peers = peers;</span>
+<span class="fc" id="L63">    this.stores = stores;</span>
+<span class="fc" id="L64">    this.replicaSelector = conf.getReplicaSelector();</span>
+<span class="pc bpc" id="L65" title="1 of 4 branches missed.">    if (leader == null || leader.getId() == 0) {</span>
+<span class="pc bpc" id="L66" title="1 of 2 branches missed.">      if (meta.getPeersCount() == 0) {</span>
+<span class="nc" id="L67">        throw new TiClientInternalException(&quot;Empty peer list for region &quot; + meta.getId());</span>
+      }
+      // region's first peer is leader.
+<span class="fc" id="L70">      this.leader = meta.getPeers(0);</span>
+    } else {
+<span class="fc" id="L72">      this.leader = leader;</span>
+    }
+
+    // init replicaList
+<span class="fc" id="L76">    replicaList =</span>
+        replicaSelector
+<span class="fc" id="L78">            .select(new org.tikv.common.replica.Region(meta, this.leader, peers, stores))</span>
+<span class="fc" id="L79">            .stream()</span>
+<span class="fc" id="L80">            .map(org.tikv.common.replica.Store::getPeer)</span>
+<span class="fc" id="L81">            .collect(Collectors.toList());</span>
+<span class="fc" id="L82">    replicaIdx = 0;</span>
+<span class="fc" id="L83">  }</span>
+
+  public TiConfiguration getConf() {
+<span class="nc" id="L86">    return conf;</span>
+  }
+
+  public Peer getLeader() {
+<span class="fc" id="L90">    return leader;</span>
+  }
+
+  public List&lt;Peer&gt; getFollowerList() {
+<span class="nc" id="L94">    List&lt;Peer&gt; peers = new ArrayList&lt;&gt;();</span>
+<span class="nc bnc" id="L95" title="All 2 branches missed.">    for (Peer peer : getMeta().getPeersList()) {</span>
+<span class="nc bnc" id="L96" title="All 2 branches missed.">      if (!peer.equals(this.leader)) {</span>
+<span class="nc bnc" id="L97" title="All 2 branches missed.">        if (peer.getRole().equals(Metapb.PeerRole.Voter)) {</span>
+<span class="nc" id="L98">          peers.add(peer);</span>
+        }
+      }
+<span class="nc" id="L101">    }</span>
+<span class="nc" id="L102">    return peers;</span>
+  }
+
+  public List&lt;Peer&gt; getLearnerList() {
+<span class="nc" id="L106">    List&lt;Peer&gt; peers = new ArrayList&lt;&gt;();</span>
+<span class="nc bnc" id="L107" title="All 2 branches missed.">    for (Peer peer : getMeta().getPeersList()) {</span>
+<span class="nc bnc" id="L108" title="All 2 branches missed.">      if (peer.getRole().equals(Metapb.PeerRole.Learner)) {</span>
+<span class="nc" id="L109">        peers.add(peer);</span>
+      }
+<span class="nc" id="L111">    }</span>
+<span class="nc" id="L112">    return peers;</span>
+  }
+
+  public Peer getCurrentReplica() {
+<span class="fc" id="L116">    return replicaList.get(replicaIdx);</span>
+  }
+
+  public Peer getNextReplica() {
+<span class="nc" id="L120">    replicaIdx = (replicaIdx + 1) % replicaList.size();</span>
+<span class="nc" id="L121">    return getCurrentReplica();</span>
+  }
+
+  private boolean isLeader(Peer peer) {
+<span class="fc" id="L125">    return getLeader().equals(peer);</span>
+  }
+
+  public long getId() {
+<span class="fc" id="L129">    return this.meta.getId();</span>
+  }
+
+  public ByteString getStartKey() {
+<span class="fc" id="L133">    return meta.getStartKey();</span>
+  }
+
+  public boolean contains(Key key) {
+<span class="nc" id="L137">    return KeyRangeUtils.makeRange(this.getStartKey(), this.getEndKey()).contains(key);</span>
+  }
+
+  public ByteString getEndKey() {
+<span class="fc" id="L141">    return meta.getEndKey();</span>
+  }
+
+  public Key getRowEndKey() {
+<span class="nc" id="L145">    return Key.toRawKey(getEndKey());</span>
+  }
+
+  public Kvrpcpb.Context getLeaderContext() {
+<span class="nc" id="L149">    return getContext(this.leader, java.util.Collections.emptySet(), false);</span>
+  }
+
+  public Kvrpcpb.Context getReplicaContext(Set&lt;Long&gt; resolvedLocks, TiStoreType storeType) {
+<span class="fc" id="L153">    Peer currentPeer = getCurrentReplica();</span>
+<span class="pc bpc" id="L154" title="3 of 4 branches missed.">    boolean replicaRead = !isLeader(currentPeer) &amp;&amp; TiStoreType.TiKV.equals(storeType);</span>
+<span class="fc" id="L155">    return getContext(currentPeer, resolvedLocks, replicaRead);</span>
+  }
+
+  public Kvrpcpb.Context getReplicaContext(Peer currentPeer, Set&lt;Long&gt; resolvedLocks) {
+<span class="nc" id="L159">    return getContext(currentPeer, resolvedLocks, false);</span>
+  }
+
+  public Kvrpcpb.Context getReplicaContext(Peer currentPeer) {
+<span class="nc" id="L163">    return getContext(currentPeer, java.util.Collections.emptySet(), false);</span>
+  }
+
+  private Kvrpcpb.Context getContext(
+      Peer currentPeer, Set&lt;Long&gt; resolvedLocks, boolean replicaRead) {
+
+<span class="fc" id="L169">    Kvrpcpb.Context.Builder builder = Kvrpcpb.Context.newBuilder();</span>
+<span class="fc" id="L170">    builder</span>
+<span class="fc" id="L171">        .setIsolationLevel(this.isolationLevel)</span>
+<span class="fc" id="L172">        .setPriority(this.commandPri)</span>
+<span class="fc" id="L173">        .setRegionId(meta.getId())</span>
+<span class="fc" id="L174">        .setPeer(currentPeer)</span>
+<span class="fc" id="L175">        .setReplicaRead(replicaRead)</span>
+<span class="fc" id="L176">        .setRegionEpoch(this.meta.getRegionEpoch());</span>
+<span class="fc" id="L177">    builder.addAllResolvedLocks(resolvedLocks);</span>
+<span class="fc" id="L178">    return builder.build();</span>
+  }
+
+  // getVerID returns the Region's RegionVerID.
+  public RegionVerID getVerID() {
+<span class="nc" id="L183">    return new RegionVerID(</span>
+<span class="nc" id="L184">        meta.getId(), meta.getRegionEpoch().getConfVer(), meta.getRegionEpoch().getVersion());</span>
+  }
+
+  /**
+   * switches current peer to the one on specific store. It return false if no peer matches the
+   * storeID.
+   *
+   * @param leaderStoreID is leader peer id.
+   * @return null if no peers matches the store id.
+   */
+  public TiRegion switchPeer(long leaderStoreID) {
+<span class="nc" id="L195">    List&lt;Peer&gt; peers = meta.getPeersList();</span>
+<span class="nc bnc" id="L196" title="All 2 branches missed.">    for (Peer p : peers) {</span>
+<span class="nc bnc" id="L197" title="All 2 branches missed.">      if (p.getStoreId() == leaderStoreID) {</span>
+<span class="nc" id="L198">        return new TiRegion(this.conf, this.meta, p, peers, this.stores);</span>
+      }
+<span class="nc" id="L200">    }</span>
+<span class="nc" id="L201">    return null;</span>
+  }
+
+  public boolean isMoreThan(ByteString key) {
+<span class="pc bpc" id="L205" title="1 of 2 branches missed.">    return FastByteComparisons.compareTo(</span>
+<span class="fc" id="L206">            meta.getStartKey().toByteArray(),</span>
+            0,
+<span class="fc" id="L208">            meta.getStartKey().size(),</span>
+<span class="fc" id="L209">            key.toByteArray(),</span>
+            0,
+<span class="fc" id="L211">            key.size())</span>
+        &gt; 0;
+  }
+
+  public boolean isLessThan(ByteString key) {
+<span class="pc bpc" id="L216" title="1 of 2 branches missed.">    return FastByteComparisons.compareTo(</span>
+<span class="fc" id="L217">            meta.getEndKey().toByteArray(),</span>
+            0,
+<span class="fc" id="L219">            meta.getEndKey().size(),</span>
+<span class="fc" id="L220">            key.toByteArray(),</span>
+            0,
+<span class="fc" id="L222">            key.size())</span>
+        &lt;= 0;
+  }
+
+  public boolean contains(ByteString key) {
+<span class="pc bpc" id="L227" title="2 of 4 branches missed.">    return !isMoreThan(key) &amp;&amp; !isLessThan(key);</span>
+  }
+
+  public boolean isValid() {
+<span class="pc bpc" id="L231" title="2 of 4 branches missed.">    return leader != null &amp;&amp; meta != null;</span>
+  }
+
+  public Metapb.RegionEpoch getRegionEpoch() {
+<span class="fc" id="L235">    return this.meta.getRegionEpoch();</span>
+  }
+
+  public Region getMeta() {
+<span class="nc" id="L239">    return meta;</span>
+  }
+
+  @Override
+  public boolean equals(final Object another) {
+<span class="pc bpc" id="L244" title="1 of 2 branches missed.">    if (!(another instanceof TiRegion)) {</span>
+<span class="nc" id="L245">      return false;</span>
+    }
+<span class="fc" id="L247">    TiRegion anotherRegion = ((TiRegion) another);</span>
+<span class="pc bpc" id="L248" title="1 of 2 branches missed.">    return anotherRegion.meta.equals(this.meta)</span>
+<span class="pc bpc" id="L249" title="1 of 2 branches missed.">        &amp;&amp; anotherRegion.leader.equals(this.leader)</span>
+<span class="pc bpc" id="L250" title="1 of 2 branches missed.">        &amp;&amp; anotherRegion.commandPri.equals(this.commandPri)</span>
+<span class="pc bpc" id="L251" title="1 of 2 branches missed.">        &amp;&amp; anotherRegion.isolationLevel.equals(this.isolationLevel);</span>
+  }
+
+  @Override
+  public int hashCode() {
+<span class="fc" id="L256">    return Objects.hash(meta, leader, isolationLevel, commandPri);</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="fc" id="L261">    return String.format(</span>
+        &quot;{Region[%d] ConfVer[%d] Version[%d] Store[%d] KeyRange[%s]:[%s]}&quot;,
+<span class="fc" id="L263">        getId(),</span>
+<span class="fc" id="L264">        getRegionEpoch().getConfVer(),</span>
+<span class="fc" id="L265">        getRegionEpoch().getVersion(),</span>
+<span class="fc" id="L266">        getLeader().getStoreId(),</span>
+<span class="fc" id="L267">        KeyUtils.formatBytesUTF8(getStartKey()),</span>
+<span class="fc" id="L268">        KeyUtils.formatBytesUTF8(getEndKey()));</span>
+  }
+
+  public class RegionVerID {
+    final long id;
+    final long confVer;
+    final long ver;
+
+<span class="nc" id="L276">    RegionVerID(long id, long confVer, long ver) {</span>
+<span class="nc" id="L277">      this.id = id;</span>
+<span class="nc" id="L278">      this.confVer = confVer;</span>
+<span class="nc" id="L279">      this.ver = ver;</span>
+<span class="nc" id="L280">    }</span>
+
+    public long getId() {
+<span class="nc" id="L283">      return id;</span>
+    }
+
+    public long getConfVer() {
+<span class="nc" id="L287">      return confVer;</span>
+    }
+
+    public long getVer() {
+<span class="nc" id="L291">      return ver;</span>
+    }
+
+    @Override
+    public boolean equals(Object other) {
+<span class="nc bnc" id="L296" title="All 2 branches missed.">      if (this == other) {</span>
+<span class="nc" id="L297">        return true;</span>
+      }
+<span class="nc bnc" id="L299" title="All 2 branches missed.">      if (!(other instanceof RegionVerID)) {</span>
+<span class="nc" id="L300">        return false;</span>
+      }
+
+<span class="nc" id="L303">      RegionVerID that = (RegionVerID) other;</span>
+<span class="nc bnc" id="L304" title="All 6 branches missed.">      return id == that.id &amp;&amp; confVer == that.confVer &amp;&amp; ver == that.ver;</span>
+    }
+
+    @Override
+    public int hashCode() {
+<span class="nc" id="L309">      int hash = Long.hashCode(id);</span>
+<span class="nc" id="L310">      hash = hash * 31 + Long.hashCode(confVer);</span>
+<span class="nc" id="L311">      hash = hash * 31 + Long.hashCode(ver);</span>
+<span class="nc" id="L312">      return hash;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

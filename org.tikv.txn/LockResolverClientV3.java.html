@@ -1,0 +1,322 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LockResolverClientV3.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.txn</a> &gt; <span class="el_source">LockResolverClientV3.java</span></div><h1>LockResolverClientV3.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.txn;
+
+import static org.tikv.common.util.BackOffFunction.BackOffFuncType.BoRegionMiss;
+
+import com.google.protobuf.ByteString;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Queue;
+import java.util.Set;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.PDClient;
+import org.tikv.common.TiConfiguration;
+import org.tikv.common.exception.KeyException;
+import org.tikv.common.exception.RegionException;
+import org.tikv.common.exception.TiClientInternalException;
+import org.tikv.common.operation.KVErrorHandler;
+import org.tikv.common.region.*;
+import org.tikv.common.region.TiRegion.RegionVerID;
+import org.tikv.common.util.BackOffer;
+import org.tikv.common.util.ChannelFactory;
+import org.tikv.common.util.TsoUtils;
+import org.tikv.kvproto.Kvrpcpb;
+import org.tikv.kvproto.Kvrpcpb.CleanupRequest;
+import org.tikv.kvproto.Kvrpcpb.CleanupResponse;
+import org.tikv.kvproto.TikvGrpc;
+import org.tikv.kvproto.TikvGrpc.TikvBlockingStub;
+import org.tikv.kvproto.TikvGrpc.TikvFutureStub;
+
+/** Since v3.0.5 TiDB ignores the ttl on secondary lock and will use the ttl on primary key. */
+public class LockResolverClientV3 extends AbstractRegionStoreClient
+    implements AbstractLockResolverClient {
+<span class="fc" id="L57">  private static final Logger logger = LoggerFactory.getLogger(LockResolverClientV3.class);</span>
+
+  private final ReadWriteLock readWriteLock;
+
+  /**
+   * Note: Because the internal of long is same as unsigned_long and Txn id are never changed. Be
+   * careful to compare between two tso the `resolved` mapping is as {@code Map&lt;TxnId, TxnStatus&gt;}
+   * TxnStatus represents a txn's final status. It should be Commit or Rollback. if TxnStatus &gt; 0,
+   * means the commit ts, otherwise abort
+   */
+  private final Map&lt;Long, TxnStatus&gt; resolved;
+
+  /** the list is chain of txn for O(1) lru cache */
+  private final Queue&lt;Long&gt; recentResolved;
+
+  private final PDClient pdClient;
+
+  private final RegionStoreClient.RegionStoreClientBuilder clientBuilder;
+
+  public LockResolverClientV3(
+      TiConfiguration conf,
+      TiRegion region,
+      TiStore store,
+      TikvBlockingStub blockingStub,
+      TikvFutureStub asyncStub,
+      ChannelFactory channelFactory,
+      RegionManager regionManager,
+      PDClient pdClient,
+      RegionStoreClient.RegionStoreClientBuilder clientBuilder) {
+<span class="fc" id="L86">    super(conf, region, store, channelFactory, blockingStub, asyncStub, regionManager);</span>
+<span class="fc" id="L87">    resolved = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L88">    recentResolved = new LinkedList&lt;&gt;();</span>
+<span class="fc" id="L89">    readWriteLock = new ReentrantReadWriteLock();</span>
+<span class="fc" id="L90">    this.pdClient = pdClient;</span>
+<span class="fc" id="L91">    this.clientBuilder = clientBuilder;</span>
+<span class="fc" id="L92">  }</span>
+
+  @Override
+  public String getVersion() {
+<span class="nc" id="L96">    return &quot;V3&quot;;</span>
+  }
+
+  @Override
+  public ResolveLockResult resolveLocks(
+      BackOffer bo, long callerStartTS, List&lt;Lock&gt; locks, boolean forWrite) {
+<span class="nc" id="L102">    TxnExpireTime msBeforeTxnExpired = new TxnExpireTime();</span>
+
+<span class="nc bnc" id="L104" title="All 2 branches missed.">    if (locks.isEmpty()) {</span>
+<span class="nc" id="L105">      return new ResolveLockResult(msBeforeTxnExpired.value());</span>
+    }
+
+<span class="nc" id="L108">    List&lt;Lock&gt; expiredLocks = new ArrayList&lt;&gt;();</span>
+<span class="nc bnc" id="L109" title="All 2 branches missed.">    for (Lock lock : locks) {</span>
+<span class="nc bnc" id="L110" title="All 2 branches missed.">      if (TsoUtils.isExpired(lock.getTxnID(), lock.getTtl())) {</span>
+<span class="nc" id="L111">        expiredLocks.add(lock);</span>
+      } else {
+<span class="nc" id="L113">        msBeforeTxnExpired.update(lock.getTtl());</span>
+      }
+<span class="nc" id="L115">    }</span>
+
+<span class="nc bnc" id="L117" title="All 2 branches missed.">    if (expiredLocks.isEmpty()) {</span>
+<span class="nc" id="L118">      return new ResolveLockResult(msBeforeTxnExpired.value());</span>
+    }
+
+<span class="nc" id="L121">    Map&lt;Long, Set&lt;RegionVerID&gt;&gt; cleanTxns = new HashMap&lt;&gt;();</span>
+<span class="nc bnc" id="L122" title="All 2 branches missed.">    for (Lock l : expiredLocks) {</span>
+<span class="nc" id="L123">      TxnStatus status = getTxnStatusFromLock(bo, l);</span>
+
+<span class="nc bnc" id="L125" title="All 2 branches missed.">      if (status.getTtl() == 0) {</span>
+<span class="nc" id="L126">        Set&lt;RegionVerID&gt; cleanRegion =</span>
+<span class="nc" id="L127">            cleanTxns.computeIfAbsent(l.getTxnID(), k -&gt; new HashSet&lt;&gt;());</span>
+
+<span class="nc" id="L129">        resolveLock(bo, l, status, cleanRegion);</span>
+<span class="nc" id="L130">      } else {</span>
+<span class="nc" id="L131">        long msBeforeLockExpired = TsoUtils.untilExpired(l.getTxnID(), status.getTtl());</span>
+<span class="nc" id="L132">        msBeforeTxnExpired.update(msBeforeLockExpired);</span>
+      }
+<span class="nc" id="L134">    }</span>
+
+<span class="nc" id="L136">    return new ResolveLockResult(msBeforeTxnExpired.value());</span>
+  }
+
+  private void resolveLock(
+      BackOffer bo, Lock lock, TxnStatus txnStatus, Set&lt;RegionVerID&gt; cleanRegion) {
+<span class="nc bnc" id="L141" title="All 2 branches missed.">    boolean cleanWholeRegion = lock.getTxnSize() &gt;= BIG_TXN_THRESHOLD;</span>
+
+    while (true) {
+<span class="nc" id="L144">      region = regionManager.getRegionByKey(lock.getKey());</span>
+
+<span class="nc bnc" id="L146" title="All 2 branches missed.">      if (cleanRegion.contains(region.getVerID())) {</span>
+<span class="nc" id="L147">        return;</span>
+      }
+
+      Kvrpcpb.ResolveLockRequest.Builder builder =
+<span class="nc" id="L151">          Kvrpcpb.ResolveLockRequest.newBuilder()</span>
+<span class="nc" id="L152">              .setContext(region.getLeaderContext())</span>
+<span class="nc" id="L153">              .setStartVersion(lock.getTxnID());</span>
+
+<span class="nc bnc" id="L155" title="All 2 branches missed.">      if (txnStatus.isCommitted()) {</span>
+        // txn is committed with commitTS txnStatus
+<span class="nc" id="L157">        builder.setCommitVersion(txnStatus.getCommitTS());</span>
+      }
+
+<span class="nc bnc" id="L160" title="All 2 branches missed.">      if (lock.getTxnSize() &lt; BIG_TXN_THRESHOLD) {</span>
+        // Only resolve specified keys when it is a small transaction,
+        // prevent from scanning the whole region in this case.
+<span class="nc" id="L163">        builder.addKeys(lock.getKey());</span>
+      }
+
+<span class="nc" id="L166">      Supplier&lt;Kvrpcpb.ResolveLockRequest&gt; factory = builder::build;</span>
+<span class="nc" id="L167">      KVErrorHandler&lt;Kvrpcpb.ResolveLockResponse&gt; handler =</span>
+          new KVErrorHandler&lt;&gt;(
+              regionManager,
+              this,
+              this,
+<span class="nc bnc" id="L172" title="All 2 branches missed.">              resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null,</span>
+<span class="nc bnc" id="L173" title="All 2 branches missed.">              resp -&gt; resp.hasError() ? resp.getError() : null,</span>
+<span class="nc" id="L174">              resolveLockResult -&gt; null,</span>
+              0L,
+              false);
+<span class="nc" id="L177">      Kvrpcpb.ResolveLockResponse resp =</span>
+<span class="nc" id="L178">          callWithRetry(bo, TikvGrpc.getKvResolveLockMethod(), factory, handler);</span>
+
+<span class="nc bnc" id="L180" title="All 2 branches missed.">      if (resp == null) {</span>
+<span class="nc" id="L181">        logger.error(&quot;getKvResolveLockMethod failed without a cause&quot;);</span>
+<span class="nc" id="L182">        regionManager.onRequestFail(region);</span>
+<span class="nc" id="L183">        bo.doBackOff(</span>
+            BoRegionMiss,
+            new TiClientInternalException(&quot;getKvResolveLockMethod failed without a cause&quot;));
+<span class="nc" id="L186">        continue;</span>
+      }
+
+<span class="nc bnc" id="L189" title="All 2 branches missed.">      if (resp.hasRegionError()) {</span>
+<span class="nc" id="L190">        bo.doBackOff(BoRegionMiss, new RegionException(resp.getRegionError()));</span>
+<span class="nc" id="L191">        continue;</span>
+      }
+
+<span class="nc bnc" id="L194" title="All 2 branches missed.">      if (resp.hasError()) {</span>
+<span class="nc" id="L195">        logger.error(</span>
+<span class="nc" id="L196">            String.format(&quot;unexpected resolveLock err: %s, lock: %s&quot;, resp.getError(), lock));</span>
+<span class="nc" id="L197">        throw new KeyException(resp.getError());</span>
+      }
+
+<span class="nc bnc" id="L200" title="All 2 branches missed.">      if (cleanWholeRegion) {</span>
+<span class="nc" id="L201">        cleanRegion.add(region.getVerID());</span>
+      }
+<span class="nc" id="L203">      return;</span>
+    }
+  }
+
+  private TxnStatus getTxnStatusFromLock(BackOffer bo, Lock lock) {
+    // NOTE: l.TTL = 0 is a special protocol!!!
+    // When the pessimistic txn prewrite meets locks of a txn, it should rollback that txn
+    // **unconditionally**.
+    // In this case, TiKV set the lock TTL = 0, and TiDB use currentTS = 0 to call
+    // getTxnStatus, and getTxnStatus with currentTS = 0 would rollback the transaction.
+<span class="nc bnc" id="L213" title="All 2 branches missed.">    if (lock.getTtl() == 0) {</span>
+<span class="nc" id="L214">      return getTxnStatus(bo, lock.getTxnID(), lock.getPrimary(), 0L);</span>
+    }
+
+<span class="nc" id="L217">    long currentTS = pdClient.getTimestamp(bo).getVersion();</span>
+<span class="nc" id="L218">    return getTxnStatus(bo, lock.getTxnID(), lock.getPrimary(), currentTS);</span>
+  }
+
+  private TxnStatus getTxnStatus(BackOffer bo, Long txnID, ByteString primary, Long currentTS) {
+<span class="nc" id="L222">    TxnStatus status = getResolved(txnID);</span>
+<span class="nc bnc" id="L223" title="All 2 branches missed.">    if (status != null) {</span>
+<span class="nc" id="L224">      return status;</span>
+    }
+
+<span class="nc" id="L227">    Supplier&lt;CleanupRequest&gt; factory =</span>
+        () -&gt; {
+<span class="nc" id="L229">          TiRegion primaryKeyRegion = regionManager.getRegionByKey(primary);</span>
+<span class="nc" id="L230">          return CleanupRequest.newBuilder()</span>
+<span class="nc" id="L231">              .setContext(primaryKeyRegion.getLeaderContext())</span>
+<span class="nc" id="L232">              .setKey(primary)</span>
+<span class="nc" id="L233">              .setStartVersion(txnID)</span>
+<span class="nc" id="L234">              .setCurrentTs(currentTS)</span>
+<span class="nc" id="L235">              .build();</span>
+        };
+
+<span class="nc" id="L238">    status = new TxnStatus();</span>
+    while (true) {
+<span class="nc" id="L240">      TiRegion primaryKeyRegion = regionManager.getRegionByKey(primary);</span>
+      // new RegionStoreClient for PrimaryKey
+<span class="nc" id="L242">      RegionStoreClient primaryKeyRegionStoreClient = clientBuilder.build(primary);</span>
+<span class="nc" id="L243">      KVErrorHandler&lt;CleanupResponse&gt; handler =</span>
+          new KVErrorHandler&lt;&gt;(
+              regionManager,
+              primaryKeyRegionStoreClient,
+              primaryKeyRegionStoreClient.lockResolverClient,
+<span class="nc bnc" id="L248" title="All 2 branches missed.">              resp -&gt; resp.hasRegionError() ? resp.getRegionError() : null,</span>
+<span class="nc bnc" id="L249" title="All 2 branches missed.">              resp -&gt; resp.hasError() ? resp.getError() : null,</span>
+<span class="nc" id="L250">              resolveLockResult -&gt; null,</span>
+              0L,
+              false);
+
+<span class="nc" id="L254">      CleanupResponse resp =</span>
+<span class="nc" id="L255">          primaryKeyRegionStoreClient.callWithRetry(</span>
+<span class="nc" id="L256">              bo, TikvGrpc.getKvCleanupMethod(), factory, handler);</span>
+
+<span class="nc bnc" id="L258" title="All 2 branches missed.">      if (resp == null) {</span>
+<span class="nc" id="L259">        logger.error(&quot;getKvCleanupMethod failed without a cause&quot;);</span>
+<span class="nc" id="L260">        regionManager.onRequestFail(primaryKeyRegion);</span>
+<span class="nc" id="L261">        bo.doBackOff(</span>
+            BoRegionMiss,
+            new TiClientInternalException(&quot;getKvCleanupMethod failed without a cause&quot;));
+<span class="nc" id="L264">        continue;</span>
+      }
+
+<span class="nc bnc" id="L267" title="All 2 branches missed.">      if (resp.hasRegionError()) {</span>
+<span class="nc" id="L268">        bo.doBackOff(BoRegionMiss, new RegionException(resp.getRegionError()));</span>
+<span class="nc" id="L269">        continue;</span>
+      }
+
+<span class="nc bnc" id="L272" title="All 2 branches missed.">      if (resp.hasError()) {</span>
+<span class="nc" id="L273">        Kvrpcpb.KeyError keyError = resp.getError();</span>
+
+        // If the TTL of the primary lock is not outdated, the proto returns a ErrLocked contains
+        // the TTL.
+<span class="nc bnc" id="L277" title="All 2 branches missed.">        if (keyError.hasLocked()) {</span>
+<span class="nc" id="L278">          Kvrpcpb.LockInfo lockInfo = keyError.getLocked();</span>
+<span class="nc" id="L279">          return new TxnStatus(lockInfo.getLockTtl(), 0L);</span>
+        }
+
+<span class="nc" id="L282">        logger.error(String.format(&quot;unexpected cleanup err: %s, tid: %d&quot;, keyError, txnID));</span>
+<span class="nc" id="L283">        throw new KeyException(keyError);</span>
+      }
+
+<span class="nc bnc" id="L286" title="All 2 branches missed.">      if (resp.getCommitVersion() != 0) {</span>
+<span class="nc" id="L287">        status = new TxnStatus(0L, resp.getCommitVersion());</span>
+      }
+
+<span class="nc" id="L290">      saveResolved(txnID, status);</span>
+<span class="nc" id="L291">      return status;</span>
+    }
+  }
+
+  private void saveResolved(long txnID, TxnStatus status) {
+    try {
+<span class="nc" id="L297">      readWriteLock.writeLock().lock();</span>
+<span class="nc bnc" id="L298" title="All 2 branches missed.">      if (resolved.containsKey(txnID)) {</span>
+<span class="nc" id="L299">        return;</span>
+      }
+
+<span class="nc" id="L302">      resolved.put(txnID, status);</span>
+<span class="nc" id="L303">      recentResolved.add(txnID);</span>
+<span class="nc bnc" id="L304" title="All 2 branches missed.">      if (recentResolved.size() &gt; RESOLVED_TXN_CACHE_SIZE) {</span>
+<span class="nc" id="L305">        Long front = recentResolved.remove();</span>
+<span class="nc" id="L306">        resolved.remove(front);</span>
+      }
+    } finally {
+<span class="nc" id="L309">      readWriteLock.writeLock().unlock();</span>
+    }
+<span class="nc" id="L311">  }</span>
+
+  private TxnStatus getResolved(Long txnID) {
+    try {
+<span class="nc" id="L315">      readWriteLock.readLock().lock();</span>
+<span class="nc" id="L316">      return resolved.get(txnID);</span>
+    } finally {
+<span class="nc" id="L318">      readWriteLock.readLock().unlock();</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

@@ -1,0 +1,308 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CodecDataInput.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.codec</a> &gt; <span class="el_source">CodecDataInput.java</span></div><h1>CodecDataInput.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.codec;
+
+import com.google.protobuf.ByteString;
+import java.io.*;
+import javax.annotation.Nonnull;
+
+public class CodecDataInput implements DataInput {
+  protected final DataInputStream inputStream;
+  protected final UnSyncByteArrayInputStream backingStream;
+  protected final byte[] backingBuffer;
+
+  public CodecDataInput(ByteString data) {
+<span class="fc" id="L28">    this(data.toByteArray());</span>
+<span class="fc" id="L29">  }</span>
+
+<span class="fc" id="L31">  public CodecDataInput(byte[] buf) {</span>
+<span class="fc" id="L32">    backingBuffer = buf;</span>
+    // MyDecimal usually will consume more bytes. If this happened,
+    // we need have a mechanism to reset backingStream.
+    // User mark first and then reset it later can do the trick.
+<span class="fc" id="L36">    backingStream =</span>
+<span class="fc" id="L37">        new UnSyncByteArrayInputStream(buf) {</span>
+          @Override
+          public void mark(int givenPos) {
+<span class="nc" id="L40">            mark = givenPos;</span>
+<span class="nc" id="L41">          }</span>
+        };
+<span class="fc" id="L43">    inputStream = new DataInputStream(backingStream);</span>
+<span class="fc" id="L44">  }</span>
+
+  @Override
+  public void readFully(@Nonnull byte[] b) {
+    try {
+<span class="nc" id="L49">      inputStream.readFully(b);</span>
+<span class="nc" id="L50">    } catch (Exception e) {</span>
+<span class="nc" id="L51">      throw new RuntimeException(e);</span>
+    }
+<span class="nc" id="L53">  }</span>
+
+  @Override
+  public void readFully(@Nonnull byte[] b, int off, int len) {
+    try {
+<span class="fc" id="L58">      inputStream.readFully(b, off, len);</span>
+<span class="pc" id="L59">    } catch (Exception e) {</span>
+<span class="nc" id="L60">      throw new RuntimeException(e);</span>
+    }
+<span class="fc" id="L62">  }</span>
+
+  @Override
+  public int skipBytes(int n) {
+    try {
+<span class="fc" id="L67">      return inputStream.skipBytes(n);</span>
+<span class="nc" id="L68">    } catch (Exception e) {</span>
+<span class="nc" id="L69">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  @Override
+  public boolean readBoolean() {
+    try {
+<span class="nc" id="L76">      return inputStream.readBoolean();</span>
+<span class="nc" id="L77">    } catch (Exception e) {</span>
+<span class="nc" id="L78">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  @Override
+  public byte readByte() {
+    try {
+<span class="fc" id="L85">      return inputStream.readByte();</span>
+<span class="nc" id="L86">    } catch (Exception e) {</span>
+<span class="nc" id="L87">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  @Override
+  public int readUnsignedByte() {
+    try {
+<span class="fc" id="L94">      return inputStream.readUnsignedByte();</span>
+<span class="nc" id="L95">    } catch (Exception e) {</span>
+<span class="nc" id="L96">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  @Override
+  public short readShort() {
+    try {
+<span class="nc" id="L103">      return inputStream.readShort();</span>
+<span class="nc" id="L104">    } catch (Exception e) {</span>
+<span class="nc" id="L105">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  @Override
+  public int readUnsignedShort() {
+    try {
+<span class="nc" id="L112">      return inputStream.readUnsignedShort();</span>
+<span class="nc" id="L113">    } catch (Exception e) {</span>
+<span class="nc" id="L114">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  public int readPartialUnsignedShort() {
+    try {
+<span class="nc" id="L120">      byte[] readBuffer = new byte[2];</span>
+<span class="nc" id="L121">      inputStream.read(readBuffer, 0, 2);</span>
+<span class="nc" id="L122">      return ((readBuffer[0] &amp; 0xff) &lt;&lt; 8) + ((readBuffer[1] &amp; 0xff) &lt;&lt; 0);</span>
+<span class="nc" id="L123">    } catch (IOException e) {</span>
+<span class="nc" id="L124">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  @Override
+  public char readChar() {
+    try {
+<span class="nc" id="L131">      return inputStream.readChar();</span>
+<span class="nc" id="L132">    } catch (Exception e) {</span>
+<span class="nc" id="L133">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  @Override
+  public int readInt() {
+    try {
+<span class="nc" id="L140">      return inputStream.readInt();</span>
+<span class="nc" id="L141">    } catch (Exception e) {</span>
+<span class="nc" id="L142">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  @Override
+  public long readLong() {
+    try {
+<span class="fc" id="L149">      return inputStream.readLong();</span>
+<span class="fc" id="L150">    } catch (Exception e) {</span>
+<span class="fc" id="L151">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  @Override
+  public float readFloat() {
+    try {
+<span class="nc" id="L158">      return inputStream.readFloat();</span>
+<span class="nc" id="L159">    } catch (Exception e) {</span>
+<span class="nc" id="L160">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  @Override
+  public double readDouble() {
+    try {
+<span class="nc" id="L167">      return inputStream.readDouble();</span>
+<span class="nc" id="L168">    } catch (Exception e) {</span>
+<span class="nc" id="L169">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  @Override
+  public String readLine() {
+    try {
+<span class="nc" id="L176">      return inputStream.readLine();</span>
+<span class="nc" id="L177">    } catch (Exception e) {</span>
+<span class="nc" id="L178">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  @Override
+  @Nonnull
+  public String readUTF() {
+    try {
+<span class="nc" id="L186">      return inputStream.readUTF();</span>
+<span class="nc" id="L187">    } catch (Exception e) {</span>
+<span class="nc" id="L188">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  public int peekByte() {
+<span class="nc" id="L193">    mark(currentPos());</span>
+<span class="nc" id="L194">    int b = readByte() &amp; 0xFF;</span>
+<span class="nc" id="L195">    reset();</span>
+<span class="nc" id="L196">    return b;</span>
+  }
+
+  public int currentPos() {
+<span class="nc" id="L200">    return size() - available();</span>
+  }
+
+  public void mark(int givenPos) {
+<span class="nc" id="L204">    this.backingStream.mark(givenPos);</span>
+<span class="nc" id="L205">  }</span>
+
+  public void reset() {
+<span class="nc" id="L208">    this.backingStream.reset();</span>
+<span class="nc" id="L209">  }</span>
+
+  public boolean eof() {
+<span class="fc bfc" id="L212" title="All 2 branches covered.">    return backingStream.available() == 0;</span>
+  }
+
+  public int size() {
+<span class="nc" id="L216">    return backingBuffer.length;</span>
+  }
+
+  public int available() {
+<span class="nc" id="L220">    return backingStream.available();</span>
+  }
+
+  public byte[] toByteArray() {
+<span class="nc" id="L224">    return backingBuffer;</span>
+  }
+
+  /**
+   * An copy of ByteArrayInputStream without synchronization for faster decode.
+   *
+   * @see ByteArrayInputStream
+   */
+  private static class UnSyncByteArrayInputStream extends InputStream {
+    protected byte[] buf;
+    protected int pos;
+<span class="fc" id="L235">    protected int mark = 0;</span>
+    protected int count;
+
+<span class="fc" id="L238">    UnSyncByteArrayInputStream(byte[] buf) {</span>
+<span class="fc" id="L239">      this.buf = buf;</span>
+<span class="fc" id="L240">      this.pos = 0;</span>
+<span class="fc" id="L241">      this.count = buf.length;</span>
+<span class="fc" id="L242">    }</span>
+
+    @Override
+    public int read() {
+<span class="pc bpc" id="L246" title="1 of 2 branches missed.">      return (pos &lt; count) ? (buf[pos++] &amp; 0xff) : -1;</span>
+    }
+
+    @Override
+    public int read(byte[] b, int off, int len) {
+<span class="pc bpc" id="L251" title="1 of 2 branches missed.">      if (b == null) {</span>
+<span class="nc" id="L252">        throw new NullPointerException();</span>
+<span class="pc bpc" id="L253" title="3 of 6 branches missed.">      } else if (off &lt; 0 || len &lt; 0 || len &gt; b.length - off) {</span>
+<span class="nc" id="L254">        throw new IndexOutOfBoundsException();</span>
+      }
+
+<span class="fc bfc" id="L257" title="All 2 branches covered.">      if (pos &gt;= count) {</span>
+<span class="fc" id="L258">        return -1;</span>
+      }
+
+<span class="fc" id="L261">      int avail = count - pos;</span>
+<span class="fc bfc" id="L262" title="All 2 branches covered.">      if (len &gt; avail) {</span>
+<span class="fc" id="L263">        len = avail;</span>
+      }
+<span class="pc bpc" id="L265" title="1 of 2 branches missed.">      if (len &lt;= 0) {</span>
+<span class="nc" id="L266">        return 0;</span>
+      }
+<span class="fc" id="L268">      System.arraycopy(buf, pos, b, off, len);</span>
+<span class="fc" id="L269">      pos += len;</span>
+<span class="fc" id="L270">      return len;</span>
+    }
+
+    @Override
+    public long skip(long n) {
+<span class="fc" id="L275">      long k = count - pos;</span>
+<span class="pc bpc" id="L276" title="1 of 2 branches missed.">      if (n &lt; k) {</span>
+<span class="pc bpc" id="L277" title="1 of 2 branches missed.">        k = n &lt; 0 ? 0 : n;</span>
+      }
+
+<span class="fc" id="L280">      pos += k;</span>
+<span class="fc" id="L281">      return k;</span>
+    }
+
+    @Override
+    public int available() {
+<span class="fc" id="L286">      return count - pos;</span>
+    }
+
+    @Override
+    public boolean markSupported() {
+<span class="nc" id="L291">      return true;</span>
+    }
+
+    @Override
+    public void mark(int readAheadLimit) {
+<span class="nc" id="L296">      mark = pos;</span>
+<span class="nc" id="L297">    }</span>
+
+    @Override
+    public void reset() {
+<span class="nc" id="L301">      pos = mark;</span>
+<span class="nc" id="L302">    }</span>
+
+    @Override
+<span class="nc" id="L305">    public void close() throws IOException {}</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

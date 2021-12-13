@@ -1,0 +1,584 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MemoryUtil.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.util</a> &gt; <span class="el_source">MemoryUtil.java</span></div><h1>MemoryUtil.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.util;
+
+import com.google.common.primitives.UnsignedLong;
+import com.sun.management.OperatingSystemMXBean;
+import java.lang.management.ManagementFactory;
+import java.lang.reflect.Field;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.nio.Buffer;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.channels.FileChannel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.codec.CodecDataInput;
+import sun.misc.Cleaner;
+import sun.misc.Unsafe;
+import sun.nio.ch.DirectBuffer;
+
+// Copied from io.indexr.util.MemoryUtil.java with some modifications.
+<span class="nc bnc" id="L36" title="All 2 branches missed.">public class MemoryUtil {</span>
+<span class="nc" id="L37">  public static final ByteBuffer EMPTY_BYTE_BUFFER_DIRECT = allocateDirect(0);</span>
+  public static final Unsafe unsafe;
+<span class="nc" id="L39">  private static final Logger logger = LoggerFactory.getLogger(MemoryUtil.class);</span>
+  private static final long UNSAFE_COPY_THRESHOLD = 1024 * 1024L; // copied from java.nio.Bits
+  private static final Class&lt;?&gt; DIRECT_BYTE_BUFFER_CLASS;
+  private static final long DIRECT_BYTE_BUFFER_ADDRESS_OFFSET;
+  private static final long DIRECT_BYTE_BUFFER_CAPACITY_OFFSET;
+  private static final long DIRECT_BYTE_BUFFER_LIMIT_OFFSET;
+  private static final long DIRECT_BYTE_BUFFER_POSITION_OFFSET;
+  private static final long DIRECT_BYTE_BUFFER_ATTACHMENT_OFFSET;
+  private static final long DIRECT_BYTE_BUFFER_CLEANER;
+  private static final Class&lt;?&gt; BYTE_BUFFER_CLASS;
+  private static final long BYTE_BUFFER_OFFSET_OFFSET;
+  private static final long BYTE_BUFFER_HB_OFFSET;
+  private static final long BYTE_ARRAY_BASE_OFFSET;
+
+  private static final long STRING_VALUE_OFFSET;
+
+<span class="nc" id="L55">  private static final boolean BIG_ENDIAN = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN);</span>
+<span class="nc" id="L56">  private static int PAGE_SIZE = -1;</span>
+
+  private static boolean HDFS_READ_HACK_ENABLE;
+  private static long BlockReaderLocal_verifyChecksum;
+  private static long BlockReaderLocal_dataIn;
+  private static long DFSInputStream_verifyChecksum;
+  private static long DFSInputStream_blockReader;
+
+  static {
+    // We support all in fact.
+    // if (BIG_ENDIAN) {
+    //    throw new RuntimeException(&quot;We only support littel endian platform!&quot;);
+    // }
+    try {
+<span class="nc" id="L70">      Field field = Unsafe.class.getDeclaredField(&quot;theUnsafe&quot;);</span>
+<span class="nc" id="L71">      field.setAccessible(true);</span>
+<span class="nc" id="L72">      unsafe = (Unsafe) field.get(null);</span>
+
+<span class="nc" id="L74">      Class&lt;?&gt; clazz = ByteBuffer.allocateDirect(0).getClass();</span>
+<span class="nc" id="L75">      DIRECT_BYTE_BUFFER_ADDRESS_OFFSET =</span>
+<span class="nc" id="L76">          unsafe.objectFieldOffset(Buffer.class.getDeclaredField(&quot;address&quot;));</span>
+<span class="nc" id="L77">      DIRECT_BYTE_BUFFER_CAPACITY_OFFSET =</span>
+<span class="nc" id="L78">          unsafe.objectFieldOffset(Buffer.class.getDeclaredField(&quot;capacity&quot;));</span>
+<span class="nc" id="L79">      DIRECT_BYTE_BUFFER_LIMIT_OFFSET =</span>
+<span class="nc" id="L80">          unsafe.objectFieldOffset(Buffer.class.getDeclaredField(&quot;limit&quot;));</span>
+<span class="nc" id="L81">      DIRECT_BYTE_BUFFER_POSITION_OFFSET =</span>
+<span class="nc" id="L82">          unsafe.objectFieldOffset(Buffer.class.getDeclaredField(&quot;position&quot;));</span>
+<span class="nc" id="L83">      DIRECT_BYTE_BUFFER_ATTACHMENT_OFFSET =</span>
+<span class="nc" id="L84">          unsafe.objectFieldOffset(clazz.getDeclaredField(&quot;att&quot;));</span>
+<span class="nc" id="L85">      DIRECT_BYTE_BUFFER_CLEANER = unsafe.objectFieldOffset(clazz.getDeclaredField(&quot;cleaner&quot;));</span>
+<span class="nc" id="L86">      DIRECT_BYTE_BUFFER_CLASS = clazz;</span>
+
+<span class="nc" id="L88">      clazz = ByteBuffer.allocate(0).getClass();</span>
+<span class="nc" id="L89">      BYTE_BUFFER_OFFSET_OFFSET =</span>
+<span class="nc" id="L90">          unsafe.objectFieldOffset(ByteBuffer.class.getDeclaredField(&quot;offset&quot;));</span>
+<span class="nc" id="L91">      BYTE_BUFFER_HB_OFFSET = unsafe.objectFieldOffset(ByteBuffer.class.getDeclaredField(&quot;hb&quot;));</span>
+<span class="nc" id="L92">      BYTE_BUFFER_CLASS = clazz;</span>
+
+<span class="nc" id="L94">      BYTE_ARRAY_BASE_OFFSET = unsafe.arrayBaseOffset(byte[].class);</span>
+
+<span class="nc" id="L96">      STRING_VALUE_OFFSET =</span>
+<span class="nc" id="L97">          MemoryUtil.unsafe.objectFieldOffset(String.class.getDeclaredField(&quot;value&quot;));</span>
+
+      try {
+<span class="nc" id="L100">        BlockReaderLocal_verifyChecksum =</span>
+<span class="nc" id="L101">            unsafe.objectFieldOffset(</span>
+<span class="nc" id="L102">                Class.forName(&quot;org.apache.hadoop.hdfs.BlockReaderLocal&quot;)</span>
+<span class="nc" id="L103">                    .getDeclaredField(&quot;verifyChecksum&quot;));</span>
+<span class="nc" id="L104">        BlockReaderLocal_dataIn =</span>
+<span class="nc" id="L105">            unsafe.objectFieldOffset(</span>
+<span class="nc" id="L106">                Class.forName(&quot;org.apache.hadoop.hdfs.BlockReaderLocal&quot;)</span>
+<span class="nc" id="L107">                    .getDeclaredField(&quot;dataIn&quot;));</span>
+
+<span class="nc" id="L109">        DFSInputStream_verifyChecksum =</span>
+<span class="nc" id="L110">            unsafe.objectFieldOffset(</span>
+<span class="nc" id="L111">                Class.forName(&quot;org.apache.hadoop.hdfs.DFSInputStream&quot;)</span>
+<span class="nc" id="L112">                    .getDeclaredField(&quot;verifyChecksum&quot;));</span>
+<span class="nc" id="L113">        DFSInputStream_blockReader =</span>
+<span class="nc" id="L114">            unsafe.objectFieldOffset(</span>
+<span class="nc" id="L115">                Class.forName(&quot;org.apache.hadoop.hdfs.DFSInputStream&quot;)</span>
+<span class="nc" id="L116">                    .getDeclaredField(&quot;blockReader&quot;));</span>
+
+<span class="nc" id="L118">        HDFS_READ_HACK_ENABLE = true;</span>
+<span class="nc" id="L119">      } catch (Exception e) {</span>
+<span class="nc" id="L120">        HDFS_READ_HACK_ENABLE = false;</span>
+<span class="nc" id="L121">        logger.warn(&quot;hdfs read hack is off because of error: {}&quot;, e.getCause());</span>
+<span class="nc" id="L122">      }</span>
+<span class="nc" id="L123">    } catch (Exception e) {</span>
+<span class="nc" id="L124">      throw new AssertionError(e);</span>
+<span class="nc" id="L125">    }</span>
+<span class="nc" id="L126">  }</span>
+
+  public static boolean getBlockReaderLocal_verifyChecksum(Object br) {
+<span class="nc" id="L129">    return unsafe.getBoolean(br, BlockReaderLocal_verifyChecksum);</span>
+  }
+
+  public static void setBlockReaderLocal_verifyChecksum(Object br, boolean value) {
+<span class="nc" id="L133">    unsafe.putBoolean(br, BlockReaderLocal_verifyChecksum, value);</span>
+<span class="nc" id="L134">  }</span>
+
+  public static FileChannel getBlockReaderLocal_dataIn(Object br) {
+<span class="nc" id="L137">    return (FileChannel) unsafe.getObject(br, BlockReaderLocal_dataIn);</span>
+  }
+
+  public static int pageSize() {
+<span class="nc bnc" id="L141" title="All 2 branches missed.">    if (PAGE_SIZE == -1) {</span>
+<span class="nc" id="L142">      PAGE_SIZE = unsafe.pageSize();</span>
+    }
+<span class="nc" id="L144">    return PAGE_SIZE;</span>
+  }
+
+  public static void setMemory(long addr, long size, byte v) {
+<span class="nc" id="L148">    unsafe.setMemory(addr, size, v);</span>
+<span class="nc" id="L149">  }</span>
+
+  public static void setMemory(Object base, long offset, long size, byte v) {
+<span class="nc" id="L152">    unsafe.setMemory(base, offset, size, v);</span>
+<span class="nc" id="L153">  }</span>
+
+  public static long getAddress(ByteBuffer buffer) {
+<span class="nc bnc" id="L156" title="All 4 branches missed.">    assert buffer.getClass() == DIRECT_BYTE_BUFFER_CLASS;</span>
+<span class="nc" id="L157">    return unsafe.getLong(buffer, DIRECT_BYTE_BUFFER_ADDRESS_OFFSET);</span>
+  }
+
+  public static int getCap(ByteBuffer buffer) {
+<span class="nc bnc" id="L161" title="All 4 branches missed.">    assert buffer.getClass() == DIRECT_BYTE_BUFFER_CLASS;</span>
+<span class="nc" id="L162">    return unsafe.getInt(buffer, DIRECT_BYTE_BUFFER_CAPACITY_OFFSET);</span>
+  }
+
+  public static long allocate(long size) {
+    // return Native.malloc(size);
+<span class="nc" id="L167">    return unsafe.allocateMemory(size);</span>
+  }
+
+  public static void free(long addr) {
+    // Native.free(addr);
+<span class="nc" id="L172">    unsafe.freeMemory(addr);</span>
+<span class="nc" id="L173">  }</span>
+
+  /** Good manner to free a buffer before forget it. */
+  public static void free(ByteBuffer buffer) {
+<span class="nc bnc" id="L177" title="All 2 branches missed.">    if (buffer.isDirect()) {</span>
+<span class="nc" id="L178">      Cleaner cleaner = ((DirectBuffer) buffer).cleaner();</span>
+<span class="nc bnc" id="L179" title="All 2 branches missed.">      if (cleaner != null) {</span>
+<span class="nc" id="L180">        cleaner.clean();</span>
+      }
+    }
+<span class="nc" id="L183">  }</span>
+
+  public static void setByte(long address, byte b) {
+<span class="nc" id="L186">    unsafe.putByte(address, b);</span>
+<span class="nc" id="L187">  }</span>
+
+  public static void setShort(long address, short s) {
+<span class="nc" id="L190">    unsafe.putShort(address, s);</span>
+<span class="nc" id="L191">  }</span>
+
+  public static void setInt(long address, int l) {
+<span class="nc" id="L194">    unsafe.putInt(address, l);</span>
+<span class="nc" id="L195">  }</span>
+
+  public static void setDecimal(long address, BigDecimal v, int scale) {
+<span class="nc" id="L198">    BigDecimal bigDec = v;</span>
+<span class="nc" id="L199">    BigInteger bigInt = bigDec.scaleByPowerOfTen(scale).toBigInteger();</span>
+<span class="nc" id="L200">    byte[] arr = bigInt.toByteArray();</span>
+<span class="nc bnc" id="L201" title="All 2 branches missed.">    for (int i = 0; i &lt; arr.length; i++) {</span>
+<span class="nc" id="L202">      unsafe.putByte(address + i, arr[arr.length - 1 - i]);</span>
+    }
+<span class="nc" id="L204">  }</span>
+
+  public static void setDecimal256(long address, BigDecimal v, int scale) {
+<span class="nc" id="L207">    BigDecimal bigDec = v;</span>
+<span class="nc" id="L208">    BigInteger bigInt = bigDec.scaleByPowerOfTen(scale).toBigInteger();</span>
+<span class="nc" id="L209">    int sign = 0;</span>
+<span class="nc bnc" id="L210" title="All 2 branches missed.">    if (bigInt.signum() &lt; 0) {</span>
+<span class="nc" id="L211">      sign = 1;</span>
+<span class="nc" id="L212">      bigInt = bigInt.abs();</span>
+    }
+<span class="nc" id="L214">    byte[] arr = bigInt.toByteArray();</span>
+<span class="nc bnc" id="L215" title="All 2 branches missed.">    if (arr.length &gt; 32) {</span>
+<span class="nc" id="L216">      throw new RuntimeException(&quot;The inserting decimal is out of range: &quot; + v.toString());</span>
+    }
+<span class="nc" id="L218">    int limbs = arr.length / 8;</span>
+<span class="nc bnc" id="L219" title="All 2 branches missed.">    if (arr.length % 8 &gt; 0) {</span>
+<span class="nc" id="L220">      limbs++;</span>
+    }
+
+<span class="nc bnc" id="L223" title="All 2 branches missed.">    for (int i = 0; i &lt; arr.length; i++) {</span>
+<span class="nc" id="L224">      unsafe.putByte(address + i, arr[arr.length - 1 - i]);</span>
+    }
+<span class="nc" id="L226">    unsafe.putShort(address + 32, (short) limbs);</span>
+<span class="nc" id="L227">    unsafe.putShort(address + 34, (short) sign);</span>
+<span class="nc" id="L228">  }</span>
+
+  public static void setLong(long address, long l) {
+<span class="nc" id="L231">    unsafe.putLong(address, l);</span>
+<span class="nc" id="L232">  }</span>
+
+  public static void setFloat(long address, float v) {
+<span class="nc" id="L235">    unsafe.putFloat(address, v);</span>
+<span class="nc" id="L236">  }</span>
+
+  public static void setDouble(long address, double v) {
+<span class="nc" id="L239">    unsafe.putDouble(address, v);</span>
+<span class="nc" id="L240">  }</span>
+
+  public static byte getByte(long address) {
+<span class="nc" id="L243">    return unsafe.getByte(address);</span>
+  }
+
+  public static short getShort(long address) {
+<span class="nc" id="L247">    return (short) (unsafe.getShort(address) &amp; 0xffff);</span>
+  }
+
+  public static int getInt(long address) {
+<span class="nc" id="L251">    return unsafe.getInt(address);</span>
+  }
+
+  public static BigDecimal getDecimal32(long address, int scale) {
+<span class="nc" id="L255">    int n = getInt(address);</span>
+<span class="nc" id="L256">    BigInteger dec = BigInteger.valueOf(n);</span>
+<span class="nc" id="L257">    return new BigDecimal(dec, scale);</span>
+  }
+
+  public static BigDecimal getDecimal64(long address, int scale) {
+<span class="nc" id="L261">    long n = getLong(address);</span>
+<span class="nc" id="L262">    BigInteger dec = BigInteger.valueOf(n);</span>
+<span class="nc" id="L263">    return new BigDecimal(dec, scale);</span>
+  }
+
+  public static BigDecimal getDecimal128(long address, int scale) {
+<span class="nc" id="L267">    UnsignedLong n0 = UnsignedLong.fromLongBits(getLong(address));</span>
+<span class="nc" id="L268">    long n1 = getLong(address + 8);</span>
+
+<span class="nc" id="L270">    BigInteger dec = BigInteger.valueOf(n1);</span>
+<span class="nc" id="L271">    dec = dec.shiftLeft(64).add(n0.bigIntegerValue());</span>
+<span class="nc" id="L272">    return new BigDecimal(dec, scale);</span>
+  }
+
+  public static BigDecimal getDecimal256(long address, int scale) {
+<span class="nc" id="L276">    int limbs = getShort(address + 32);</span>
+<span class="nc" id="L277">    BigInteger dec = BigInteger.ZERO;</span>
+<span class="nc bnc" id="L278" title="All 2 branches missed.">    for (int i = limbs - 1; i &gt;= 0; i--) {</span>
+<span class="nc" id="L279">      UnsignedLong d = UnsignedLong.fromLongBits(unsafe.getLong(address + i * 8));</span>
+<span class="nc" id="L280">      dec = dec.shiftLeft(64).add(d.bigIntegerValue());</span>
+    }
+<span class="nc" id="L282">    int sign = unsafe.getByte(address + 34);</span>
+<span class="nc" id="L283">    BigDecimal result = new BigDecimal(dec, scale);</span>
+<span class="nc bnc" id="L284" title="All 2 branches missed.">    if (sign &gt; 0) {</span>
+<span class="nc" id="L285">      return result.negate();</span>
+    }
+<span class="nc" id="L287">    return result;</span>
+  }
+
+  public static long getLong(long address) {
+<span class="nc" id="L291">    return unsafe.getLong(address);</span>
+  }
+
+  public static float getFloat(long address) {
+<span class="nc" id="L295">    return unsafe.getFloat(address);</span>
+  }
+
+  public static double getDouble(long address) {
+<span class="nc" id="L299">    return unsafe.getDouble(address);</span>
+  }
+
+  public static ByteBuffer getByteBuffer(long address, int length, boolean autoFree) {
+<span class="nc" id="L303">    ByteBuffer instance = getHollowDirectByteBuffer();</span>
+<span class="nc bnc" id="L304" title="All 2 branches missed.">    if (autoFree) {</span>
+<span class="nc" id="L305">      Cleaner cleaner = Cleaner.create(instance, new Deallocator(address));</span>
+<span class="nc" id="L306">      setByteBuffer(instance, address, length, cleaner);</span>
+<span class="nc" id="L307">    } else {</span>
+<span class="nc" id="L308">      setByteBuffer(instance, address, length, null);</span>
+    }
+<span class="nc" id="L310">    instance.order(ByteOrder.nativeOrder());</span>
+<span class="nc" id="L311">    return instance;</span>
+  }
+
+  public static ByteBuffer getHollowDirectByteBuffer() {
+    ByteBuffer instance;
+    try {
+<span class="nc" id="L317">      instance = (ByteBuffer) unsafe.allocateInstance(DIRECT_BYTE_BUFFER_CLASS);</span>
+<span class="nc" id="L318">    } catch (InstantiationException e) {</span>
+<span class="nc" id="L319">      throw new AssertionError(e);</span>
+<span class="nc" id="L320">    }</span>
+<span class="nc" id="L321">    instance.order(ByteOrder.nativeOrder());</span>
+<span class="nc" id="L322">    return instance;</span>
+  }
+
+  public static void setByteBuffer(ByteBuffer instance, long address, int length, Cleaner cleaner) {
+<span class="nc" id="L326">    unsafe.putLong(instance, DIRECT_BYTE_BUFFER_ADDRESS_OFFSET, address);</span>
+<span class="nc" id="L327">    unsafe.putInt(instance, DIRECT_BYTE_BUFFER_CAPACITY_OFFSET, length);</span>
+<span class="nc" id="L328">    unsafe.putInt(instance, DIRECT_BYTE_BUFFER_LIMIT_OFFSET, length);</span>
+<span class="nc bnc" id="L329" title="All 2 branches missed.">    if (cleaner != null) {</span>
+<span class="nc" id="L330">      unsafe.putObject(instance, DIRECT_BYTE_BUFFER_CLEANER, cleaner);</span>
+    }
+<span class="nc" id="L332">  }</span>
+
+  public static Object getAttachment(ByteBuffer instance) {
+<span class="nc bnc" id="L335" title="All 4 branches missed.">    assert instance.getClass() == DIRECT_BYTE_BUFFER_CLASS;</span>
+<span class="nc" id="L336">    return unsafe.getObject(instance, DIRECT_BYTE_BUFFER_ATTACHMENT_OFFSET);</span>
+  }
+
+  public static void setAttachment(ByteBuffer instance, Object next) {
+<span class="nc bnc" id="L340" title="All 4 branches missed.">    assert instance.getClass() == DIRECT_BYTE_BUFFER_CLASS;</span>
+<span class="nc" id="L341">    unsafe.putObject(instance, DIRECT_BYTE_BUFFER_ATTACHMENT_OFFSET, next);</span>
+<span class="nc" id="L342">  }</span>
+
+  public static ByteBuffer duplicateDirectByteBuffer(ByteBuffer source, ByteBuffer hollowBuffer) {
+<span class="nc bnc" id="L345" title="All 4 branches missed.">    assert source.getClass() == DIRECT_BYTE_BUFFER_CLASS;</span>
+<span class="nc" id="L346">    unsafe.putLong(</span>
+        hollowBuffer,
+        DIRECT_BYTE_BUFFER_ADDRESS_OFFSET,
+<span class="nc" id="L349">        unsafe.getLong(source, DIRECT_BYTE_BUFFER_ADDRESS_OFFSET));</span>
+<span class="nc" id="L350">    unsafe.putInt(</span>
+        hollowBuffer,
+        DIRECT_BYTE_BUFFER_POSITION_OFFSET,
+<span class="nc" id="L353">        unsafe.getInt(source, DIRECT_BYTE_BUFFER_POSITION_OFFSET));</span>
+<span class="nc" id="L354">    unsafe.putInt(</span>
+        hollowBuffer,
+        DIRECT_BYTE_BUFFER_LIMIT_OFFSET,
+<span class="nc" id="L357">        unsafe.getInt(source, DIRECT_BYTE_BUFFER_LIMIT_OFFSET));</span>
+<span class="nc" id="L358">    unsafe.putInt(</span>
+        hollowBuffer,
+        DIRECT_BYTE_BUFFER_CAPACITY_OFFSET,
+<span class="nc" id="L361">        unsafe.getInt(source, DIRECT_BYTE_BUFFER_CAPACITY_OFFSET));</span>
+<span class="nc" id="L362">    return hollowBuffer;</span>
+  }
+
+  public static ByteBuffer duplicateDirectByteBuffer(ByteBuffer source) {
+<span class="nc" id="L366">    return duplicateDirectByteBuffer(source, getHollowDirectByteBuffer());</span>
+  }
+
+  public static long getLongByByte(long address) {
+<span class="nc bnc" id="L370" title="All 2 branches missed.">    if (BIG_ENDIAN) {</span>
+<span class="nc" id="L371">      return (((long) unsafe.getByte(address)) &lt;&lt; 56)</span>
+<span class="nc" id="L372">          | (((long) unsafe.getByte(address + 1) &amp; 0xff) &lt;&lt; 48)</span>
+<span class="nc" id="L373">          | (((long) unsafe.getByte(address + 2) &amp; 0xff) &lt;&lt; 40)</span>
+<span class="nc" id="L374">          | (((long) unsafe.getByte(address + 3) &amp; 0xff) &lt;&lt; 32)</span>
+<span class="nc" id="L375">          | (((long) unsafe.getByte(address + 4) &amp; 0xff) &lt;&lt; 24)</span>
+<span class="nc" id="L376">          | (((long) unsafe.getByte(address + 5) &amp; 0xff) &lt;&lt; 16)</span>
+<span class="nc" id="L377">          | (((long) unsafe.getByte(address + 6) &amp; 0xff) &lt;&lt; 8)</span>
+<span class="nc" id="L378">          | (((long) unsafe.getByte(address + 7) &amp; 0xff));</span>
+    } else {
+<span class="nc" id="L380">      return (((long) unsafe.getByte(address + 7)) &lt;&lt; 56)</span>
+<span class="nc" id="L381">          | (((long) unsafe.getByte(address + 6) &amp; 0xff) &lt;&lt; 48)</span>
+<span class="nc" id="L382">          | (((long) unsafe.getByte(address + 5) &amp; 0xff) &lt;&lt; 40)</span>
+<span class="nc" id="L383">          | (((long) unsafe.getByte(address + 4) &amp; 0xff) &lt;&lt; 32)</span>
+<span class="nc" id="L384">          | (((long) unsafe.getByte(address + 3) &amp; 0xff) &lt;&lt; 24)</span>
+<span class="nc" id="L385">          | (((long) unsafe.getByte(address + 2) &amp; 0xff) &lt;&lt; 16)</span>
+<span class="nc" id="L386">          | (((long) unsafe.getByte(address + 1) &amp; 0xff) &lt;&lt; 8)</span>
+<span class="nc" id="L387">          | (((long) unsafe.getByte(address) &amp; 0xff));</span>
+    }
+  }
+
+  public static int getIntByByte(long address) {
+<span class="nc bnc" id="L392" title="All 2 branches missed.">    if (BIG_ENDIAN) {</span>
+<span class="nc" id="L393">      return (((int) unsafe.getByte(address)) &lt;&lt; 24)</span>
+<span class="nc" id="L394">          | (((int) unsafe.getByte(address + 1) &amp; 0xff) &lt;&lt; 16)</span>
+<span class="nc" id="L395">          | (((int) unsafe.getByte(address + 2) &amp; 0xff) &lt;&lt; 8)</span>
+<span class="nc" id="L396">          | (((int) unsafe.getByte(address + 3) &amp; 0xff));</span>
+    } else {
+<span class="nc" id="L398">      return (((int) unsafe.getByte(address + 3)) &lt;&lt; 24)</span>
+<span class="nc" id="L399">          | (((int) unsafe.getByte(address + 2) &amp; 0xff) &lt;&lt; 16)</span>
+<span class="nc" id="L400">          | (((int) unsafe.getByte(address + 1) &amp; 0xff) &lt;&lt; 8)</span>
+<span class="nc" id="L401">          | (((int) unsafe.getByte(address) &amp; 0xff));</span>
+    }
+  }
+
+  public static int getShortByByte(long address) {
+<span class="nc bnc" id="L406" title="All 2 branches missed.">    if (BIG_ENDIAN) {</span>
+<span class="nc" id="L407">      return (((int) unsafe.getByte(address)) &lt;&lt; 8) | (((int) unsafe.getByte(address + 1) &amp; 0xff));</span>
+    } else {
+<span class="nc" id="L409">      return (((int) unsafe.getByte(address + 1)) &lt;&lt; 8) | (((int) unsafe.getByte(address) &amp; 0xff));</span>
+    }
+  }
+
+  public static void putLongByByte(long address, long value) {
+<span class="nc bnc" id="L414" title="All 2 branches missed.">    if (BIG_ENDIAN) {</span>
+<span class="nc" id="L415">      unsafe.putByte(address, (byte) (value &gt;&gt; 56));</span>
+<span class="nc" id="L416">      unsafe.putByte(address + 1, (byte) (value &gt;&gt; 48));</span>
+<span class="nc" id="L417">      unsafe.putByte(address + 2, (byte) (value &gt;&gt; 40));</span>
+<span class="nc" id="L418">      unsafe.putByte(address + 3, (byte) (value &gt;&gt; 32));</span>
+<span class="nc" id="L419">      unsafe.putByte(address + 4, (byte) (value &gt;&gt; 24));</span>
+<span class="nc" id="L420">      unsafe.putByte(address + 5, (byte) (value &gt;&gt; 16));</span>
+<span class="nc" id="L421">      unsafe.putByte(address + 6, (byte) (value &gt;&gt; 8));</span>
+<span class="nc" id="L422">      unsafe.putByte(address + 7, (byte) (value));</span>
+    } else {
+<span class="nc" id="L424">      unsafe.putByte(address + 7, (byte) (value &gt;&gt; 56));</span>
+<span class="nc" id="L425">      unsafe.putByte(address + 6, (byte) (value &gt;&gt; 48));</span>
+<span class="nc" id="L426">      unsafe.putByte(address + 5, (byte) (value &gt;&gt; 40));</span>
+<span class="nc" id="L427">      unsafe.putByte(address + 4, (byte) (value &gt;&gt; 32));</span>
+<span class="nc" id="L428">      unsafe.putByte(address + 3, (byte) (value &gt;&gt; 24));</span>
+<span class="nc" id="L429">      unsafe.putByte(address + 2, (byte) (value &gt;&gt; 16));</span>
+<span class="nc" id="L430">      unsafe.putByte(address + 1, (byte) (value &gt;&gt; 8));</span>
+<span class="nc" id="L431">      unsafe.putByte(address, (byte) (value));</span>
+    }
+<span class="nc" id="L433">  }</span>
+
+  public static void putIntByByte(long address, int value) {
+<span class="nc bnc" id="L436" title="All 2 branches missed.">    if (BIG_ENDIAN) {</span>
+<span class="nc" id="L437">      unsafe.putByte(address, (byte) (value &gt;&gt; 24));</span>
+<span class="nc" id="L438">      unsafe.putByte(address + 1, (byte) (value &gt;&gt; 16));</span>
+<span class="nc" id="L439">      unsafe.putByte(address + 2, (byte) (value &gt;&gt; 8));</span>
+<span class="nc" id="L440">      unsafe.putByte(address + 3, (byte) (value));</span>
+    } else {
+<span class="nc" id="L442">      unsafe.putByte(address + 3, (byte) (value &gt;&gt; 24));</span>
+<span class="nc" id="L443">      unsafe.putByte(address + 2, (byte) (value &gt;&gt; 16));</span>
+<span class="nc" id="L444">      unsafe.putByte(address + 1, (byte) (value &gt;&gt; 8));</span>
+<span class="nc" id="L445">      unsafe.putByte(address, (byte) (value));</span>
+    }
+<span class="nc" id="L447">  }</span>
+
+  public static void setBytes(long address, ByteBuffer buffer) {
+<span class="nc" id="L450">    int start = buffer.position();</span>
+<span class="nc" id="L451">    int count = buffer.limit() - start;</span>
+<span class="nc bnc" id="L452" title="All 2 branches missed.">    if (count == 0) return;</span>
+
+<span class="nc bnc" id="L454" title="All 2 branches missed.">    if (buffer.isDirect()) setBytes(((DirectBuffer) buffer).address() + start, address, count);</span>
+<span class="nc" id="L455">    else setBytes(address, buffer.array(), buffer.arrayOffset() + start, count);</span>
+<span class="nc" id="L456">  }</span>
+
+  /**
+   * Transfers objCount bytes from buffer to Memory
+   *
+   * @param address start offset in the memory
+   * @param buffer the data buffer
+   * @param bufferOffset start offset of the buffer
+   * @param count number of bytes to transfer
+   */
+  public static void setBytes(long address, byte[] buffer, int bufferOffset, int count) {
+<span class="nc bnc" id="L467" title="All 4 branches missed.">    assert buffer != null;</span>
+<span class="nc bnc" id="L468" title="All 8 branches missed.">    assert !(bufferOffset &lt; 0 || count &lt; 0 || bufferOffset + count &gt; buffer.length);</span>
+<span class="nc" id="L469">    setBytes(buffer, bufferOffset, address, count);</span>
+<span class="nc" id="L470">  }</span>
+
+  public static void setBytes(long src, long trg, long count) {
+<span class="nc bnc" id="L473" title="All 2 branches missed.">    while (count &gt; 0) {</span>
+<span class="nc" id="L474">      long size = Math.min(count, UNSAFE_COPY_THRESHOLD);</span>
+<span class="nc" id="L475">      unsafe.copyMemory(src, trg, size);</span>
+<span class="nc" id="L476">      count -= size;</span>
+<span class="nc" id="L477">      src += size;</span>
+<span class="nc" id="L478">      trg += size;</span>
+<span class="nc" id="L479">    }</span>
+<span class="nc" id="L480">  }</span>
+
+  public static void setBytes(byte[] src, int offset, long trg, long count) {
+<span class="nc bnc" id="L483" title="All 2 branches missed.">    while (count &gt; 0) {</span>
+<span class="nc bnc" id="L484" title="All 2 branches missed.">      long size = (count &gt; UNSAFE_COPY_THRESHOLD) ? UNSAFE_COPY_THRESHOLD : count;</span>
+<span class="nc" id="L485">      unsafe.copyMemory(src, BYTE_ARRAY_BASE_OFFSET + offset, null, trg, size);</span>
+<span class="nc" id="L486">      count -= size;</span>
+<span class="nc" id="L487">      offset += size;</span>
+<span class="nc" id="L488">      trg += size;</span>
+<span class="nc" id="L489">    }</span>
+<span class="nc" id="L490">  }</span>
+
+  /**
+   * Transfers objCount bytes from Memory starting at memoryOffset to buffer starting at
+   * bufferOffset
+   *
+   * @param address start offset in the memory
+   * @param buffer the data buffer
+   * @param bufferOffset start offset of the buffer
+   * @param count number of bytes to transfer
+   */
+  public static void getBytes(long address, byte[] buffer, int bufferOffset, int count) {
+<span class="nc bnc" id="L502" title="All 2 branches missed.">    if (buffer == null) throw new NullPointerException();</span>
+<span class="nc bnc" id="L503" title="All 6 branches missed.">    else if (bufferOffset &lt; 0 || count &lt; 0 || count &gt; buffer.length - bufferOffset)</span>
+<span class="nc" id="L504">      throw new IndexOutOfBoundsException();</span>
+<span class="nc bnc" id="L505" title="All 2 branches missed.">    else if (count == 0) return;</span>
+
+<span class="nc" id="L507">    unsafe.copyMemory(null, address, buffer, BYTE_ARRAY_BASE_OFFSET + bufferOffset, count);</span>
+<span class="nc" id="L508">  }</span>
+
+  public static char[] getStringValue(String str) {
+<span class="nc" id="L511">    return (char[]) MemoryUtil.unsafe.getObject(str, STRING_VALUE_OFFSET);</span>
+  }
+
+  public static void copyMemory(long fromAddr, long toAddr, int count) {
+<span class="nc" id="L515">    copyMemory(null, fromAddr, null, toAddr, count);</span>
+<span class="nc" id="L516">  }</span>
+
+  public static void copyMemory(
+      Object src, long srcOffset, Object dst, long dstOffset, long length) {
+    // Check if dstOffset is before or after srcOffset to determine if we should copy
+    // forward or backwards. This is necessary in case src and dst overlap.
+<span class="nc bnc" id="L522" title="All 2 branches missed.">    if (dstOffset &lt; srcOffset) {</span>
+<span class="nc bnc" id="L523" title="All 2 branches missed.">      while (length &gt; 0) {</span>
+<span class="nc" id="L524">        long size = Math.min(length, UNSAFE_COPY_THRESHOLD);</span>
+<span class="nc" id="L525">        unsafe.copyMemory(src, srcOffset, dst, dstOffset, size);</span>
+<span class="nc" id="L526">        length -= size;</span>
+<span class="nc" id="L527">        srcOffset += size;</span>
+<span class="nc" id="L528">        dstOffset += size;</span>
+<span class="nc" id="L529">      }</span>
+    } else {
+<span class="nc" id="L531">      srcOffset += length;</span>
+<span class="nc" id="L532">      dstOffset += length;</span>
+<span class="nc bnc" id="L533" title="All 2 branches missed.">      while (length &gt; 0) {</span>
+<span class="nc" id="L534">        long size = Math.min(length, UNSAFE_COPY_THRESHOLD);</span>
+<span class="nc" id="L535">        srcOffset -= size;</span>
+<span class="nc" id="L536">        dstOffset -= size;</span>
+<span class="nc" id="L537">        unsafe.copyMemory(src, srcOffset, dst, dstOffset, size);</span>
+<span class="nc" id="L538">        length -= size;</span>
+<span class="nc" id="L539">      }</span>
+    }
+<span class="nc" id="L541">  }</span>
+
+  public static long getTotalPhysicalMemorySize() {
+<span class="nc" id="L544">    return ((OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean())</span>
+<span class="nc" id="L545">        .getTotalPhysicalMemorySize();</span>
+  }
+
+  public static ByteBuffer allocateDirect(int cap) {
+<span class="nc" id="L549">    ByteBuffer bb = ByteBuffer.allocateDirect(cap);</span>
+    // It make operation faster, but kill the cross platform ability.
+<span class="nc" id="L551">    bb.order(ByteOrder.nativeOrder());</span>
+<span class="nc" id="L552">    return bb;</span>
+  }
+
+  public static void readFully(ByteBuffer dst, CodecDataInput cdi, int length) {
+    // read bytes from cdi to buffer(off-heap)
+<span class="nc" id="L557">    long disAddr = MemoryUtil.getAddress(dst);</span>
+<span class="nc" id="L558">    long bufPos = dst.position();</span>
+<span class="nc bnc" id="L559" title="All 4 branches missed.">    for (int i = 0; i &lt; length &amp;&amp; !cdi.eof(); i++) {</span>
+<span class="nc" id="L560">      byte b = cdi.readByte();</span>
+<span class="nc" id="L561">      MemoryUtil.setByte(disAddr + bufPos + i, b);</span>
+    }
+<span class="nc" id="L563">    dst.position((int) (bufPos + length));</span>
+<span class="nc" id="L564">  }</span>
+
+<span class="nc bnc" id="L566" title="All 2 branches missed.">  private static class Deallocator implements Runnable {</span>
+    private long address;
+
+<span class="nc" id="L569">    private Deallocator(long address) {</span>
+<span class="nc bnc" id="L570" title="All 4 branches missed.">      assert (address != 0);</span>
+<span class="nc" id="L571">      this.address = address;</span>
+<span class="nc" id="L572">    }</span>
+
+    @Override
+    public void run() {
+<span class="nc bnc" id="L576" title="All 2 branches missed.">      if (address == 0) {</span>
+<span class="nc" id="L577">        return;</span>
+      }
+<span class="nc" id="L579">      free(address);</span>
+<span class="nc" id="L580">      address = 0;</span>
+<span class="nc" id="L581">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

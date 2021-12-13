@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PDError.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.pd</a> &gt; <span class="el_source">PDError.java</span></div><h1>PDError.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2018 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.pd;
+
+import org.tikv.kvproto.Pdpb;
+
+public final class PDError {
+  private final Pdpb.Error error;
+
+  private final ErrorType errorType;
+
+<span class="nc" id="L27">  private PDError(Pdpb.Error error) {</span>
+<span class="nc" id="L28">    this.error = error;</span>
+<span class="nc" id="L29">    this.errorType = ErrorType.PD_ERROR;</span>
+<span class="nc" id="L30">  }</span>
+
+<span class="nc" id="L32">  private PDError(Pdpb.Error error, ErrorType errorType) {</span>
+<span class="nc" id="L33">    this.error = error;</span>
+<span class="nc" id="L34">    this.errorType = errorType;</span>
+<span class="nc" id="L35">  }</span>
+
+  public static PDError buildFromPdpbError(Pdpb.Error error) {
+<span class="nc" id="L38">    return new PDError(error);</span>
+  }
+
+  public static Builder newBuilder() {
+<span class="nc" id="L42">    return new Builder();</span>
+  }
+
+  public static Builder newBuilder(Pdpb.Error error) {
+<span class="nc" id="L46">    return new Builder(error);</span>
+  }
+
+  public Pdpb.Error getError() {
+<span class="nc" id="L50">    return error;</span>
+  }
+
+  public ErrorType getErrorType() {
+<span class="nc" id="L54">    return errorType;</span>
+  }
+
+  public String getMessage() {
+<span class="nc" id="L58">    return getError().getMessage();</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L63">    return &quot;\nErrorType: &quot; + errorType + &quot;\nError: &quot; + error;</span>
+  }
+
+<span class="nc" id="L66">  public enum ErrorType {</span>
+<span class="nc" id="L67">    PD_ERROR,</span>
+<span class="nc" id="L68">    REGION_PEER_NOT_ELECTED</span>
+  }
+
+<span class="nc" id="L71">  public static final class RegionPeerNotElected {</span>
+    private static final String ERROR_MESSAGE = &quot;Region Peer not elected. Please try later&quot;;
+<span class="nc" id="L73">    private static final Pdpb.Error DEFAULT_ERROR =</span>
+<span class="nc" id="L74">        Pdpb.Error.newBuilder().setMessage(ERROR_MESSAGE).build();</span>
+<span class="nc" id="L75">    private static final ErrorType ERROR_TYPE = ErrorType.REGION_PEER_NOT_ELECTED;</span>
+<span class="nc" id="L76">    public static final PDError DEFAULT_INSTANCE =</span>
+<span class="nc" id="L77">        PDError.newBuilder(DEFAULT_ERROR).setErrorType(ERROR_TYPE).build();</span>
+  }
+
+  public static final class Builder {
+    private Pdpb.Error error_;
+<span class="nc" id="L82">    private ErrorType errorType_ = ErrorType.PD_ERROR;</span>
+
+<span class="nc" id="L84">    public Builder() {}</span>
+
+<span class="nc" id="L86">    public Builder(Pdpb.Error error) {</span>
+<span class="nc" id="L87">      this.error_ = error;</span>
+<span class="nc" id="L88">    }</span>
+
+    public Builder setError(Pdpb.Error error) {
+<span class="nc" id="L91">      this.error_ = error;</span>
+<span class="nc" id="L92">      return this;</span>
+    }
+
+    public Builder setErrorType(ErrorType errorType) {
+<span class="nc" id="L96">      this.errorType_ = errorType;</span>
+<span class="nc" id="L97">      return this;</span>
+    }
+
+    public PDError build() {
+<span class="nc" id="L101">      return new PDError(error_, errorType_);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

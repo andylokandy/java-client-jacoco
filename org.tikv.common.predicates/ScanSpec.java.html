@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ScanSpec.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.predicates</a> &gt; <span class="el_source">ScanSpec.java</span></div><h1>ScanSpec.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.predicates;
+
+import static java.util.Objects.requireNonNull;
+import static org.tikv.common.predicates.PredicateUtils.mergeCNFExpressions;
+
+import com.google.common.collect.ImmutableList;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import org.tikv.common.exception.TiExpressionException;
+import org.tikv.common.expression.Expression;
+import org.tikv.common.meta.TiColumnInfo;
+import org.tikv.common.meta.TiIndexColumn;
+import org.tikv.common.meta.TiIndexInfo;
+import org.tikv.common.meta.TiTableInfo;
+import org.tikv.common.types.DataType;
+
+public class ScanSpec {
+  private final List&lt;Expression&gt; pointPredicates;
+  private final Optional&lt;Expression&gt; rangePredicate;
+  private final Set&lt;Expression&gt; residualPredicates;
+
+  private ScanSpec(
+      List&lt;Expression&gt; pointPredicates,
+      Optional&lt;Expression&gt; rangePredicate,
+<span class="nc" id="L44">      Set&lt;Expression&gt; residualPredicates) {</span>
+<span class="nc" id="L45">    this.pointPredicates = pointPredicates;</span>
+<span class="nc" id="L46">    this.rangePredicate = rangePredicate;</span>
+<span class="nc" id="L47">    this.residualPredicates = residualPredicates;</span>
+<span class="nc" id="L48">  }</span>
+
+  public List&lt;Expression&gt; getPointPredicates() {
+<span class="nc" id="L51">    return pointPredicates;</span>
+  }
+
+  public Optional&lt;Expression&gt; getRangePredicate() {
+<span class="nc" id="L55">    return rangePredicate;</span>
+  }
+
+  public Set&lt;Expression&gt; getResidualPredicates() {
+<span class="nc" id="L59">    return residualPredicates;</span>
+  }
+
+  public static class Builder {
+<span class="nc" id="L63">    private final IdentityHashMap&lt;TiIndexColumn, List&lt;Expression&gt;&gt; pointPredicates =</span>
+        new IdentityHashMap&lt;&gt;();
+    private final TiTableInfo table;
+    private final TiIndexInfo index;
+<span class="nc" id="L67">    private final List&lt;Expression&gt; rangePredicates = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L68">    private final List&lt;Expression&gt; residualPredicates = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L69">    private final Set&lt;Expression&gt; residualCandidates = new HashSet&lt;&gt;();</span>
+    private TiIndexColumn rangeColumn;
+
+<span class="nc" id="L72">    public Builder(TiTableInfo table, TiIndexInfo index) {</span>
+<span class="nc" id="L73">      this.table = table;</span>
+<span class="nc" id="L74">      this.index = index;</span>
+<span class="nc" id="L75">    }</span>
+
+    void addResidualPredicate(Expression predicate) {
+<span class="nc" id="L78">      residualPredicates.add(predicate);</span>
+<span class="nc" id="L79">    }</span>
+
+    void addAllPredicates(List&lt;Expression&gt; predicates) {
+<span class="nc" id="L82">      residualCandidates.addAll(predicates);</span>
+<span class="nc" id="L83">    }</span>
+
+    void addPointPredicate(TiIndexColumn col, Expression predicate) {
+<span class="nc" id="L86">      requireNonNull(col, &quot;index column is null&quot;);</span>
+<span class="nc" id="L87">      requireNonNull(predicate, &quot;predicate is null&quot;);</span>
+<span class="nc bnc" id="L88" title="All 2 branches missed.">      if (pointPredicates.containsKey(col)) {</span>
+<span class="nc" id="L89">        List&lt;Expression&gt; predicates = pointPredicates.get(col);</span>
+<span class="nc" id="L90">        predicates.add(predicate);</span>
+<span class="nc" id="L91">      } else {</span>
+<span class="nc" id="L92">        List&lt;Expression&gt; predicates = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L93">        predicates.add(predicate);</span>
+<span class="nc" id="L94">        pointPredicates.put(col, predicates);</span>
+      }
+<span class="nc" id="L96">    }</span>
+
+    void addRangePredicate(TiIndexColumn col, Expression predicate) {
+<span class="nc" id="L99">      requireNonNull(col, &quot;col is null&quot;);</span>
+<span class="nc bnc" id="L100" title="All 2 branches missed.">      if (rangeColumn == null) {</span>
+<span class="nc" id="L101">        rangeColumn = col;</span>
+<span class="nc bnc" id="L102" title="All 2 branches missed.">      } else if (!rangeColumn.equals(col)) {</span>
+<span class="nc" id="L103">        throw new TiExpressionException(&quot;Cannot reset range predicates&quot;);</span>
+      }
+<span class="nc" id="L105">      rangePredicates.add(predicate);</span>
+<span class="nc" id="L106">    }</span>
+
+    public ScanSpec build() {
+<span class="nc" id="L109">      List&lt;Expression&gt; points = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L110">      List&lt;DataType&gt; pointTypes = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L111">      Set&lt;Expression&gt; pushedPredicates = new HashSet&lt;&gt;();</span>
+<span class="nc bnc" id="L112" title="All 2 branches missed.">      if (index != null) {</span>
+<span class="nc bnc" id="L113" title="All 2 branches missed.">        for (TiIndexColumn indexColumn : index.getIndexColumns()) {</span>
+<span class="nc" id="L114">          List&lt;Expression&gt; predicates = pointPredicates.get(indexColumn);</span>
+<span class="nc bnc" id="L115" title="All 2 branches missed.">          if (predicates == null) {</span>
+<span class="nc" id="L116">            break;</span>
+          }
+<span class="nc" id="L118">          pushedPredicates.addAll(predicates);</span>
+<span class="nc" id="L119">          TiColumnInfo tiColumnInfo = table.getColumn(indexColumn.getOffset());</span>
+<span class="nc" id="L120">          DataType type = tiColumnInfo.getType();</span>
+<span class="nc" id="L121">          points.add(mergeCNFExpressions(predicates));</span>
+<span class="nc" id="L122">          pointTypes.add(type);</span>
+<span class="nc" id="L123">        }</span>
+      }
+<span class="nc" id="L125">      Optional&lt;Expression&gt; newRangePred =</span>
+<span class="nc bnc" id="L126" title="All 2 branches missed.">          rangePredicates.isEmpty()</span>
+<span class="nc" id="L127">              ? Optional.empty()</span>
+<span class="nc" id="L128">              : Optional.ofNullable(mergeCNFExpressions(rangePredicates));</span>
+<span class="nc" id="L129">      pushedPredicates.addAll(rangePredicates);</span>
+
+<span class="nc" id="L131">      Set&lt;Expression&gt; newResidualPredicates = new HashSet&lt;&gt;(residualPredicates);</span>
+<span class="nc bnc" id="L132" title="All 2 branches missed.">      for (Expression pred : residualCandidates) {</span>
+<span class="nc bnc" id="L133" title="All 2 branches missed.">        if (!pushedPredicates.contains(pred)) {</span>
+<span class="nc" id="L134">          newResidualPredicates.add(pred);</span>
+        }
+<span class="nc" id="L136">      }</span>
+
+<span class="nc" id="L138">      return new ScanSpec(ImmutableList.copyOf(points), newRangePred, newResidualPredicates);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

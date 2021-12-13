@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CMSketch.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.statistics</a> &gt; <span class="el_source">CMSketch.java</span></div><h1>CMSketch.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2018 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.statistics;
+
+import com.sangupta.murmur.Murmur3;
+import java.util.Arrays;
+
+public class CMSketch {
+  private int depth;
+  private int width;
+  private long count;
+  private long[][] table;
+
+  // Hide constructor
+  private CMSketch() {}
+
+  public static CMSketch newCMSketch(int d, int w) {
+<span class="nc" id="L32">    CMSketch sketch = new CMSketch();</span>
+<span class="nc" id="L33">    sketch.setTable(new long[d][w]);</span>
+<span class="nc" id="L34">    sketch.setDepth(d);</span>
+<span class="nc" id="L35">    sketch.setWidth(w);</span>
+<span class="nc" id="L36">    return sketch;</span>
+  }
+
+  public int getDepth() {
+<span class="nc" id="L40">    return depth;</span>
+  }
+
+  public void setDepth(int depth) {
+<span class="nc" id="L44">    this.depth = depth;</span>
+<span class="nc" id="L45">  }</span>
+
+  public int getWidth() {
+<span class="nc" id="L48">    return width;</span>
+  }
+
+  public void setWidth(int width) {
+<span class="nc" id="L52">    this.width = width;</span>
+<span class="nc" id="L53">  }</span>
+
+  public long getCount() {
+<span class="nc" id="L56">    return count;</span>
+  }
+
+  public void setCount(long count) {
+<span class="nc" id="L60">    this.count = count;</span>
+<span class="nc" id="L61">  }</span>
+
+  public long[][] getTable() {
+<span class="nc" id="L64">    return table;</span>
+  }
+
+  public void setTable(long[][] table) {
+<span class="nc" id="L68">    this.table = table;</span>
+<span class="nc" id="L69">  }</span>
+
+  public long queryBytes(byte[] bytes) {
+<span class="nc" id="L72">    long[] randNums = Murmur3.hash_x64_128(bytes, bytes.length, 0);</span>
+<span class="nc" id="L73">    long h1 = randNums[0];</span>
+<span class="nc" id="L74">    long h2 = randNums[1];</span>
+<span class="nc" id="L75">    long min = Long.MAX_VALUE;</span>
+<span class="nc" id="L76">    long[] vals = new long[depth];</span>
+<span class="nc bnc" id="L77" title="All 2 branches missed.">    for (int i = 0; i &lt; table.length; i++) {</span>
+<span class="nc" id="L78">      int j = (int) ((h1 + h2 * i) % width);</span>
+<span class="nc bnc" id="L79" title="All 2 branches missed.">      if (min &gt; table[i][j]) {</span>
+<span class="nc" id="L80">        min = table[i][j];</span>
+      }
+<span class="nc" id="L82">      long noise = (count - table[i][j]) / (width - 1);</span>
+<span class="nc bnc" id="L83" title="All 2 branches missed.">      if (table[i][j] &lt; noise) {</span>
+<span class="nc" id="L84">        vals[i] = 0;</span>
+      } else {
+<span class="nc" id="L86">        vals[i] = table[i][j] - noise;</span>
+      }
+    }
+<span class="nc" id="L89">    Arrays.sort(vals);</span>
+<span class="nc" id="L90">    long res = vals[(depth - 1) / 2] + (vals[depth / 2] - vals[(depth - 1) / 2]) / 2;</span>
+<span class="nc bnc" id="L91" title="All 2 branches missed.">    if (res &gt; min) {</span>
+<span class="nc" id="L92">      return min;</span>
+    }
+<span class="nc" id="L94">    return res;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

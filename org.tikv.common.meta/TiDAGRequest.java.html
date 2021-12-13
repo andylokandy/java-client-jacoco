@@ -1,0 +1,1142 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TiDAGRequest.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.meta</a> &gt; <span class="el_source">TiDAGRequest.java</span></div><h1>TiDAGRequest.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.meta;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.Objects.requireNonNull;
+import static org.tikv.common.predicates.PredicateUtils.mergeCNFExpressions;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.pingcap.tidb.tipb.*;
+import java.io.*;
+import java.util.*;
+import java.util.stream.Collectors;
+import javax.annotation.Nonnull;
+import org.tikv.common.codec.KeyUtils;
+import org.tikv.common.exception.DAGRequestException;
+import org.tikv.common.exception.TiClientInternalException;
+import org.tikv.common.expression.AggregateFunction;
+import org.tikv.common.expression.ByItem;
+import org.tikv.common.expression.ColumnRef;
+import org.tikv.common.expression.Expression;
+import org.tikv.common.expression.visitor.ProtoConverter;
+import org.tikv.common.key.RowKey;
+import org.tikv.common.predicates.PredicateUtils;
+import org.tikv.common.region.TiStoreType;
+import org.tikv.common.types.DataType;
+import org.tikv.common.types.IntegerType;
+import org.tikv.common.util.KeyRangeUtils;
+import org.tikv.kvproto.Coprocessor;
+
+/**
+ * Type TiDAGRequest.
+ *
+ * &lt;p&gt;Used for constructing a new DAG request to TiKV
+ */
+public class TiDAGRequest implements Serializable {
+  /** Predefined executor priority map. */
+  private static final Map&lt;ExecType, Integer&gt; EXEC_TYPE_PRIORITY_MAP =
+<span class="nc" id="L56">      ImmutableMap.&lt;ExecType, Integer&gt;builder()</span>
+<span class="nc" id="L57">          .put(ExecType.TypeTableScan, 0)</span>
+<span class="nc" id="L58">          .put(ExecType.TypeIndexScan, 0)</span>
+<span class="nc" id="L59">          .put(ExecType.TypeSelection, 1)</span>
+<span class="nc" id="L60">          .put(ExecType.TypeAggregation, 2)</span>
+<span class="nc" id="L61">          .put(ExecType.TypeTopN, 3)</span>
+<span class="nc" id="L62">          .put(ExecType.TypeLimit, 4)</span>
+<span class="nc" id="L63">          .build();</span>
+
+<span class="nc" id="L65">  private static final ColumnInfo handleColumn =</span>
+<span class="nc" id="L66">      ColumnInfo.newBuilder()</span>
+<span class="nc" id="L67">          .setColumnId(-1)</span>
+<span class="nc" id="L68">          .setPkHandle(true)</span>
+          // We haven't changed the field name in protobuf file, but
+          // we need to set this to true in order to retrieve the handle,
+          // so the name 'setPkHandle' may sounds strange.
+<span class="nc" id="L72">          .setTp(8)</span>
+<span class="nc" id="L73">          .setColumnLen(20)</span>
+<span class="nc" id="L74">          .setFlag(2)</span>
+<span class="nc" id="L75">          .build();</span>
+<span class="nc" id="L76">  private final List&lt;ColumnRef&gt; fields = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L77">  private final List&lt;DataType&gt; indexDataTypes = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L78">  private final List&lt;Expression&gt; filters = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L79">  private final List&lt;ByItem&gt; groupByItems = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L80">  private final List&lt;ByItem&gt; orderByItems = new ArrayList&lt;&gt;();</span>
+  // System like Spark has different type promotion rules
+  // we need a cast to target when given
+<span class="nc" id="L83">  private final List&lt;AggregateFunction&gt; aggregates = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L84">  private final Map&lt;Long, List&lt;Coprocessor.KeyRange&gt;&gt; idToRanges = new HashMap&lt;&gt;();</span>
+  // If index scanning of this request is not possible in some scenario, we downgrade it
+  // to a table scan and use downGradeRanges instead of index scan ranges stored in
+  // idToRanges along with downgradeFilters to perform a table scan.
+<span class="nc" id="L88">  private final List&lt;Expression&gt; downgradeFilters = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L89">  private final List&lt;Expression&gt; pushDownFilters = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L90">  private final List&lt;AggregateFunction&gt; pushDownAggregates = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L91">  private final List&lt;ByItem&gt; pushDownGroupBys = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L92">  private final List&lt;ByItem&gt; pushDownOrderBys = new ArrayList&lt;&gt;();</span>
+  private final PushDownType pushDownType;
+  private TiTableInfo tableInfo;
+  private List&lt;TiPartitionDef&gt; prunedParts;
+<span class="nc" id="L96">  private TiStoreType storeType = TiStoreType.TiKV;</span>
+  private TiIndexInfo indexInfo;
+<span class="nc" id="L98">  private List&lt;Long&gt; prunedPhysicalIds = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L99">  private final Map&lt;Long, String&gt; prunedPartNames = new HashMap&lt;&gt;();</span>
+  private long physicalId;
+  private int pushDownLimits;
+  private int limit;
+  private int timeZoneOffset;
+  private long flags;
+  private TiTimestamp startTs;
+  private Expression having;
+  private boolean distinct;
+  private boolean isDoubleRead;
+  private EncodeType encodeType;
+<span class="nc" id="L110">  private double estimatedCount = -1;</span>
+
+<span class="nc" id="L112">  public TiDAGRequest(PushDownType pushDownType) {</span>
+<span class="nc" id="L113">    this.pushDownType = pushDownType;</span>
+<span class="nc" id="L114">    this.encodeType = EncodeType.TypeDefault;</span>
+<span class="nc" id="L115">  }</span>
+
+<span class="nc" id="L117">  private TiDAGRequest(PushDownType pushDownType, EncodeType encodeType) {</span>
+<span class="nc" id="L118">    this.pushDownType = pushDownType;</span>
+<span class="nc" id="L119">    this.encodeType = encodeType;</span>
+<span class="nc" id="L120">  }</span>
+
+  public TiDAGRequest(PushDownType pushDownType, EncodeType encodeType, int timeZoneOffset) {
+<span class="nc" id="L123">    this(pushDownType, encodeType);</span>
+<span class="nc" id="L124">    this.timeZoneOffset = timeZoneOffset;</span>
+<span class="nc" id="L125">  }</span>
+
+  public TiDAGRequest(PushDownType pushDownType, int timeZoneOffset) {
+<span class="nc" id="L128">    this(pushDownType, EncodeType.TypeDefault);</span>
+<span class="nc" id="L129">    this.timeZoneOffset = timeZoneOffset;</span>
+<span class="nc" id="L130">  }</span>
+
+  public List&lt;TiPartitionDef&gt; getPrunedParts() {
+<span class="nc" id="L133">    return prunedParts;</span>
+  }
+
+  private String getPrunedPartName(long id) {
+<span class="nc" id="L137">    return prunedPartNames.getOrDefault(id, &quot;unknown&quot;);</span>
+  }
+
+  public void setPrunedParts(List&lt;TiPartitionDef&gt; prunedParts) {
+<span class="nc" id="L141">    this.prunedParts = prunedParts;</span>
+<span class="nc bnc" id="L142" title="All 2 branches missed.">    if (prunedParts != null) {</span>
+<span class="nc" id="L143">      List&lt;Long&gt; ids = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L144">      prunedPartNames.clear();</span>
+<span class="nc bnc" id="L145" title="All 2 branches missed.">      for (TiPartitionDef pDef : prunedParts) {</span>
+<span class="nc" id="L146">        ids.add(pDef.getId());</span>
+<span class="nc" id="L147">        prunedPartNames.put(pDef.getId(), pDef.getName());</span>
+<span class="nc" id="L148">      }</span>
+<span class="nc" id="L149">      this.prunedPhysicalIds = ids;</span>
+    }
+<span class="nc" id="L151">  }</span>
+
+  public List&lt;Long&gt; getPrunedPhysicalIds() {
+<span class="nc bnc" id="L154" title="All 2 branches missed.">    if (!this.tableInfo.isPartitionEnabled()) {</span>
+<span class="nc" id="L155">      return prunedPhysicalIds = ImmutableList.of(this.tableInfo.getId());</span>
+    } else {
+<span class="nc" id="L157">      return prunedPhysicalIds;</span>
+    }
+  }
+
+  public TiStoreType getStoreType() {
+<span class="nc" id="L162">    return storeType;</span>
+  }
+
+  public void setStoreType(TiStoreType storeType) {
+<span class="nc" id="L166">    this.storeType = storeType;</span>
+<span class="nc" id="L167">  }</span>
+
+  public EncodeType getEncodeType() {
+<span class="nc" id="L170">    return encodeType;</span>
+  }
+
+  public void setEncodeType(EncodeType encodeType) {
+<span class="nc" id="L174">    this.encodeType = encodeType;</span>
+<span class="nc" id="L175">  }</span>
+
+  public DAGRequest buildIndexScan() {
+<span class="nc" id="L178">    List&lt;Integer&gt; outputOffsets = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L179">    DAGRequest.Builder builder = buildScan(true, outputOffsets);</span>
+<span class="nc" id="L180">    return buildRequest(builder, outputOffsets);</span>
+  }
+
+  public DAGRequest buildTableScan() {
+<span class="nc" id="L184">    List&lt;Integer&gt; outputOffsets = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L185">    boolean isCoveringIndex = isCoveringIndexScan();</span>
+<span class="nc" id="L186">    DAGRequest.Builder builder = buildScan(isCoveringIndex, outputOffsets);</span>
+<span class="nc" id="L187">    return buildRequest(builder, outputOffsets);</span>
+  }
+
+  private DAGRequest buildRequest(
+      DAGRequest.Builder dagRequestBuilder, List&lt;Integer&gt; outputOffsets) {
+<span class="nc" id="L192">    checkNotNull(startTs, &quot;startTs is null&quot;);</span>
+<span class="nc bnc" id="L193" title="All 2 branches missed.">    checkArgument(startTs.getVersion() != 0, &quot;timestamp is 0&quot;);</span>
+<span class="nc" id="L194">    DAGRequest request =</span>
+        dagRequestBuilder
+<span class="nc" id="L196">            .setTimeZoneOffset(timeZoneOffset)</span>
+<span class="nc" id="L197">            .setFlags(flags)</span>
+<span class="nc" id="L198">            .addAllOutputOffsets(outputOffsets)</span>
+<span class="nc" id="L199">            .setEncodeType(this.encodeType)</span>
+            // set start ts fallback is to solving compatible issue.
+<span class="nc" id="L201">            .setStartTsFallback(startTs.getVersion())</span>
+<span class="nc" id="L202">            .build();</span>
+
+<span class="nc" id="L204">    validateRequest(request);</span>
+<span class="nc" id="L205">    return request;</span>
+  }
+
+  /**
+   * Unify indexScan and tableScan building logic since they are very much alike. DAGRequest for
+   * IndexScan should also contain filters and aggregation, so we can reuse this part of logic.
+   *
+   * &lt;p&gt;DAGRequest is made up of a chain of executors with strict orders: TableScan/IndexScan &gt;
+   * Selection &gt; Aggregation &gt; TopN/Limit a DAGRequest must contain one and only one TableScan or
+   * IndexScan.
+   *
+   * @param buildIndexScan whether the dagRequest to build should be an {@link IndexScan}
+   * @return final DAGRequest built
+   */
+  private DAGRequest.Builder buildScan(boolean buildIndexScan, List&lt;Integer&gt; outputOffsets) {
+<span class="nc" id="L220">    long id = getPhysicalId();</span>
+<span class="nc" id="L221">    checkNotNull(startTs, &quot;startTs is null&quot;);</span>
+<span class="nc bnc" id="L222" title="All 2 branches missed.">    checkArgument(startTs.getVersion() != 0, &quot;timestamp is 0&quot;);</span>
+<span class="nc" id="L223">    clearPushDownInfo();</span>
+<span class="nc" id="L224">    DAGRequest.Builder dagRequestBuilder = DAGRequest.newBuilder();</span>
+<span class="nc" id="L225">    Executor.Builder executorBuilder = Executor.newBuilder();</span>
+<span class="nc" id="L226">    IndexScan.Builder indexScanBuilder = IndexScan.newBuilder();</span>
+<span class="nc" id="L227">    TableScan.Builder tblScanBuilder = TableScan.newBuilder();</span>
+    // find a column's offset in fields
+<span class="nc" id="L229">    Map&lt;String, Integer&gt; colOffsetInFieldMap = new HashMap&lt;&gt;();</span>
+    // find a column's position in index
+<span class="nc" id="L231">    Map&lt;String, Integer&gt; colPosInIndexMap = new HashMap&lt;&gt;();</span>
+
+<span class="nc bnc" id="L233" title="All 2 branches missed.">    if (buildIndexScan) {</span>
+      // IndexScan
+<span class="nc bnc" id="L235" title="All 2 branches missed.">      if (indexInfo == null) {</span>
+<span class="nc" id="L236">        throw new TiClientInternalException(&quot;Index is empty for index scan&quot;);</span>
+      }
+<span class="nc" id="L238">      List&lt;TiColumnInfo&gt; columnInfoList = tableInfo.getColumns();</span>
+<span class="nc" id="L239">      boolean hasPk = false;</span>
+      // We extract index column info
+<span class="nc" id="L241">      List&lt;Integer&gt; indexColOffsets =</span>
+          indexInfo
+<span class="nc" id="L243">              .getIndexColumns()</span>
+<span class="nc" id="L244">              .stream()</span>
+<span class="nc" id="L245">              .map(TiIndexColumn::getOffset)</span>
+<span class="nc" id="L246">              .collect(Collectors.toList());</span>
+
+<span class="nc" id="L248">      int idxPos = 0;</span>
+      // for index scan builder, columns are added by its order in index
+<span class="nc bnc" id="L250" title="All 2 branches missed.">      for (Integer idx : indexColOffsets) {</span>
+<span class="nc" id="L251">        TiColumnInfo tiColumnInfo = columnInfoList.get(idx);</span>
+<span class="nc" id="L252">        ColumnInfo columnInfo = tiColumnInfo.toProto(tableInfo);</span>
+<span class="nc" id="L253">        colPosInIndexMap.put(tiColumnInfo.getName(), idxPos++);</span>
+
+<span class="nc" id="L255">        ColumnInfo.Builder colBuilder = ColumnInfo.newBuilder(columnInfo);</span>
+<span class="nc bnc" id="L256" title="All 2 branches missed.">        if (columnInfo.getColumnId() == -1) {</span>
+<span class="nc" id="L257">          hasPk = true;</span>
+<span class="nc" id="L258">          colBuilder.setPkHandle(true);</span>
+        }
+<span class="nc" id="L260">        indexScanBuilder.addColumns(colBuilder);</span>
+<span class="nc" id="L261">      }</span>
+
+<span class="nc" id="L263">      int colCount = indexScanBuilder.getColumnsCount();</span>
+<span class="nc bnc" id="L264" title="All 2 branches missed.">      if (isDoubleRead()) {</span>
+        // double read case: need to retrieve handle
+        // =================== IMPORTANT ======================
+        // offset for dagRequest should be in accordance with fields
+        // The last pos will be the handle
+        // TODO: we may merge indexDoubleRead and coveringIndexRead logic
+<span class="nc bnc" id="L270" title="All 2 branches missed.">        for (ColumnRef col : getFields()) {</span>
+<span class="nc" id="L271">          Integer pos = colPosInIndexMap.get(col.getName());</span>
+<span class="nc bnc" id="L272" title="All 2 branches missed.">          if (pos != null) {</span>
+<span class="nc" id="L273">            TiColumnInfo columnInfo = columnInfoList.get(indexColOffsets.get(pos));</span>
+<span class="nc bnc" id="L274" title="All 2 branches missed.">            if (col.matchName(columnInfo.getName())) {</span>
+<span class="nc" id="L275">              colOffsetInFieldMap.put(col.getName(), pos);</span>
+            }
+            // TODO: primary key may also be considered if pkIsHandle
+          }
+<span class="nc" id="L279">        }</span>
+        // double read case
+<span class="nc bnc" id="L281" title="All 2 branches missed.">        if (!hasPk) {</span>
+          // add handle column
+<span class="nc" id="L283">          indexScanBuilder.addColumns(handleColumn);</span>
+<span class="nc" id="L284">          ++colCount;</span>
+<span class="nc" id="L285">          addRequiredIndexDataType();</span>
+        }
+
+<span class="nc bnc" id="L288" title="All 2 branches missed.">        if (colCount == 0) {</span>
+<span class="nc" id="L289">          throw new DAGRequestException(&quot;Incorrect index scan with zero column count&quot;);</span>
+        }
+
+<span class="nc" id="L292">        outputOffsets.add(colCount - 1);</span>
+      } else {
+<span class="nc" id="L294">        boolean pkIsNeeded = false;</span>
+        // =================== IMPORTANT ======================
+        // offset for dagRequest should be in accordance with fields
+<span class="nc bnc" id="L297" title="All 2 branches missed.">        for (ColumnRef col : getFields()) {</span>
+<span class="nc" id="L298">          Integer pos = colPosInIndexMap.get(col.getName());</span>
+<span class="nc bnc" id="L299" title="All 2 branches missed.">          if (pos != null) {</span>
+<span class="nc" id="L300">            TiColumnInfo columnInfo = columnInfoList.get(indexColOffsets.get(pos));</span>
+<span class="nc bnc" id="L301" title="All 2 branches missed.">            if (col.matchName(columnInfo.getName())) {</span>
+<span class="nc" id="L302">              outputOffsets.add(pos);</span>
+<span class="nc" id="L303">              colOffsetInFieldMap.put(col.getName(), pos);</span>
+            }
+<span class="nc" id="L305">          }</span>
+          // if a column of field is not contained in index selected,
+          // logically it must be the pk column. Extra check here.
+<span class="nc bnc" id="L308" title="All 2 branches missed.">          else if (tableInfo.getColumn(col.getName()).isPrimaryKey()) {</span>
+<span class="nc" id="L309">            pkIsNeeded = true;</span>
+            // offset should be processed for each primary key encountered
+<span class="nc" id="L311">            outputOffsets.add(colCount);</span>
+            // for index scan, column offset must be in the order of index-&gt;handle
+<span class="nc" id="L313">            colOffsetInFieldMap.put(col.getName(), indexColOffsets.size());</span>
+          } else {
+<span class="nc" id="L315">            throw new DAGRequestException(</span>
+                &quot;columns other than primary key and index key exist in fields while index single read: &quot;
+<span class="nc" id="L317">                    + col.getName());</span>
+          }
+<span class="nc" id="L319">        }</span>
+        // pk is not included in index but still needed
+<span class="nc bnc" id="L321" title="All 2 branches missed.">        if (pkIsNeeded) {</span>
+<span class="nc" id="L322">          indexScanBuilder.addColumns(handleColumn);</span>
+        }
+      }
+<span class="nc" id="L325">      executorBuilder.setTp(ExecType.TypeIndexScan);</span>
+
+<span class="nc" id="L327">      indexScanBuilder.setTableId(id).setIndexId(indexInfo.getId());</span>
+<span class="nc" id="L328">      dagRequestBuilder.addExecutors(executorBuilder.setIdxScan(indexScanBuilder).build());</span>
+<span class="nc" id="L329">    } else {</span>
+      // TableScan
+<span class="nc" id="L331">      executorBuilder.setTp(ExecType.TypeTableScan);</span>
+<span class="nc" id="L332">      tblScanBuilder.setTableId(id);</span>
+      // Step1. Add columns to first executor
+<span class="nc" id="L334">      int lastOffset = 0;</span>
+<span class="nc bnc" id="L335" title="All 2 branches missed.">      for (ColumnRef col : getFields()) {</span>
+        // can't allow duplicated col added into executor.
+<span class="nc bnc" id="L337" title="All 2 branches missed.">        if (!colOffsetInFieldMap.containsKey(col.getName())) {</span>
+<span class="nc" id="L338">          tblScanBuilder.addColumns(tableInfo.getColumn(col.getName()).toProto(tableInfo));</span>
+<span class="nc" id="L339">          colOffsetInFieldMap.put(col.getName(), lastOffset);</span>
+<span class="nc" id="L340">          lastOffset++;</span>
+        }
+        // column offset should be in accordance with fields
+<span class="nc" id="L343">        outputOffsets.add(colOffsetInFieldMap.get(col.getName()));</span>
+<span class="nc" id="L344">      }</span>
+
+<span class="nc" id="L346">      dagRequestBuilder.addExecutors(executorBuilder.setTblScan(tblScanBuilder));</span>
+    }
+
+<span class="nc bnc" id="L349" title="All 4 branches missed.">    boolean isIndexDoubleScan = buildIndexScan &amp;&amp; isDoubleRead();</span>
+
+    // Should build these executors when performing CoveringIndexScan/TableScan
+
+    // clear executorBuilder
+<span class="nc" id="L354">    executorBuilder.clear();</span>
+
+    // Step2. Add others
+    // DO NOT EDIT EXPRESSION CONSTRUCTION ORDER
+    // Or make sure the construction order is below:
+    // TableScan/IndexScan &gt; Selection &gt; Aggregation &gt; TopN/Limit
+
+<span class="nc" id="L361">    Expression whereExpr = mergeCNFExpressions(getFilters());</span>
+<span class="nc bnc" id="L362" title="All 2 branches missed.">    if (whereExpr != null) {</span>
+<span class="nc bnc" id="L363" title="All 4 branches missed.">      if (!isIndexDoubleScan || isExpressionCoveredByIndex(whereExpr)) {</span>
+<span class="nc" id="L364">        executorBuilder.setTp(ExecType.TypeSelection);</span>
+<span class="nc" id="L365">        dagRequestBuilder.addExecutors(</span>
+<span class="nc" id="L366">            executorBuilder.setSelection(</span>
+<span class="nc" id="L367">                Selection.newBuilder()</span>
+<span class="nc" id="L368">                    .addConditions(ProtoConverter.toProto(whereExpr, colOffsetInFieldMap))));</span>
+<span class="nc" id="L369">        executorBuilder.clear();</span>
+<span class="nc" id="L370">        addPushDownFilters();</span>
+      } else {
+<span class="nc" id="L372">        return dagRequestBuilder;</span>
+      }
+    }
+
+<span class="nc bnc" id="L376" title="All 4 branches missed.">    if (!getGroupByItems().isEmpty() || !getAggregates().isEmpty()) {</span>
+      // only allow table scan or covering index scan push down groupby and agg
+<span class="nc bnc" id="L378" title="All 6 branches missed.">      if (!isIndexDoubleScan || (isGroupByCoveredByIndex() &amp;&amp; isAggregateCoveredByIndex())) {</span>
+<span class="nc" id="L379">        pushDownAggAndGroupBy(</span>
+            dagRequestBuilder, executorBuilder, outputOffsets, colOffsetInFieldMap);
+      } else {
+<span class="nc" id="L382">        return dagRequestBuilder;</span>
+      }
+    }
+
+<span class="nc bnc" id="L386" title="All 2 branches missed.">    if (!getOrderByItems().isEmpty()) {</span>
+<span class="nc bnc" id="L387" title="All 4 branches missed.">      if (!isIndexDoubleScan || isOrderByCoveredByIndex()) {</span>
+        // only allow table scan or covering index scan push down orderby
+<span class="nc" id="L389">        pushDownOrderBy(dagRequestBuilder, executorBuilder, colOffsetInFieldMap);</span>
+      }
+<span class="nc bnc" id="L391" title="All 2 branches missed.">    } else if (getLimit() != 0) {</span>
+<span class="nc bnc" id="L392" title="All 2 branches missed.">      if (!isIndexDoubleScan) {</span>
+<span class="nc" id="L393">        pushDownLimit(dagRequestBuilder, executorBuilder);</span>
+      }
+    }
+
+<span class="nc" id="L397">    return dagRequestBuilder;</span>
+  }
+
+  private void pushDownLimit(
+      DAGRequest.Builder dagRequestBuilder, Executor.Builder executorBuilder) {
+<span class="nc" id="L402">    Limit.Builder limitBuilder = Limit.newBuilder();</span>
+<span class="nc" id="L403">    limitBuilder.setLimit(getLimit());</span>
+<span class="nc" id="L404">    executorBuilder.setTp(ExecType.TypeLimit);</span>
+<span class="nc" id="L405">    dagRequestBuilder.addExecutors(executorBuilder.setLimit(limitBuilder));</span>
+<span class="nc" id="L406">    executorBuilder.clear();</span>
+<span class="nc" id="L407">    addPushDownLimits();</span>
+<span class="nc" id="L408">  }</span>
+
+  private void pushDownOrderBy(
+      DAGRequest.Builder dagRequestBuilder,
+      Executor.Builder executorBuilder,
+      Map&lt;String, Integer&gt; colOffsetInFieldMap) {
+<span class="nc" id="L414">    TopN.Builder topNBuilder = TopN.newBuilder();</span>
+<span class="nc" id="L415">    getOrderByItems()</span>
+<span class="nc" id="L416">        .forEach(</span>
+            tiByItem -&gt;
+<span class="nc" id="L418">                topNBuilder.addOrderBy(</span>
+<span class="nc" id="L419">                    com.pingcap.tidb.tipb.ByItem.newBuilder()</span>
+<span class="nc" id="L420">                        .setExpr(ProtoConverter.toProto(tiByItem.getExpr(), colOffsetInFieldMap))</span>
+<span class="nc" id="L421">                        .setDesc(tiByItem.isDesc())));</span>
+<span class="nc" id="L422">    executorBuilder.setTp(ExecType.TypeTopN);</span>
+<span class="nc" id="L423">    topNBuilder.setLimit(getLimit());</span>
+<span class="nc" id="L424">    dagRequestBuilder.addExecutors(executorBuilder.setTopN(topNBuilder));</span>
+<span class="nc" id="L425">    executorBuilder.clear();</span>
+<span class="nc" id="L426">    addPushDownOrderBys();</span>
+<span class="nc" id="L427">  }</span>
+
+  private void pushDownAggAndGroupBy(
+      DAGRequest.Builder dagRequestBuilder,
+      Executor.Builder executorBuilder,
+      List&lt;Integer&gt; outputOffsets,
+      Map&lt;String, Integer&gt; colOffsetInFieldMap) {
+<span class="nc" id="L434">    Aggregation.Builder aggregationBuilder = Aggregation.newBuilder();</span>
+<span class="nc" id="L435">    getAggregates()</span>
+<span class="nc" id="L436">        .forEach(</span>
+            tiExpr -&gt;
+<span class="nc" id="L438">                aggregationBuilder.addAggFunc(ProtoConverter.toProto(tiExpr, colOffsetInFieldMap)));</span>
+<span class="nc" id="L439">    getGroupByItems()</span>
+<span class="nc" id="L440">        .forEach(</span>
+            tiByItem -&gt;
+<span class="nc" id="L442">                aggregationBuilder.addGroupBy(</span>
+<span class="nc" id="L443">                    ProtoConverter.toProto(tiByItem.getExpr(), colOffsetInFieldMap)));</span>
+<span class="nc" id="L444">    executorBuilder.setTp(ExecType.TypeAggregation);</span>
+<span class="nc" id="L445">    dagRequestBuilder.addExecutors(executorBuilder.setAggregation(aggregationBuilder));</span>
+<span class="nc" id="L446">    executorBuilder.clear();</span>
+<span class="nc" id="L447">    addPushDownGroupBys();</span>
+<span class="nc" id="L448">    addPushDownAggregates();</span>
+
+    // adding output offsets for aggs
+<span class="nc" id="L451">    outputOffsets.clear();</span>
+<span class="nc bnc" id="L452" title="All 2 branches missed.">    for (int i = 0; i &lt; getAggregates().size(); i++) {</span>
+<span class="nc" id="L453">      outputOffsets.add(i);</span>
+    }
+
+    // adding output offsets for group by
+<span class="nc" id="L457">    int currentMaxOutputOffset = outputOffsets.get(outputOffsets.size() - 1) + 1;</span>
+<span class="nc bnc" id="L458" title="All 2 branches missed.">    for (int i = 0; i &lt; getGroupByItems().size(); i++) {</span>
+<span class="nc" id="L459">      outputOffsets.add(currentMaxOutputOffset + i);</span>
+    }
+<span class="nc" id="L461">  }</span>
+
+  private boolean isExpressionCoveredByIndex(Expression expr) {
+<span class="nc" id="L464">    Set&lt;String&gt; indexColumnRefSet =</span>
+        indexInfo
+<span class="nc" id="L466">            .getIndexColumns()</span>
+<span class="nc" id="L467">            .stream()</span>
+<span class="nc bnc" id="L468" title="All 2 branches missed.">            .filter(x -&gt; !x.isPrefixIndex())</span>
+<span class="nc" id="L469">            .map(TiIndexColumn::getName)</span>
+<span class="nc" id="L470">            .collect(Collectors.toSet());</span>
+<span class="nc bnc" id="L471" title="All 2 branches missed.">    return !isDoubleRead()</span>
+<span class="nc" id="L472">        &amp;&amp; PredicateUtils.extractColumnRefFromExpression(expr)</span>
+<span class="nc" id="L473">            .stream()</span>
+<span class="nc" id="L474">            .map(ColumnRef::getName)</span>
+<span class="nc bnc" id="L475" title="All 2 branches missed.">            .allMatch(indexColumnRefSet::contains);</span>
+  }
+
+  private boolean isGroupByCoveredByIndex() {
+<span class="nc" id="L479">    return isByItemCoveredByIndex(getGroupByItems());</span>
+  }
+
+  private boolean isOrderByCoveredByIndex() {
+<span class="nc" id="L483">    return isByItemCoveredByIndex(getOrderByItems());</span>
+  }
+
+  private boolean isByItemCoveredByIndex(List&lt;ByItem&gt; byItems) {
+<span class="nc bnc" id="L487" title="All 2 branches missed.">    if (byItems.isEmpty()) {</span>
+<span class="nc" id="L488">      return false;</span>
+    }
+<span class="nc" id="L490">    return byItems.stream().allMatch(x -&gt; isExpressionCoveredByIndex(x.getExpr()));</span>
+  }
+
+  private boolean isAggregateCoveredByIndex() {
+<span class="nc bnc" id="L494" title="All 2 branches missed.">    if (aggregates.isEmpty()) {</span>
+<span class="nc" id="L495">      return false;</span>
+    }
+<span class="nc" id="L497">    return aggregates.stream().allMatch(this::isExpressionCoveredByIndex);</span>
+  }
+
+  /**
+   * Check if a DAG request is valid.
+   *
+   * &lt;p&gt;Note: When constructing a DAG request, a executor with an ExecType of higher priority should
+   * always be placed before those lower ones.
+   *
+   * @param dagRequest Request DAG.
+   */
+  private void validateRequest(DAGRequest dagRequest) {
+<span class="nc" id="L509">    requireNonNull(dagRequest);</span>
+    // check encode type
+<span class="nc" id="L511">    requireNonNull(dagRequest.getEncodeType());</span>
+
+    // A DAG request must has at least one executor.
+<span class="nc bnc" id="L514" title="All 2 branches missed.">    if (dagRequest.getExecutorsCount() &lt; 1) {</span>
+<span class="nc" id="L515">      throw new DAGRequestException(&quot;Invalid executors count:&quot; + dagRequest.getExecutorsCount());</span>
+    }
+    // A DAG request must start with TableScan or IndexScan Executor
+<span class="nc" id="L518">    ExecType formerType = dagRequest.getExecutors(0).getTp();</span>
+<span class="nc bnc" id="L519" title="All 4 branches missed.">    if (formerType != ExecType.TypeTableScan &amp;&amp; formerType != ExecType.TypeIndexScan) {</span>
+<span class="nc" id="L520">      throw new DAGRequestException(</span>
+          &quot;Invalid first executor type:&quot;
+              + formerType
+              + &quot;, must one of TypeTableScan or TypeIndexScan&quot;);
+    }
+
+<span class="nc bnc" id="L526" title="All 2 branches missed.">    for (int i = 1; i &lt; dagRequest.getExecutorsCount(); i++) {</span>
+<span class="nc" id="L527">      ExecType currentType = dagRequest.getExecutors(i).getTp();</span>
+<span class="nc bnc" id="L528" title="All 2 branches missed.">      if (EXEC_TYPE_PRIORITY_MAP.get(currentType) &lt; EXEC_TYPE_PRIORITY_MAP.get(formerType)) {</span>
+<span class="nc" id="L529">        throw new DAGRequestException(&quot;Invalid executor priority.&quot;);</span>
+      }
+<span class="nc" id="L531">      formerType = currentType;</span>
+    }
+<span class="nc" id="L533">  }</span>
+
+  public TiTableInfo getTableInfo() {
+<span class="nc" id="L536">    return this.tableInfo;</span>
+  }
+
+  public TiDAGRequest setTableInfo(TiTableInfo tableInfo) {
+<span class="nc" id="L540">    this.tableInfo = requireNonNull(tableInfo, &quot;tableInfo is null&quot;);</span>
+<span class="nc" id="L541">    setPhysicalId(tableInfo.getId());</span>
+<span class="nc" id="L542">    return this;</span>
+  }
+
+  public long getPhysicalId() {
+<span class="nc" id="L546">    return this.physicalId;</span>
+  }
+
+  public TiDAGRequest setPhysicalId(long id) {
+<span class="nc" id="L550">    this.physicalId = id;</span>
+<span class="nc" id="L551">    return this;</span>
+  }
+
+  public TiIndexInfo getIndexInfo() {
+<span class="nc" id="L555">    return indexInfo;</span>
+  }
+
+  public TiDAGRequest setIndexInfo(TiIndexInfo indexInfo) {
+<span class="nc" id="L559">    this.indexInfo = requireNonNull(indexInfo, &quot;indexInfo is null&quot;);</span>
+<span class="nc" id="L560">    return this;</span>
+  }
+
+  public void clearIndexInfo() {
+<span class="nc" id="L564">    indexInfo = null;</span>
+<span class="nc" id="L565">    clearPushDownInfo();</span>
+<span class="nc" id="L566">  }</span>
+
+  public int getLimit() {
+<span class="nc" id="L569">    return limit;</span>
+  }
+
+  /**
+   * add limit clause to select query.
+   *
+   * @param limit is just a integer.
+   * @return a SelectBuilder
+   */
+  public TiDAGRequest setLimit(int limit) {
+<span class="nc" id="L579">    this.limit = limit;</span>
+<span class="nc" id="L580">    return this;</span>
+  }
+
+  int getTimeZoneOffset() {
+<span class="nc" id="L584">    return timeZoneOffset;</span>
+  }
+
+  /**
+   * set truncate mode
+   *
+   * @param mode truncate mode
+   * @return a TiDAGRequest
+   */
+  TiDAGRequest setTruncateMode(TruncateMode mode) {
+<span class="nc" id="L594">    flags = requireNonNull(mode, &quot;mode is null&quot;).mask(flags);</span>
+<span class="nc" id="L595">    return this;</span>
+  }
+
+  @VisibleForTesting
+  long getFlags() {
+<span class="nc" id="L600">    return flags;</span>
+  }
+
+  @VisibleForTesting
+  public TiTimestamp getStartTs() {
+<span class="nc" id="L605">    return startTs;</span>
+  }
+
+  /**
+   * set start timestamp for the transaction
+   *
+   * @param startTs timestamp
+   * @return a TiDAGRequest
+   */
+  public TiDAGRequest setStartTs(@Nonnull TiTimestamp startTs) {
+<span class="nc" id="L615">    this.startTs = startTs;</span>
+<span class="nc" id="L616">    return this;</span>
+  }
+
+  /**
+   * set having clause to select query
+   *
+   * @param having is a expression represents Having
+   * @return a TiDAGRequest
+   */
+  public TiDAGRequest setHaving(Expression having) {
+<span class="nc" id="L626">    this.having = requireNonNull(having, &quot;having is null&quot;);</span>
+<span class="nc" id="L627">    return this;</span>
+  }
+
+  public boolean isDistinct() {
+<span class="nc" id="L631">    return distinct;</span>
+  }
+
+  public TiDAGRequest setDistinct(boolean distinct) {
+<span class="nc" id="L635">    this.distinct = distinct;</span>
+<span class="nc" id="L636">    return this;</span>
+  }
+
+  public TiDAGRequest addAggregate(AggregateFunction expr) {
+<span class="nc" id="L640">    requireNonNull(expr, &quot;aggregation expr is null&quot;);</span>
+<span class="nc" id="L641">    aggregates.add(expr);</span>
+<span class="nc" id="L642">    return this;</span>
+  }
+
+  List&lt;AggregateFunction&gt; getAggregates() {
+<span class="nc" id="L646">    return aggregates;</span>
+  }
+
+  /**
+   * add a order by clause to select query.
+   *
+   * @param byItem is a TiByItem.
+   * @return a SelectBuilder
+   */
+  public TiDAGRequest addOrderByItem(ByItem byItem) {
+<span class="nc" id="L656">    orderByItems.add(requireNonNull(byItem, &quot;byItem is null&quot;));</span>
+<span class="nc" id="L657">    return this;</span>
+  }
+
+  List&lt;ByItem&gt; getOrderByItems() {
+<span class="nc" id="L661">    return orderByItems;</span>
+  }
+
+  /**
+   * add a group by clause to select query
+   *
+   * @param byItem is a TiByItem
+   * @return a SelectBuilder
+   */
+  public TiDAGRequest addGroupByItem(ByItem byItem) {
+<span class="nc" id="L671">    groupByItems.add(requireNonNull(byItem, &quot;byItem is null&quot;));</span>
+<span class="nc" id="L672">    return this;</span>
+  }
+
+  public List&lt;ByItem&gt; getGroupByItems() {
+<span class="nc" id="L676">    return groupByItems;</span>
+  }
+
+  /**
+   * Field is not support in TiDB yet, for here we simply allow TiColumnRef instead of TiExpr like
+   * in SelectRequest proto
+   *
+   * &lt;p&gt;
+   *
+   * &lt;p&gt;This interface allows duplicate columns and it's user's responsibility to do dedup since we
+   * need to ensure exact order and items preserved during decoding
+   *
+   * @param column is column referred during selectReq
+   */
+  public TiDAGRequest addRequiredColumn(ColumnRef column) {
+<span class="nc bnc" id="L691" title="All 2 branches missed.">    if (!column.isResolved()) {</span>
+<span class="nc" id="L692">      throw new UnsupportedOperationException(</span>
+<span class="nc" id="L693">          String.format(&quot;cannot add unresolved column %s to dag request&quot;, column.getName()));</span>
+    }
+<span class="nc" id="L695">    fields.add(requireNonNull(column, &quot;columnRef is null&quot;));</span>
+<span class="nc" id="L696">    return this;</span>
+  }
+
+  public List&lt;ColumnRef&gt; getFields() {
+<span class="nc" id="L700">    return fields;</span>
+  }
+
+  /** Required index columns for double read */
+  private void addRequiredIndexDataType() {
+<span class="nc" id="L705">    indexDataTypes.add(requireNonNull(IntegerType.BIGINT, &quot;dataType is null&quot;));</span>
+<span class="nc" id="L706">  }</span>
+
+  public List&lt;DataType&gt; getIndexDataTypes() {
+<span class="nc" id="L709">    return indexDataTypes;</span>
+  }
+
+  /**
+   * set key range of scan
+   *
+   * @param ranges key range of scan
+   */
+  public TiDAGRequest addRanges(Map&lt;Long, List&lt;Coprocessor.KeyRange&gt;&gt; ranges) {
+<span class="nc" id="L718">    idToRanges.putAll(requireNonNull(ranges, &quot;KeyRange is null&quot;));</span>
+<span class="nc" id="L719">    return this;</span>
+  }
+
+  private void resetRanges() {
+<span class="nc" id="L723">    idToRanges.clear();</span>
+<span class="nc" id="L724">  }</span>
+
+  public void resetFilters(List&lt;Expression&gt; filters) {
+<span class="nc" id="L727">    this.filters.clear();</span>
+<span class="nc" id="L728">    this.filters.addAll(filters);</span>
+<span class="nc" id="L729">  }</span>
+
+  public List&lt;Coprocessor.KeyRange&gt; getRangesByPhysicalId(long physicalId) {
+<span class="nc" id="L732">    return idToRanges.get(physicalId);</span>
+  }
+
+  public Map&lt;Long, List&lt;Coprocessor.KeyRange&gt;&gt; getRangesMaps() {
+<span class="nc" id="L736">    return idToRanges;</span>
+  }
+
+  public TiDAGRequest addFilters(List&lt;Expression&gt; filters) {
+<span class="nc" id="L740">    this.filters.addAll(requireNonNull(filters, &quot;filters expr is null&quot;));</span>
+<span class="nc" id="L741">    return this;</span>
+  }
+
+  public List&lt;Expression&gt; getFilters() {
+<span class="nc" id="L745">    return filters;</span>
+  }
+
+  public void addDowngradeFilter(Expression filter) {
+<span class="nc" id="L749">    this.downgradeFilters.add(requireNonNull(filter, &quot;downgrade filter is null&quot;));</span>
+<span class="nc" id="L750">  }</span>
+
+  public List&lt;Expression&gt; getDowngradeFilters() {
+<span class="nc" id="L753">    return downgradeFilters;</span>
+  }
+
+  private void addPushDownFilters() {
+    // all filters will be pushed down
+    // TODO: choose some filters to push down
+<span class="nc" id="L759">    this.pushDownFilters.addAll(filters);</span>
+<span class="nc" id="L760">  }</span>
+
+  private List&lt;Expression&gt; getPushDownFilters() {
+<span class="nc" id="L763">    return pushDownFilters;</span>
+  }
+
+  private void addPushDownAggregates() {
+<span class="nc" id="L767">    this.pushDownAggregates.addAll(aggregates);</span>
+<span class="nc" id="L768">  }</span>
+
+  public List&lt;AggregateFunction&gt; getPushDownAggregates() {
+<span class="nc" id="L771">    return pushDownAggregates;</span>
+  }
+
+  private void addPushDownGroupBys() {
+<span class="nc" id="L775">    this.pushDownGroupBys.addAll(getGroupByItems());</span>
+<span class="nc" id="L776">  }</span>
+
+  public List&lt;ByItem&gt; getPushDownGroupBys() {
+<span class="nc" id="L779">    return pushDownGroupBys;</span>
+  }
+
+  private void addPushDownOrderBys() {
+<span class="nc" id="L783">    this.pushDownOrderBys.addAll(getOrderByItems());</span>
+<span class="nc" id="L784">  }</span>
+
+  public List&lt;ByItem&gt; getPushDownOrderBys() {
+<span class="nc" id="L787">    return pushDownOrderBys;</span>
+  }
+
+  private void addPushDownLimits() {
+<span class="nc" id="L791">    this.pushDownLimits = limit;</span>
+<span class="nc" id="L792">  }</span>
+
+  private int getPushDownLimits() {
+<span class="nc" id="L795">    return pushDownLimits;</span>
+  }
+
+  private void clearPushDownInfo() {
+<span class="nc" id="L799">    indexDataTypes.clear();</span>
+<span class="nc" id="L800">    pushDownFilters.clear();</span>
+<span class="nc" id="L801">    pushDownAggregates.clear();</span>
+<span class="nc" id="L802">    pushDownGroupBys.clear();</span>
+<span class="nc" id="L803">    pushDownOrderBys.clear();</span>
+<span class="nc" id="L804">    pushDownLimits = 0;</span>
+<span class="nc" id="L805">  }</span>
+
+  /**
+   * Check whether the DAG request has any aggregate expression.
+   *
+   * @return the boolean
+   */
+  public boolean hasPushDownAggregate() {
+<span class="nc bnc" id="L813" title="All 2 branches missed.">    return !getPushDownAggregates().isEmpty();</span>
+  }
+
+  /**
+   * Check whether the DAG request has any group by expression.
+   *
+   * @return the boolean
+   */
+  public boolean hasPushDownGroupBy() {
+<span class="nc bnc" id="L822" title="All 2 branches missed.">    return !getPushDownGroupBys().isEmpty();</span>
+  }
+
+  /**
+   * Returns whether needs to read handle from index first and find its corresponding row. i.e,
+   * &quot;double read&quot;
+   *
+   * @return boolean
+   */
+  public boolean isDoubleRead() {
+<span class="nc" id="L832">    return isDoubleRead;</span>
+  }
+
+  /**
+   * Sets isDoubleRead
+   *
+   * @param isDoubleRead if is double read
+   */
+  public void setIsDoubleRead(boolean isDoubleRead) {
+<span class="nc" id="L841">    this.isDoubleRead = isDoubleRead;</span>
+<span class="nc" id="L842">  }</span>
+
+  /**
+   * Returns whether the request is CoveringIndex
+   *
+   * @return boolean
+   */
+  private boolean isCoveringIndexScan() {
+<span class="nc bnc" id="L850" title="All 4 branches missed.">    return hasIndex() &amp;&amp; !isDoubleRead();</span>
+  }
+
+  /**
+   * Returns whether this request is of indexScanType
+   *
+   * @return true iff indexInfo is provided, false otherwise
+   */
+  public boolean hasIndex() {
+<span class="nc bnc" id="L859" title="All 2 branches missed.">    return indexInfo != null;</span>
+  }
+
+  /**
+   * Whether we use streaming processing to retrieve data
+   *
+   * @return push down type.
+   */
+  public PushDownType getPushDownType() {
+<span class="nc" id="L868">    return pushDownType;</span>
+  }
+
+  /** Get the estimated row count will be fetched from this request. */
+  public double getEstimatedCount() {
+<span class="nc" id="L873">    return estimatedCount;</span>
+  }
+
+  /** Set the estimated row count will be fetched from this request. */
+  public void setEstimatedCount(double estimatedCount) {
+<span class="nc" id="L878">    this.estimatedCount = estimatedCount;</span>
+<span class="nc" id="L879">  }</span>
+
+  public void init(boolean readHandle) {
+<span class="nc bnc" id="L882" title="All 2 branches missed.">    if (readHandle) {</span>
+<span class="nc" id="L883">      buildIndexScan();</span>
+    } else {
+<span class="nc" id="L885">      buildTableScan();</span>
+    }
+<span class="nc" id="L887">  }</span>
+
+  private void init() {
+<span class="nc" id="L890">    init(hasIndex());</span>
+<span class="nc" id="L891">  }</span>
+
+  public IndexScanType getIndexScanType() {
+<span class="nc bnc" id="L894" title="All 2 branches missed.">    if (hasIndex()) {</span>
+<span class="nc bnc" id="L895" title="All 2 branches missed.">      if (isDoubleRead) {</span>
+<span class="nc" id="L896">        return IndexScanType.INDEX_SCAN;</span>
+      } else {
+<span class="nc" id="L898">        return IndexScanType.COVERING_INDEX_SCAN;</span>
+      }
+    } else {
+<span class="nc" id="L901">      return IndexScanType.TABLE_SCAN;</span>
+    }
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L907">    init();</span>
+<span class="nc" id="L908">    StringBuilder sb = new StringBuilder();</span>
+<span class="nc bnc" id="L909" title="All 2 branches missed.">    if (tableInfo != null) {</span>
+<span class="nc" id="L910">      sb.append(String.format(&quot;[table: %s] &quot;, tableInfo.getName()));</span>
+    }
+
+<span class="nc" id="L913">    boolean isIndexScan = false;</span>
+<span class="nc bnc" id="L914" title="All 4 branches missed.">    switch (getIndexScanType()) {</span>
+      case INDEX_SCAN:
+<span class="nc" id="L916">        sb.append(&quot;IndexScan&quot;);</span>
+<span class="nc" id="L917">        sb.append(String.format(&quot;[Index: %s] &quot;, indexInfo.getName()));</span>
+<span class="nc" id="L918">        isIndexScan = true;</span>
+<span class="nc" id="L919">        break;</span>
+      case COVERING_INDEX_SCAN:
+<span class="nc" id="L921">        sb.append(&quot;CoveringIndexScan&quot;);</span>
+<span class="nc" id="L922">        sb.append(String.format(&quot;[Index: %s] &quot;, indexInfo.getName()));</span>
+<span class="nc" id="L923">        break;</span>
+      case TABLE_SCAN:
+<span class="nc" id="L925">        sb.append(&quot;TableScan&quot;);</span>
+    }
+
+<span class="nc bnc" id="L928" title="All 2 branches missed.">    if (!getFields().isEmpty()) {</span>
+<span class="nc" id="L929">      sb.append(&quot;, Columns: &quot;);</span>
+<span class="nc" id="L930">      Joiner.on(&quot;, &quot;).skipNulls().appendTo(sb, getFields());</span>
+    }
+
+<span class="nc bnc" id="L933" title="All 4 branches missed.">    if (isIndexScan &amp;&amp; !getDowngradeFilters().isEmpty()) {</span>
+<span class="nc" id="L934">      sb.append(&quot;, Downgrade Filter: &quot;);</span>
+<span class="nc" id="L935">      Joiner.on(&quot;, &quot;).skipNulls().appendTo(sb, getDowngradeFilters());</span>
+    }
+
+<span class="nc bnc" id="L938" title="All 4 branches missed.">    if (!isIndexScan &amp;&amp; !getFilters().isEmpty()) {</span>
+<span class="nc" id="L939">      sb.append(&quot;, Residual Filter: &quot;);</span>
+<span class="nc" id="L940">      Joiner.on(&quot;, &quot;).skipNulls().appendTo(sb, getFilters());</span>
+    }
+
+<span class="nc bnc" id="L943" title="All 2 branches missed.">    if (!getPushDownFilters().isEmpty()) {</span>
+<span class="nc" id="L944">      sb.append(&quot;, PushDown Filter: &quot;);</span>
+<span class="nc" id="L945">      Joiner.on(&quot;, &quot;).skipNulls().appendTo(sb, getPushDownFilters());</span>
+    }
+
+    // Key ranges might be also useful
+<span class="nc bnc" id="L949" title="All 2 branches missed.">    if (!getRangesMaps().isEmpty()) {</span>
+<span class="nc" id="L950">      sb.append(&quot;, KeyRange: [&quot;);</span>
+<span class="nc bnc" id="L951" title="All 2 branches missed.">      if (tableInfo.isPartitionEnabled()) {</span>
+<span class="nc" id="L952">        getRangesMaps()</span>
+<span class="nc" id="L953">            .forEach(</span>
+                (key, value) -&gt; {
+<span class="nc bnc" id="L955" title="All 2 branches missed.">                  for (Coprocessor.KeyRange v : value) {</span>
+<span class="nc" id="L956">                    sb.append(&quot; partition: &quot;).append(getPrunedPartName(key));</span>
+<span class="nc" id="L957">                    sb.append(KeyUtils.formatBytesUTF8(v));</span>
+<span class="nc" id="L958">                  }</span>
+<span class="nc" id="L959">                });</span>
+      } else {
+<span class="nc" id="L961">        getRangesMaps()</span>
+<span class="nc" id="L962">            .values()</span>
+<span class="nc" id="L963">            .forEach(</span>
+                vList -&gt; {
+<span class="nc bnc" id="L965" title="All 2 branches missed.">                  for (Coprocessor.KeyRange range : vList) {</span>
+<span class="nc" id="L966">                    sb.append(KeyUtils.formatBytesUTF8(range));</span>
+<span class="nc" id="L967">                  }</span>
+<span class="nc" id="L968">                });</span>
+      }
+<span class="nc" id="L970">      sb.append(&quot;]&quot;);</span>
+    }
+
+<span class="nc bnc" id="L973" title="All 2 branches missed.">    if (!getPushDownFilters().isEmpty()) {</span>
+<span class="nc" id="L974">      sb.append(&quot;, Aggregates: &quot;);</span>
+<span class="nc" id="L975">      Joiner.on(&quot;, &quot;).skipNulls().appendTo(sb, getPushDownAggregates());</span>
+    }
+
+<span class="nc bnc" id="L978" title="All 2 branches missed.">    if (!getGroupByItems().isEmpty()) {</span>
+<span class="nc" id="L979">      sb.append(&quot;, Group By: &quot;);</span>
+<span class="nc" id="L980">      Joiner.on(&quot;, &quot;).skipNulls().appendTo(sb, getGroupByItems());</span>
+    }
+
+<span class="nc bnc" id="L983" title="All 2 branches missed.">    if (!getOrderByItems().isEmpty()) {</span>
+<span class="nc" id="L984">      sb.append(&quot;, Order By: &quot;);</span>
+<span class="nc" id="L985">      Joiner.on(&quot;, &quot;).skipNulls().appendTo(sb, getOrderByItems());</span>
+    }
+
+<span class="nc bnc" id="L988" title="All 2 branches missed.">    if (getLimit() != 0) {</span>
+<span class="nc" id="L989">      sb.append(&quot;, Limit: &quot;);</span>
+<span class="nc" id="L990">      sb.append(&quot;[&quot;).append(limit).append(&quot;]&quot;);</span>
+    }
+<span class="nc" id="L992">    sb.append(&quot;, startTs: &quot;).append(startTs.getVersion());</span>
+<span class="nc" id="L993">    return sb.toString();</span>
+  }
+
+  public TiDAGRequest copy() {
+    try {
+<span class="nc" id="L998">      ByteArrayOutputStream baos = new ByteArrayOutputStream();</span>
+<span class="nc" id="L999">      ObjectOutputStream oos = new ObjectOutputStream(baos);</span>
+<span class="nc" id="L1000">      oos.writeObject(this);</span>
+<span class="nc" id="L1001">      ByteArrayInputStream bais = new ByteArrayInputStream(baos.toByteArray());</span>
+<span class="nc" id="L1002">      ObjectInputStream ois = new ObjectInputStream(bais);</span>
+<span class="nc" id="L1003">      return ((TiDAGRequest) ois.readObject());</span>
+<span class="nc" id="L1004">    } catch (Exception e) {</span>
+<span class="nc" id="L1005">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  public TiDAGRequest copyReqWithPhysicalId(long id) {
+<span class="nc" id="L1010">    TiDAGRequest req = this.copy();</span>
+<span class="nc" id="L1011">    req.setPhysicalId(id);</span>
+<span class="nc" id="L1012">    List&lt;Coprocessor.KeyRange&gt; currentIdRange = req.getRangesByPhysicalId(id);</span>
+<span class="nc" id="L1013">    req.resetRanges();</span>
+<span class="nc" id="L1014">    Map&lt;Long, List&lt;Coprocessor.KeyRange&gt;&gt; rangeMap = new HashMap&lt;&gt;();</span>
+<span class="nc" id="L1015">    rangeMap.put(id, currentIdRange);</span>
+<span class="nc" id="L1016">    req.addRanges(rangeMap);</span>
+<span class="nc" id="L1017">    return req;</span>
+  }
+
+<span class="nc" id="L1020">  public enum TruncateMode {</span>
+<span class="nc" id="L1021">    IgnoreTruncation(0x1),</span>
+<span class="nc" id="L1022">    TruncationAsWarning(0x2);</span>
+
+    private final long mask;
+
+<span class="nc" id="L1026">    TruncateMode(long mask) {</span>
+<span class="nc" id="L1027">      this.mask = mask;</span>
+<span class="nc" id="L1028">    }</span>
+
+    public long mask(long flags) {
+<span class="nc" id="L1031">      return flags | mask;</span>
+    }
+  }
+
+  /** Whether we use streaming to push down the request */
+<span class="nc" id="L1036">  public enum PushDownType {</span>
+<span class="nc" id="L1037">    STREAMING,</span>
+<span class="nc" id="L1038">    NORMAL</span>
+  }
+
+<span class="nc" id="L1041">  public enum IndexScanType {</span>
+<span class="nc" id="L1042">    INDEX_SCAN,</span>
+<span class="nc" id="L1043">    COVERING_INDEX_SCAN,</span>
+<span class="nc" id="L1044">    TABLE_SCAN</span>
+  }
+
+<span class="nc" id="L1047">  public static class Builder {</span>
+<span class="nc" id="L1048">    private final List&lt;String&gt; requiredCols = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L1049">    private final List&lt;Expression&gt; filters = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L1050">    private final List&lt;ByItem&gt; orderBys = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L1051">    private final Map&lt;Long, List&lt;Coprocessor.KeyRange&gt;&gt; ranges = new HashMap&lt;&gt;();</span>
+    private TiTableInfo tableInfo;
+    private long physicalId;
+    private int limit;
+    private TiTimestamp startTs;
+
+    public static Builder newBuilder() {
+<span class="nc" id="L1058">      return new Builder();</span>
+    }
+
+    public Builder setFullTableScan(TiTableInfo tableInfo) {
+<span class="nc" id="L1062">      requireNonNull(tableInfo);</span>
+<span class="nc" id="L1063">      setTableInfo(tableInfo);</span>
+<span class="nc bnc" id="L1064" title="All 2 branches missed.">      if (!tableInfo.isPartitionEnabled()) {</span>
+<span class="nc" id="L1065">        RowKey start = RowKey.createMin(tableInfo.getId());</span>
+<span class="nc" id="L1066">        RowKey end = RowKey.createBeyondMax(tableInfo.getId());</span>
+<span class="nc" id="L1067">        ranges.put(</span>
+<span class="nc" id="L1068">            tableInfo.getId(),</span>
+<span class="nc" id="L1069">            ImmutableList.of(</span>
+<span class="nc" id="L1070">                KeyRangeUtils.makeCoprocRange(start.toByteString(), end.toByteString())));</span>
+<span class="nc" id="L1071">      } else {</span>
+<span class="nc bnc" id="L1072" title="All 2 branches missed.">        for (TiPartitionDef pDef : tableInfo.getPartitionInfo().getDefs()) {</span>
+<span class="nc" id="L1073">          RowKey start = RowKey.createMin(pDef.getId());</span>
+<span class="nc" id="L1074">          RowKey end = RowKey.createBeyondMax(pDef.getId());</span>
+<span class="nc" id="L1075">          ranges.put(</span>
+<span class="nc" id="L1076">              pDef.getId(),</span>
+<span class="nc" id="L1077">              ImmutableList.of(</span>
+<span class="nc" id="L1078">                  KeyRangeUtils.makeCoprocRange(start.toByteString(), end.toByteString())));</span>
+<span class="nc" id="L1079">        }</span>
+      }
+
+<span class="nc" id="L1082">      return this;</span>
+    }
+
+    public Builder setLimit(int limit) {
+<span class="nc" id="L1086">      this.limit = limit;</span>
+<span class="nc" id="L1087">      return this;</span>
+    }
+
+    public Builder setTableInfo(TiTableInfo tableInfo) {
+<span class="nc" id="L1091">      this.tableInfo = tableInfo;</span>
+<span class="nc" id="L1092">      setPhysicalId(tableInfo.getId());</span>
+<span class="nc" id="L1093">      return this;</span>
+    }
+
+    public Builder setPhysicalId(long id) {
+<span class="nc" id="L1097">      this.physicalId = id;</span>
+<span class="nc" id="L1098">      return this;</span>
+    }
+
+    public Builder addRequiredCols(List&lt;String&gt; cols) {
+<span class="nc" id="L1102">      this.requiredCols.addAll(cols);</span>
+<span class="nc" id="L1103">      return this;</span>
+    }
+
+    public Builder addFilter(Expression filter) {
+<span class="nc" id="L1107">      this.filters.add(filter);</span>
+<span class="nc" id="L1108">      return this;</span>
+    }
+
+    public Builder addOrderBy(ByItem item) {
+<span class="nc" id="L1112">      this.orderBys.add(item);</span>
+<span class="nc" id="L1113">      return this;</span>
+    }
+
+    public Builder setStartTs(@Nonnull TiTimestamp ts) {
+<span class="nc" id="L1117">      this.startTs = ts;</span>
+<span class="nc" id="L1118">      return this;</span>
+    }
+
+    public TiDAGRequest build(PushDownType pushDownType) {
+<span class="nc" id="L1122">      TiDAGRequest req = new TiDAGRequest(pushDownType);</span>
+<span class="nc" id="L1123">      req.setTableInfo(tableInfo);</span>
+<span class="nc" id="L1124">      req.setPhysicalId(physicalId);</span>
+<span class="nc" id="L1125">      req.addRanges(ranges);</span>
+<span class="nc" id="L1126">      req.addFilters(filters);</span>
+      // this request will push down all filters
+<span class="nc" id="L1128">      req.addPushDownFilters();</span>
+<span class="nc bnc" id="L1129" title="All 2 branches missed.">      if (!orderBys.isEmpty()) {</span>
+<span class="nc" id="L1130">        orderBys.forEach(req::addOrderByItem);</span>
+      }
+<span class="nc bnc" id="L1132" title="All 2 branches missed.">      if (limit != 0) {</span>
+<span class="nc" id="L1133">        req.setLimit(limit);</span>
+      }
+<span class="nc" id="L1135">      requiredCols.forEach(c -&gt; req.addRequiredColumn(ColumnRef.create(c, tableInfo.getColumn(c))));</span>
+<span class="nc" id="L1136">      req.setStartTs(startTs);</span>
+
+<span class="nc" id="L1138">      return req;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

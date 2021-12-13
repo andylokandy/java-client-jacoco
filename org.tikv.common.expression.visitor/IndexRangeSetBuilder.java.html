@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>IndexRangeSetBuilder.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.expression.visitor</a> &gt; <span class="el_source">IndexRangeSetBuilder.java</span></div><h1>IndexRangeSetBuilder.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.expression.visitor;
+
+import com.google.common.collect.Range;
+import com.google.common.collect.RangeSet;
+import com.google.common.collect.TreeRangeSet;
+import java.util.HashMap;
+import java.util.Map;
+import org.tikv.common.expression.ColumnRef;
+import org.tikv.common.expression.ComparisonBinaryExpression;
+import org.tikv.common.expression.ComparisonBinaryExpression.NormalizedPredicate;
+import org.tikv.common.expression.StringRegExpression;
+import org.tikv.common.key.TypedKey;
+import org.tikv.common.meta.TiIndexColumn;
+import org.tikv.common.meta.TiIndexInfo;
+import org.tikv.common.meta.TiTableInfo;
+import org.tikv.common.types.DataType;
+
+public class IndexRangeSetBuilder extends RangeSetBuilder&lt;TypedKey&gt; {
+
+  private final Map&lt;ColumnRef, Integer&gt; lengths; // length of corresponding ColumnRef
+
+<span class="nc" id="L37">  public IndexRangeSetBuilder(TiTableInfo table, TiIndexInfo index) {</span>
+<span class="nc" id="L38">    Map&lt;ColumnRef, Integer&gt; result = new HashMap&lt;&gt;();</span>
+<span class="nc bnc" id="L39" title="All 4 branches missed.">    if (table != null &amp;&amp; index != null) {</span>
+<span class="nc bnc" id="L40" title="All 2 branches missed.">      for (TiIndexColumn indexColumn : index.getIndexColumns()) {</span>
+<span class="nc" id="L41">        ColumnRef columnRef = ColumnRef.create(indexColumn.getName(), table);</span>
+<span class="nc" id="L42">        result.put(columnRef, (int) indexColumn.getLength());</span>
+<span class="nc" id="L43">      }</span>
+    }
+<span class="nc" id="L45">    this.lengths = result;</span>
+<span class="nc" id="L46">  }</span>
+
+  @Override
+  protected RangeSet&lt;TypedKey&gt; visit(ComparisonBinaryExpression node, Void context) {
+<span class="nc" id="L50">    NormalizedPredicate predicate = node.normalize();</span>
+<span class="nc bnc" id="L51" title="All 2 branches missed.">    if (predicate == null) {</span>
+<span class="nc" id="L52">      throwOnError(node);</span>
+    }
+    // In order to match a prefix index, we have to cut the literal by prefix length.
+    // e.g., for table t:
+    // CREATE TABLE `t` {
+    //     `b` VARCHAR(10) DEFAULT NULL,
+    //     KEY `prefix_index` (`b`(2))
+    // }
+    //
+    // b(2) &gt; &quot;bbc&quot; -&gt; [&quot;bb&quot;, +∞)
+    // b(2) &gt;= &quot;bbc&quot; -&gt; [&quot;bb&quot;, +∞)
+    // b(2) &lt; &quot;bbc&quot; -&gt; (-∞, &quot;bb&quot;]
+    // b(2) &lt;= &quot;bbc&quot; -&gt; (-∞, &quot;bb&quot;]
+    // b(2) = &quot;bbc&quot; -&gt; [&quot;bb&quot;, &quot;bb&quot;]
+    // b(2) &gt; &quot;b&quot; -&gt; [&quot;b&quot;, +∞)
+    // b(2) &gt;= &quot;b&quot; -&gt; [&quot;b&quot;, +∞)
+    // b(2) &lt; &quot;b&quot; -&gt; (-∞, &quot;b&quot;]
+    // b(2) &lt;= &quot;b&quot; -&gt; (-∞, &quot;b&quot;]
+    //
+    // For varchar, `b`(2) will take first two characters(bytes) as prefix index.
+    // TODO: Note that TiDB only supports UTF-8, we need to check if prefix index behave differently
+    // under other encoding methods
+<span class="nc" id="L74">    int prefixLen = lengths.getOrDefault(predicate.getColumnRef(), DataType.UNSPECIFIED_LEN);</span>
+<span class="nc" id="L75">    TypedKey literal = predicate.getTypedLiteral(prefixLen);</span>
+<span class="nc bnc" id="L76" title="All 2 branches missed.">    boolean loose = !DataType.isLengthUnSpecified(prefixLen);</span>
+    // With prefix length specified, the filter is loosen and so should the ranges
+<span class="nc" id="L78">    return visitComparisonBinaryExpr(node, context, literal, loose);</span>
+  }
+
+  @Override
+  protected RangeSet&lt;TypedKey&gt; visit(StringRegExpression node, Void context) {
+<span class="nc" id="L83">    ColumnRef columnRef = node.getColumnRef();</span>
+    // In order to match a prefix index, we have to cut the literal by prefix length.
+    // e.g., for table t:
+    // CREATE TABLE `t` {
+    //     `c1` VARCHAR(10) DEFAULT NULL,
+    //     KEY `prefix_index` (`c`(2))
+    // }
+    // when the predicate is `c1` LIKE 'abc%', the index range should be ['ab', 'ab'].
+    // when the predicate is `c1` LIKE 'a%', the index range should be ['a', 'b').
+    // for varchar, `c1`(2) will take first two characters(bytes) as prefix index.
+    // TODO: Note that TiDB only supports UTF-8, we need to check if prefix index behave differently
+    // under other encoding methods
+<span class="nc" id="L95">    int prefixLen = lengths.getOrDefault(columnRef, DataType.UNSPECIFIED_LEN);</span>
+<span class="nc" id="L96">    TypedKey literal = node.getTypedLiteral(prefixLen);</span>
+<span class="nc" id="L97">    RangeSet&lt;TypedKey&gt; ranges = TreeRangeSet.create();</span>
+
+<span class="nc bnc" id="L99" title="All 2 branches missed.">    switch (node.getRegType()) {</span>
+      case STARTS_WITH:
+<span class="nc" id="L101">        ranges.add(Range.atLeast(literal).intersection(Range.lessThan(literal.next())));</span>
+<span class="nc" id="L102">        break;</span>
+      default:
+<span class="nc" id="L104">        throwOnError(node);</span>
+    }
+<span class="nc" id="L106">    return ranges;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

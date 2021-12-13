@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PartAndFilterExprRewriter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.expression.visitor</a> &gt; <span class="el_source">PartAndFilterExprRewriter.java</span></div><h1>PartAndFilterExprRewriter.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.expression.visitor;
+
+import java.util.Objects;
+import java.util.Set;
+import org.tikv.common.expression.*;
+import org.tikv.common.expression.ComparisonBinaryExpression.NormalizedPredicate;
+import org.tikv.common.expression.FuncCallExpr.Type;
+import org.tikv.common.predicates.PredicateUtils;
+
+/**
+ * PartAndFilterExprRewriter takes partition expression as an input. Rewriting rule is based on the
+ * type of partition expression. 1. If partition expression is a columnRef, no rewriting will be
+ * performed. 2. If partition expression is year and the expression to be rewritten in the form of y
+ * &lt; '1995-10-10' then its right hand child will be replaced with &quot;1995&quot;. 3. If partition expression
+ * is year and the expression to be rewritten in the form of year(y) &lt; '1995' then its left hand
+ * child will be replaced with y.
+ */
+public class PartAndFilterExprRewriter extends DefaultVisitor&lt;Expression, Void&gt; {
+  private final Expression partExpr;
+  private final Set&lt;ColumnRef&gt; columnRefs;
+
+  private boolean unsupportedPartFnFound;
+
+<span class="nc" id="L39">  public PartAndFilterExprRewriter(Expression partExpr) {</span>
+<span class="nc" id="L40">    Objects.requireNonNull(partExpr, &quot;partition expression cannot be null&quot;);</span>
+<span class="nc" id="L41">    this.partExpr = partExpr;</span>
+<span class="nc" id="L42">    this.columnRefs = PredicateUtils.extractColumnRefFromExpression(partExpr);</span>
+<span class="nc" id="L43">  }</span>
+
+  private boolean isYear() {
+<span class="nc bnc" id="L46" title="All 4 branches missed.">    return partExpr instanceof FuncCallExpr &amp;&amp; ((FuncCallExpr) partExpr).getFuncTp() == Type.YEAR;</span>
+  }
+
+  private boolean isColumnRef() {
+<span class="nc" id="L50">    return partExpr instanceof ColumnRef;</span>
+  }
+
+  @Override
+  protected Expression process(Expression node, Void context) {
+<span class="nc bnc" id="L55" title="All 2 branches missed.">    for (Expression expr : node.getChildren()) {</span>
+<span class="nc" id="L56">      expr.accept(this, context);</span>
+<span class="nc" id="L57">    }</span>
+<span class="nc" id="L58">    return node;</span>
+  }
+
+  public Expression visit(LogicalBinaryExpression node, Void context) {
+<span class="nc" id="L62">    Expression left = node.getLeft().accept(this, null);</span>
+<span class="nc" id="L63">    Expression right = node.getRight().accept(this, null);</span>
+<span class="nc" id="L64">    return new LogicalBinaryExpression(node.getCompType(), left, right);</span>
+  }
+
+  @Override
+  public Expression visit(FuncCallExpr node, Void context) {
+<span class="nc bnc" id="L69" title="All 2 branches missed.">    if (node.getFuncTp() == Type.YEAR) {</span>
+<span class="nc" id="L70">      return node.getExpression();</span>
+    }
+    // other's is not supported right now.
+    // TODO: when adding new type in FuncCallExpr, please also modify here
+    // accordingly.
+<span class="nc" id="L75">    return node;</span>
+  }
+
+  @Override
+  public Expression visit(Constant node, Void context) {
+<span class="nc" id="L80">    return node;</span>
+  }
+
+  @Override
+  public Expression visit(ComparisonBinaryExpression node, Void context) {
+<span class="nc" id="L85">    NormalizedPredicate predicate = node.normalize();</span>
+    // predicate maybe null if node's left or right does not have a column ref or a constant.
+<span class="nc bnc" id="L87" title="All 2 branches missed.">    if (predicate != null) {</span>
+<span class="nc bnc" id="L88" title="All 2 branches missed.">      if (!columnRefs.contains(predicate.getColumnRef())) {</span>
+<span class="nc" id="L89">        return node;</span>
+      }
+      // we only support year for now.
+<span class="nc bnc" id="L92" title="All 2 branches missed.">      if (isYear()) {</span>
+<span class="nc" id="L93">        FuncCallExpr year = new FuncCallExpr(predicate.getValue(), Type.YEAR);</span>
+<span class="nc" id="L94">        Constant newLiteral = year.eval(predicate.getValue());</span>
+<span class="nc" id="L95">        return new ComparisonBinaryExpression(node.getComparisonType(), node.getLeft(), newLiteral);</span>
+<span class="nc bnc" id="L96" title="All 2 branches missed.">      } else if (isColumnRef()) {</span>
+<span class="nc" id="L97">        return node;</span>
+      }
+<span class="nc" id="L99">      unsupportedPartFnFound = true;</span>
+<span class="nc" id="L100">      return null;</span>
+    }
+
+    // when we find a node in form like [year(y) &lt; 1995], we need rewrite the left child.
+<span class="nc" id="L104">    Expression left = node.getLeft().accept(this, null);</span>
+<span class="nc" id="L105">    Expression right = node.getRight().accept(this, null);</span>
+<span class="nc" id="L106">    return new ComparisonBinaryExpression(node.getComparisonType(), left, right);</span>
+  }
+
+  public Expression rewrite(Expression target) {
+<span class="nc" id="L110">    return target.accept(this, null);</span>
+  }
+
+  public boolean isUnsupportedPartFnFound() {
+<span class="nc" id="L114">    return unsupportedPartFnFound;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

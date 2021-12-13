@@ -1,0 +1,646 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TwoPhaseCommitter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.txn</a> &gt; <span class="el_source">TwoPhaseCommitter.java</span></div><h1>TwoPhaseCommitter.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.txn;
+
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import com.google.protobuf.ByteString;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.BytePairWrapper;
+import org.tikv.common.TiSession;
+import org.tikv.common.codec.KeyUtils;
+import org.tikv.common.exception.GrpcException;
+import org.tikv.common.exception.TiBatchWriteException;
+import org.tikv.common.region.RegionManager;
+import org.tikv.common.region.TiRegion;
+import org.tikv.common.region.TiStore;
+import org.tikv.common.util.BackOffFunction;
+import org.tikv.common.util.BackOffer;
+import org.tikv.common.util.ConcreteBackOffer;
+import org.tikv.common.util.Pair;
+import org.tikv.kvproto.Kvrpcpb;
+import org.tikv.kvproto.Kvrpcpb.Op;
+import org.tikv.txn.type.BatchKeys;
+import org.tikv.txn.type.ClientRPCResult;
+import org.tikv.txn.type.GroupKeyResult;
+
+public class TwoPhaseCommitter {
+
+  /** buffer spark rdd iterator data into memory */
+  private static final int WRITE_BUFFER_SIZE = 32 * 1024;
+
+  /**
+   * TiKV recommends each RPC packet should be less than ~1MB. We keep each packet's Key+Value size
+   * below 768KB.
+   */
+  private static final int TXN_COMMIT_BATCH_SIZE = 768 * 1024;
+
+  /** unit is millisecond */
+  private static final long DEFAULT_BATCH_WRITE_LOCK_TTL = 3600000;
+
+<span class="nc" id="L66">  private static final Logger LOG = LoggerFactory.getLogger(TwoPhaseCommitter.class);</span>
+  /** start timestamp of transaction which get from PD */
+  private final long startTs;
+  /** unit is millisecond */
+  private final long lockTTL;
+
+  private final boolean retryCommitSecondaryKeys;
+
+  private final TxnKVClient kvClient;
+  private final RegionManager regionManager;
+
+  private final long txnPrewriteBatchSize;
+  private final long txnCommitBatchSize;
+  private final int writeBufferSize;
+  private final int writeThreadPerTask;
+  private final int prewriteMaxRetryTimes;
+  private final ExecutorService executorService;
+
+<span class="nc" id="L84">  public TwoPhaseCommitter(TiSession session, long startTime) {</span>
+<span class="nc" id="L85">    this.kvClient = session.createTxnClient();</span>
+<span class="nc" id="L86">    this.regionManager = kvClient.getRegionManager();</span>
+<span class="nc" id="L87">    this.startTs = startTime;</span>
+<span class="nc" id="L88">    this.lockTTL = DEFAULT_BATCH_WRITE_LOCK_TTL;</span>
+<span class="nc" id="L89">    this.retryCommitSecondaryKeys = true;</span>
+<span class="nc" id="L90">    this.txnPrewriteBatchSize = TXN_COMMIT_BATCH_SIZE;</span>
+<span class="nc" id="L91">    this.txnCommitBatchSize = TXN_COMMIT_BATCH_SIZE;</span>
+<span class="nc" id="L92">    this.writeBufferSize = WRITE_BUFFER_SIZE;</span>
+<span class="nc" id="L93">    this.writeThreadPerTask = 1;</span>
+<span class="nc" id="L94">    this.prewriteMaxRetryTimes = 3;</span>
+<span class="nc" id="L95">    this.executorService = createExecutorService();</span>
+<span class="nc" id="L96">  }</span>
+
+  public TwoPhaseCommitter(
+      TiSession session,
+      long startTime,
+      long lockTTL,
+      long txnPrewriteBatchSize,
+      long txnCommitBatchSize,
+      int writeBufferSize,
+      int writeThreadPerTask,
+      boolean retryCommitSecondaryKeys,
+<span class="nc" id="L107">      int prewriteMaxRetryTimes) {</span>
+<span class="nc" id="L108">    this.kvClient = session.createTxnClient();</span>
+<span class="nc" id="L109">    this.regionManager = kvClient.getRegionManager();</span>
+<span class="nc" id="L110">    this.startTs = startTime;</span>
+<span class="nc" id="L111">    this.lockTTL = lockTTL;</span>
+<span class="nc" id="L112">    this.retryCommitSecondaryKeys = retryCommitSecondaryKeys;</span>
+<span class="nc" id="L113">    this.txnPrewriteBatchSize = txnPrewriteBatchSize;</span>
+<span class="nc" id="L114">    this.txnCommitBatchSize = txnCommitBatchSize;</span>
+<span class="nc" id="L115">    this.writeBufferSize = writeBufferSize;</span>
+<span class="nc" id="L116">    this.writeThreadPerTask = writeThreadPerTask;</span>
+<span class="nc" id="L117">    this.prewriteMaxRetryTimes = prewriteMaxRetryTimes;</span>
+<span class="nc" id="L118">    this.executorService = createExecutorService();</span>
+<span class="nc" id="L119">  }</span>
+
+  private ExecutorService createExecutorService() {
+<span class="nc" id="L122">    return Executors.newFixedThreadPool(</span>
+        writeThreadPerTask,
+<span class="nc" id="L124">        new ThreadFactoryBuilder().setNameFormat(&quot;2pc-pool-%d&quot;).setDaemon(true).build());</span>
+  }
+
+  public void close() throws Exception {
+<span class="nc bnc" id="L128" title="All 2 branches missed.">    if (executorService != null) {</span>
+<span class="nc" id="L129">      executorService.shutdownNow();</span>
+    }
+<span class="nc" id="L131">  }</span>
+
+  /**
+   * 2pc - prewrite primary key
+   *
+   * @param backOffer
+   * @param primaryKey
+   * @param value
+   * @return
+   */
+  public void prewritePrimaryKey(BackOffer backOffer, byte[] primaryKey, byte[] value)
+      throws TiBatchWriteException {
+<span class="nc" id="L143">    this.doPrewritePrimaryKeyWithRetry(</span>
+<span class="nc" id="L144">        backOffer, ByteString.copyFrom(primaryKey), ByteString.copyFrom(value));</span>
+<span class="nc" id="L145">  }</span>
+
+  private void doPrewritePrimaryKeyWithRetry(BackOffer backOffer, ByteString key, ByteString value)
+      throws TiBatchWriteException {
+<span class="nc" id="L149">    Pair&lt;TiRegion, TiStore&gt; pair = this.regionManager.getRegionStorePairByKey(key, backOffer);</span>
+<span class="nc" id="L150">    TiRegion tiRegion = pair.first;</span>
+<span class="nc" id="L151">    TiStore store = pair.second;</span>
+
+    Kvrpcpb.Mutation mutation;
+<span class="nc bnc" id="L154" title="All 2 branches missed.">    if (!value.isEmpty()) {</span>
+<span class="nc" id="L155">      mutation = Kvrpcpb.Mutation.newBuilder().setKey(key).setValue(value).setOp(Op.Put).build();</span>
+    } else {
+<span class="nc" id="L157">      mutation = Kvrpcpb.Mutation.newBuilder().setKey(key).setOp(Op.Del).build();</span>
+    }
+<span class="nc" id="L159">    List&lt;Kvrpcpb.Mutation&gt; mutationList = Collections.singletonList(mutation);</span>
+
+    // send rpc request to tikv server
+<span class="nc" id="L162">    long lockTTL = getTxnLockTTL(this.startTs);</span>
+<span class="nc" id="L163">    ClientRPCResult prewriteResult =</span>
+<span class="nc" id="L164">        this.kvClient.prewrite(</span>
+            backOffer, mutationList, key, lockTTL, this.startTs, tiRegion, store);
+<span class="nc bnc" id="L166" title="All 4 branches missed.">    if (!prewriteResult.isSuccess() &amp;&amp; !prewriteResult.isRetry()) {</span>
+<span class="nc" id="L167">      throw new TiBatchWriteException(&quot;prewrite primary key error&quot;, prewriteResult.getException());</span>
+    }
+<span class="nc bnc" id="L169" title="All 2 branches missed.">    if (prewriteResult.isRetry()) {</span>
+      try {
+<span class="nc" id="L171">        backOffer.doBackOff(</span>
+            BackOffFunction.BackOffFuncType.BoRegionMiss,
+            new GrpcException(
+<span class="nc" id="L174">                String.format(&quot;Txn prewrite primary key failed, regionId=%s&quot;, tiRegion.getId()),</span>
+<span class="nc" id="L175">                prewriteResult.getException()));</span>
+        // re-split keys and commit again.
+<span class="nc" id="L177">        this.doPrewritePrimaryKeyWithRetry(backOffer, key, value);</span>
+<span class="nc" id="L178">      } catch (GrpcException e) {</span>
+<span class="nc" id="L179">        String errorMsg =</span>
+<span class="nc" id="L180">            String.format(</span>
+                &quot;Txn prewrite primary key error, re-split commit failed, regionId=%s, detail=%s&quot;,
+<span class="nc" id="L182">                tiRegion.getId(), e.getMessage());</span>
+<span class="nc" id="L183">        throw new TiBatchWriteException(errorMsg, e);</span>
+<span class="nc" id="L184">      }</span>
+    }
+
+<span class="nc" id="L187">    LOG.info(&quot;prewrite primary key {} successfully&quot;, KeyUtils.formatBytes(key));</span>
+<span class="nc" id="L188">  }</span>
+
+  /**
+   * 2pc - commit primary key
+   *
+   * @param backOffer
+   * @param key
+   * @return
+   */
+  public void commitPrimaryKey(BackOffer backOffer, byte[] key, long commitTs)
+      throws TiBatchWriteException {
+<span class="nc" id="L199">    doCommitPrimaryKeyWithRetry(backOffer, ByteString.copyFrom(key), commitTs);</span>
+<span class="nc" id="L200">  }</span>
+
+  private void doCommitPrimaryKeyWithRetry(BackOffer backOffer, ByteString key, long commitTs)
+      throws TiBatchWriteException {
+<span class="nc" id="L204">    Pair&lt;TiRegion, TiStore&gt; pair = this.regionManager.getRegionStorePairByKey(key, backOffer);</span>
+<span class="nc" id="L205">    TiRegion tiRegion = pair.first;</span>
+<span class="nc" id="L206">    TiStore store = pair.second;</span>
+<span class="nc" id="L207">    ByteString[] keys = new ByteString[] {key};</span>
+
+    // send rpc request to tikv server
+<span class="nc" id="L210">    ClientRPCResult commitResult =</span>
+<span class="nc" id="L211">        this.kvClient.commit(backOffer, keys, this.startTs, commitTs, tiRegion, store);</span>
+
+<span class="nc bnc" id="L213" title="All 2 branches missed.">    if (!commitResult.isSuccess()) {</span>
+<span class="nc bnc" id="L214" title="All 2 branches missed.">      if (!commitResult.isRetry()) {</span>
+<span class="nc" id="L215">        throw new TiBatchWriteException(&quot;commit primary key error&quot;, commitResult.getException());</span>
+      } else {
+<span class="nc" id="L217">        backOffer.doBackOff(</span>
+            BackOffFunction.BackOffFuncType.BoRegionMiss,
+            new GrpcException(
+<span class="nc" id="L220">                String.format(&quot;Txn commit primary key failed, regionId=%s&quot;, tiRegion.getId()),</span>
+<span class="nc" id="L221">                commitResult.getException()));</span>
+        // re-split keys and commit again.
+<span class="nc" id="L223">        this.doCommitPrimaryKeyWithRetry(backOffer, key, commitTs);</span>
+      }
+    }
+
+<span class="nc" id="L227">    LOG.info(&quot;commit primary key {} successfully&quot;, KeyUtils.formatBytes(key));</span>
+<span class="nc" id="L228">  }</span>
+
+  /**
+   * 2pc - prewrite secondary keys
+   *
+   * @param primaryKey
+   * @param pairs
+   * @return
+   */
+  public void prewriteSecondaryKeys(
+      byte[] primaryKey, Iterator&lt;BytePairWrapper&gt; pairs, int maxBackOfferMS)
+      throws TiBatchWriteException {
+<span class="nc" id="L240">    Iterator&lt;Pair&lt;ByteString, ByteString&gt;&gt; byteStringKeys =</span>
+<span class="nc" id="L241">        new Iterator&lt;Pair&lt;ByteString, ByteString&gt;&gt;() {</span>
+
+          @Override
+          public boolean hasNext() {
+<span class="nc" id="L245">            return pairs.hasNext();</span>
+          }
+
+          @Override
+          public Pair&lt;ByteString, ByteString&gt; next() {
+<span class="nc" id="L250">            BytePairWrapper pair = pairs.next();</span>
+<span class="nc" id="L251">            return new Pair&lt;&gt;(</span>
+<span class="nc" id="L252">                ByteString.copyFrom(pair.getKey()), ByteString.copyFrom(pair.getValue()));</span>
+          }
+        };
+
+<span class="nc" id="L256">    doPrewriteSecondaryKeys(ByteString.copyFrom(primaryKey), byteStringKeys, maxBackOfferMS);</span>
+<span class="nc" id="L257">  }</span>
+
+  private void doPrewriteSecondaryKeys(
+      ByteString primaryKey, Iterator&lt;Pair&lt;ByteString, ByteString&gt;&gt; pairs, int maxBackOfferMS)
+      throws TiBatchWriteException {
+    try {
+<span class="nc" id="L263">      int taskBufferSize = writeThreadPerTask * 2;</span>
+<span class="nc" id="L264">      int totalSize = 0, cnt = 0;</span>
+      Pair&lt;ByteString, ByteString&gt; pair;
+<span class="nc" id="L266">      ExecutorCompletionService&lt;Void&gt; completionService =</span>
+          new ExecutorCompletionService&lt;&gt;(executorService);
+<span class="nc bnc" id="L268" title="All 2 branches missed.">      while (pairs.hasNext()) {</span>
+<span class="nc" id="L269">        int size = 0;</span>
+<span class="nc" id="L270">        ByteString[] keyBytes = new ByteString[writeBufferSize];</span>
+<span class="nc" id="L271">        ByteString[] valueBytes = new ByteString[writeBufferSize];</span>
+<span class="nc bnc" id="L272" title="All 4 branches missed.">        while (size &lt; writeBufferSize &amp;&amp; pairs.hasNext()) {</span>
+<span class="nc" id="L273">          pair = pairs.next();</span>
+<span class="nc" id="L274">          keyBytes[size] = pair.first;</span>
+<span class="nc" id="L275">          valueBytes[size] = pair.second;</span>
+<span class="nc" id="L276">          size++;</span>
+        }
+<span class="nc" id="L278">        int curSize = size;</span>
+<span class="nc" id="L279">        cnt++;</span>
+<span class="nc bnc" id="L280" title="All 2 branches missed.">        if (cnt &gt; taskBufferSize) {</span>
+          // consume one task if reaches task limit
+<span class="nc" id="L282">          completionService.take().get();</span>
+        }
+<span class="nc" id="L284">        BackOffer backOffer = ConcreteBackOffer.newCustomBackOff(maxBackOfferMS);</span>
+<span class="nc" id="L285">        completionService.submit(</span>
+            () -&gt; {
+<span class="nc" id="L287">              doPrewriteSecondaryKeysInBatchesWithRetry(</span>
+                  backOffer, primaryKey, keyBytes, valueBytes, curSize, 0);
+<span class="nc" id="L289">              return null;</span>
+            });
+
+<span class="nc" id="L292">        totalSize = totalSize + size;</span>
+<span class="nc" id="L293">      }</span>
+
+<span class="nc bnc" id="L295" title="All 2 branches missed.">      for (int i = 0; i &lt; Math.min(taskBufferSize, cnt); i++) {</span>
+<span class="nc" id="L296">        completionService.take().get();</span>
+      }
+
+<span class="nc" id="L299">    } catch (InterruptedException e) {</span>
+<span class="nc" id="L300">      Thread.currentThread().interrupt();</span>
+<span class="nc" id="L301">      throw new TiBatchWriteException(&quot;Current thread interrupted.&quot;, e);</span>
+<span class="nc" id="L302">    } catch (ExecutionException e) {</span>
+<span class="nc" id="L303">      throw new TiBatchWriteException(&quot;Execution exception met.&quot;, e);</span>
+<span class="nc" id="L304">    }</span>
+<span class="nc" id="L305">  }</span>
+
+  private void doPrewriteSecondaryKeysInBatchesWithRetry(
+      BackOffer backOffer,
+      ByteString primaryKey,
+      ByteString[] keys,
+      ByteString[] values,
+      int size,
+      int level)
+      throws TiBatchWriteException {
+<span class="nc bnc" id="L315" title="All 10 branches missed.">    if (keys == null || keys.length == 0 || values == null || values.length == 0 || size &lt;= 0) {</span>
+      // return success
+<span class="nc" id="L317">      return;</span>
+    }
+
+<span class="nc" id="L320">    Map&lt;ByteString, Kvrpcpb.Mutation&gt; mutations = new LinkedHashMap&lt;&gt;();</span>
+<span class="nc bnc" id="L321" title="All 2 branches missed.">    for (int i = 0; i &lt; size; i++) {</span>
+<span class="nc" id="L322">      ByteString key = keys[i];</span>
+<span class="nc" id="L323">      ByteString value = values[i];</span>
+
+      Kvrpcpb.Mutation mutation;
+<span class="nc bnc" id="L326" title="All 2 branches missed.">      if (!value.isEmpty()) {</span>
+<span class="nc" id="L327">        mutation = Kvrpcpb.Mutation.newBuilder().setKey(key).setValue(value).setOp(Op.Put).build();</span>
+      } else {
+        // value can be null (table with one primary key integer column, data is encoded in key)
+<span class="nc" id="L330">        mutation = Kvrpcpb.Mutation.newBuilder().setKey(key).setOp(Op.Del).build();</span>
+      }
+<span class="nc" id="L332">      mutations.put(key, mutation);</span>
+    }
+
+    // groups keys by region
+<span class="nc" id="L336">    GroupKeyResult groupResult = this.groupKeysByRegion(keys, size, backOffer);</span>
+<span class="nc" id="L337">    List&lt;BatchKeys&gt; batchKeyList = new LinkedList&lt;&gt;();</span>
+<span class="nc" id="L338">    Map&lt;Pair&lt;TiRegion, TiStore&gt;, List&lt;ByteString&gt;&gt; groupKeyMap = groupResult.getGroupsResult();</span>
+
+<span class="nc bnc" id="L340" title="All 2 branches missed.">    for (Map.Entry&lt;Pair&lt;TiRegion, TiStore&gt;, List&lt;ByteString&gt;&gt; entry : groupKeyMap.entrySet()) {</span>
+<span class="nc" id="L341">      TiRegion tiRegion = entry.getKey().first;</span>
+<span class="nc" id="L342">      TiStore store = entry.getKey().second;</span>
+<span class="nc" id="L343">      this.appendBatchBySize(batchKeyList, tiRegion, store, entry.getValue(), true, mutations);</span>
+<span class="nc" id="L344">    }</span>
+
+    // For prewrite, stop sending other requests after receiving first error.
+<span class="nc bnc" id="L347" title="All 2 branches missed.">    for (BatchKeys batchKeys : batchKeyList) {</span>
+<span class="nc" id="L348">      TiRegion oldRegion = batchKeys.getRegion();</span>
+<span class="nc" id="L349">      TiRegion currentRegion =</span>
+<span class="nc" id="L350">          this.regionManager.getRegionByKey(oldRegion.getStartKey(), backOffer);</span>
+<span class="nc bnc" id="L351" title="All 2 branches missed.">      if (oldRegion.equals(currentRegion)) {</span>
+<span class="nc" id="L352">        doPrewriteSecondaryKeySingleBatchWithRetry(backOffer, primaryKey, batchKeys, mutations);</span>
+      } else {
+<span class="nc bnc" id="L354" title="All 2 branches missed.">        if (level &gt; prewriteMaxRetryTimes) {</span>
+<span class="nc" id="L355">          throw new TiBatchWriteException(</span>
+<span class="nc" id="L356">              String.format(</span>
+                  &quot;&gt; max retry number %s, oldRegion=%s, currentRegion=%s&quot;,
+<span class="nc" id="L358">                  prewriteMaxRetryTimes, oldRegion, currentRegion));</span>
+        }
+<span class="nc" id="L360">        LOG.info(</span>
+<span class="nc" id="L361">            String.format(</span>
+                &quot;oldRegion=%s != currentRegion=%s, will re-fetch region info and retry&quot;,
+                oldRegion, currentRegion));
+<span class="nc bnc" id="L364" title="All 2 branches missed.">        retryPrewriteBatch(backOffer, primaryKey, batchKeys, mutations, level &lt;= 0 ? 1 : level + 1);</span>
+      }
+<span class="nc" id="L366">    }</span>
+<span class="nc" id="L367">  }</span>
+
+  private void retryPrewriteBatch(
+      BackOffer backOffer,
+      ByteString primaryKey,
+      BatchKeys batchKeys,
+      Map&lt;ByteString, Kvrpcpb.Mutation&gt; mutations,
+      int level) {
+
+<span class="nc" id="L376">    int size = batchKeys.getKeys().size();</span>
+<span class="nc" id="L377">    ByteString[] keyBytes = new ByteString[size];</span>
+<span class="nc" id="L378">    ByteString[] valueBytes = new ByteString[size];</span>
+<span class="nc" id="L379">    int i = 0;</span>
+<span class="nc bnc" id="L380" title="All 2 branches missed.">    for (ByteString k : batchKeys.getKeys()) {</span>
+<span class="nc" id="L381">      keyBytes[i] = k;</span>
+<span class="nc" id="L382">      valueBytes[i] = mutations.get(k).getValue();</span>
+<span class="nc" id="L383">      i++;</span>
+<span class="nc" id="L384">    }</span>
+<span class="nc" id="L385">    doPrewriteSecondaryKeysInBatchesWithRetry(</span>
+        backOffer, primaryKey, keyBytes, valueBytes, size, level);
+<span class="nc" id="L387">  }</span>
+
+  private void doPrewriteSecondaryKeySingleBatchWithRetry(
+      BackOffer backOffer,
+      ByteString primaryKey,
+      BatchKeys batchKeys,
+      Map&lt;ByteString, Kvrpcpb.Mutation&gt; mutations)
+      throws TiBatchWriteException {
+<span class="nc" id="L395">    LOG.info(</span>
+        &quot;start prewrite secondary key, row={}, size={}KB, regionId={}&quot;,
+<span class="nc" id="L397">        batchKeys.getKeys().size(),</span>
+<span class="nc" id="L398">        batchKeys.getSizeInKB(),</span>
+<span class="nc" id="L399">        batchKeys.getRegion().getId());</span>
+
+<span class="nc" id="L401">    List&lt;ByteString&gt; keyList = batchKeys.getKeys();</span>
+<span class="nc" id="L402">    int batchSize = keyList.size();</span>
+<span class="nc" id="L403">    List&lt;Kvrpcpb.Mutation&gt; mutationList = new ArrayList&lt;&gt;(batchSize);</span>
+<span class="nc bnc" id="L404" title="All 2 branches missed.">    for (ByteString key : keyList) {</span>
+<span class="nc" id="L405">      mutationList.add(mutations.get(key));</span>
+<span class="nc" id="L406">    }</span>
+    // send rpc request to tikv server
+<span class="nc" id="L408">    int txnSize = batchKeys.getKeys().size();</span>
+<span class="nc" id="L409">    long lockTTL = getTxnLockTTL(this.startTs, txnSize);</span>
+<span class="nc" id="L410">    ClientRPCResult prewriteResult =</span>
+<span class="nc" id="L411">        this.kvClient.prewrite(</span>
+            backOffer,
+            mutationList,
+            primaryKey,
+            lockTTL,
+            this.startTs,
+<span class="nc" id="L417">            batchKeys.getRegion(),</span>
+<span class="nc" id="L418">            batchKeys.getStore());</span>
+<span class="nc bnc" id="L419" title="All 4 branches missed.">    if (!prewriteResult.isSuccess() &amp;&amp; !prewriteResult.isRetry()) {</span>
+<span class="nc" id="L420">      throw new TiBatchWriteException(</span>
+<span class="nc" id="L421">          &quot;prewrite secondary key error&quot;, prewriteResult.getException());</span>
+    }
+<span class="nc bnc" id="L423" title="All 2 branches missed.">    if (prewriteResult.isRetry()) {</span>
+<span class="nc" id="L424">      LOG.info(&quot;prewrite secondary key fail, will backoff and retry&quot;);</span>
+      try {
+<span class="nc" id="L426">        backOffer.doBackOff(</span>
+            BackOffFunction.BackOffFuncType.BoRegionMiss,
+            new GrpcException(
+<span class="nc" id="L429">                String.format(</span>
+                    &quot;Txn prewrite secondary key SingleBatch failed, regionId=%s&quot;,
+<span class="nc" id="L431">                    batchKeys.getRegion().getId()),</span>
+<span class="nc" id="L432">                prewriteResult.getException()));</span>
+        // re-split keys and commit again.
+<span class="nc" id="L434">        retryPrewriteBatch(backOffer, primaryKey, batchKeys, mutations, 0);</span>
+<span class="nc" id="L435">      } catch (GrpcException e) {</span>
+<span class="nc" id="L436">        String errorMsg =</span>
+<span class="nc" id="L437">            String.format(</span>
+                &quot;Txn prewrite secondary key SingleBatch error, re-split commit failed, regionId=%s, detail=%s&quot;,
+<span class="nc" id="L439">                batchKeys.getRegion().getId(), e.getMessage());</span>
+<span class="nc" id="L440">        throw new TiBatchWriteException(errorMsg, e);</span>
+<span class="nc" id="L441">      }</span>
+    }
+<span class="nc" id="L443">    LOG.info(</span>
+        &quot;prewrite secondary key successfully, row={}, size={}KB, regionId={}&quot;,
+<span class="nc" id="L445">        batchKeys.getKeys().size(),</span>
+<span class="nc" id="L446">        batchKeys.getSizeInKB(),</span>
+<span class="nc" id="L447">        batchKeys.getRegion().getId());</span>
+<span class="nc" id="L448">  }</span>
+
+  private void appendBatchBySize(
+      List&lt;BatchKeys&gt; batchKeyList,
+      TiRegion tiRegion,
+      TiStore store,
+      List&lt;ByteString&gt; keys,
+      boolean sizeIncludeValue,
+      Map&lt;ByteString, Kvrpcpb.Mutation&gt; mutations) {
+<span class="nc bnc" id="L457" title="All 2 branches missed.">    long commitBatchSize = sizeIncludeValue ? txnPrewriteBatchSize : txnCommitBatchSize;</span>
+
+    int start;
+    int end;
+<span class="nc bnc" id="L461" title="All 2 branches missed.">    if (keys == null) {</span>
+<span class="nc" id="L462">      return;</span>
+    }
+<span class="nc" id="L464">    int len = keys.size();</span>
+<span class="nc bnc" id="L465" title="All 2 branches missed.">    for (start = 0; start &lt; len; start = end) {</span>
+<span class="nc" id="L466">      int sizeInBytes = 0;</span>
+<span class="nc bnc" id="L467" title="All 4 branches missed.">      for (end = start; end &lt; len &amp;&amp; sizeInBytes &lt; commitBatchSize; end++) {</span>
+<span class="nc bnc" id="L468" title="All 2 branches missed.">        if (sizeIncludeValue) {</span>
+<span class="nc" id="L469">          sizeInBytes += this.keyValueSize(keys.get(end), mutations);</span>
+        } else {
+<span class="nc" id="L471">          sizeInBytes += this.keySize(keys.get(end));</span>
+        }
+      }
+<span class="nc" id="L474">      BatchKeys batchKeys = new BatchKeys(tiRegion, store, keys.subList(start, end), sizeInBytes);</span>
+<span class="nc" id="L475">      batchKeyList.add(batchKeys);</span>
+    }
+<span class="nc" id="L477">  }</span>
+
+  private long keyValueSize(ByteString key, Map&lt;ByteString, Kvrpcpb.Mutation&gt; mutations) {
+<span class="nc" id="L480">    long size = key.size();</span>
+<span class="nc" id="L481">    Kvrpcpb.Mutation mutation = mutations.get(key);</span>
+<span class="nc bnc" id="L482" title="All 2 branches missed.">    if (mutation != null) {</span>
+<span class="nc" id="L483">      size += mutation.getValue().toByteArray().length;</span>
+    }
+
+<span class="nc" id="L486">    return size;</span>
+  }
+
+  private long keySize(ByteString key) {
+<span class="nc" id="L490">    return key.size();</span>
+  }
+
+  /**
+   * 2pc - commit secondary keys
+   *
+   * @param keys
+   * @param commitTs
+   * @return
+   */
+  public void commitSecondaryKeys(
+      Iterator&lt;org.tikv.common.ByteWrapper&gt; keys, long commitTs, int commitBackOfferMS)
+      throws TiBatchWriteException {
+
+<span class="nc" id="L504">    Iterator&lt;ByteString&gt; byteStringKeys =</span>
+<span class="nc" id="L505">        new Iterator&lt;ByteString&gt;() {</span>
+
+          @Override
+          public boolean hasNext() {
+<span class="nc" id="L509">            return keys.hasNext();</span>
+          }
+
+          @Override
+          public ByteString next() {
+<span class="nc" id="L514">            return ByteString.copyFrom(keys.next().getBytes());</span>
+          }
+        };
+
+<span class="nc" id="L518">    doCommitSecondaryKeys(byteStringKeys, commitTs, commitBackOfferMS);</span>
+<span class="nc" id="L519">  }</span>
+
+  private void doCommitSecondaryKeys(
+      Iterator&lt;ByteString&gt; keys, long commitTs, int commitBackOfferMS)
+      throws TiBatchWriteException {
+    try {
+<span class="nc" id="L525">      int taskBufferSize = writeThreadPerTask * 2;</span>
+<span class="nc" id="L526">      int totalSize = 0, cnt = 0;</span>
+<span class="nc" id="L527">      ExecutorCompletionService&lt;Void&gt; completionService =</span>
+          new ExecutorCompletionService&lt;&gt;(executorService);
+<span class="nc bnc" id="L529" title="All 2 branches missed.">      while (keys.hasNext()) {</span>
+<span class="nc" id="L530">        int size = 0;</span>
+<span class="nc" id="L531">        ByteString[] keyBytes = new ByteString[writeBufferSize];</span>
+<span class="nc bnc" id="L532" title="All 4 branches missed.">        while (size &lt; writeBufferSize &amp;&amp; keys.hasNext()) {</span>
+<span class="nc" id="L533">          keyBytes[size] = keys.next();</span>
+<span class="nc" id="L534">          size++;</span>
+        }
+<span class="nc" id="L536">        int curSize = size;</span>
+<span class="nc" id="L537">        cnt++;</span>
+<span class="nc bnc" id="L538" title="All 2 branches missed.">        if (cnt &gt; taskBufferSize) {</span>
+          // consume one task if reaches task limit
+<span class="nc" id="L540">          completionService.take().get();</span>
+        }
+<span class="nc" id="L542">        BackOffer backOffer = ConcreteBackOffer.newCustomBackOff(commitBackOfferMS);</span>
+<span class="nc" id="L543">        completionService.submit(</span>
+            () -&gt; {
+<span class="nc" id="L545">              doCommitSecondaryKeysWithRetry(backOffer, keyBytes, curSize, commitTs);</span>
+<span class="nc" id="L546">              return null;</span>
+            });
+
+<span class="nc" id="L549">        totalSize = totalSize + size;</span>
+<span class="nc" id="L550">      }</span>
+
+<span class="nc bnc" id="L552" title="All 2 branches missed.">      for (int i = 0; i &lt; Math.min(taskBufferSize, cnt); i++) {</span>
+<span class="nc" id="L553">        completionService.take().get();</span>
+      }
+
+<span class="nc" id="L556">    } catch (InterruptedException e) {</span>
+<span class="nc" id="L557">      Thread.currentThread().interrupt();</span>
+<span class="nc" id="L558">      throw new TiBatchWriteException(&quot;Current thread interrupted.&quot;, e);</span>
+<span class="nc" id="L559">    } catch (ExecutionException e) {</span>
+<span class="nc" id="L560">      throw new TiBatchWriteException(&quot;Execution exception met.&quot;, e);</span>
+<span class="nc" id="L561">    }</span>
+<span class="nc" id="L562">  }</span>
+
+  private void doCommitSecondaryKeysWithRetry(
+      BackOffer backOffer, ByteString[] keys, int size, long commitTs)
+      throws TiBatchWriteException {
+<span class="nc bnc" id="L567" title="All 6 branches missed.">    if (keys == null || keys.length == 0 || size &lt;= 0) {</span>
+<span class="nc" id="L568">      return;</span>
+    }
+
+    // groups keys by region
+<span class="nc" id="L572">    GroupKeyResult groupResult = this.groupKeysByRegion(keys, size, backOffer);</span>
+<span class="nc" id="L573">    List&lt;BatchKeys&gt; batchKeyList = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L574">    Map&lt;Pair&lt;TiRegion, TiStore&gt;, List&lt;ByteString&gt;&gt; groupKeyMap = groupResult.getGroupsResult();</span>
+
+<span class="nc bnc" id="L576" title="All 2 branches missed.">    for (Map.Entry&lt;Pair&lt;TiRegion, TiStore&gt;, List&lt;ByteString&gt;&gt; entry : groupKeyMap.entrySet()) {</span>
+<span class="nc" id="L577">      TiRegion tiRegion = entry.getKey().first;</span>
+<span class="nc" id="L578">      TiStore store = entry.getKey().second;</span>
+<span class="nc" id="L579">      this.appendBatchBySize(batchKeyList, tiRegion, store, entry.getValue(), false, null);</span>
+<span class="nc" id="L580">    }</span>
+
+<span class="nc bnc" id="L582" title="All 2 branches missed.">    for (BatchKeys batchKeys : batchKeyList) {</span>
+<span class="nc" id="L583">      doCommitSecondaryKeySingleBatchWithRetry(backOffer, batchKeys, commitTs);</span>
+<span class="nc" id="L584">    }</span>
+<span class="nc" id="L585">  }</span>
+
+  private void doCommitSecondaryKeySingleBatchWithRetry(
+      BackOffer backOffer, BatchKeys batchKeys, long commitTs) throws TiBatchWriteException {
+<span class="nc" id="L589">    LOG.info(</span>
+        &quot;start commit secondary key, row={}, size={}KB, regionId={}&quot;,
+<span class="nc" id="L591">        batchKeys.getKeys().size(),</span>
+<span class="nc" id="L592">        batchKeys.getSizeInKB(),</span>
+<span class="nc" id="L593">        batchKeys.getRegion().getId());</span>
+<span class="nc" id="L594">    List&lt;ByteString&gt; keysCommit = batchKeys.getKeys();</span>
+<span class="nc" id="L595">    ByteString[] keys = new ByteString[keysCommit.size()];</span>
+<span class="nc" id="L596">    keysCommit.toArray(keys);</span>
+    // send rpc request to tikv server
+<span class="nc" id="L598">    ClientRPCResult commitResult =</span>
+<span class="nc" id="L599">        this.kvClient.commit(</span>
+<span class="nc" id="L600">            backOffer, keys, this.startTs, commitTs, batchKeys.getRegion(), batchKeys.getStore());</span>
+<span class="nc bnc" id="L601" title="All 4 branches missed.">    if (retryCommitSecondaryKeys &amp;&amp; commitResult.isRetry()) {</span>
+<span class="nc" id="L602">      doCommitSecondaryKeysWithRetry(backOffer, keys, keysCommit.size(), commitTs);</span>
+<span class="nc bnc" id="L603" title="All 2 branches missed.">    } else if (!commitResult.isSuccess()) {</span>
+<span class="nc" id="L604">      String error =</span>
+<span class="nc" id="L605">          String.format(&quot;Txn commit secondary key error, regionId=%s&quot;, batchKeys.getRegion());</span>
+<span class="nc" id="L606">      LOG.warn(error);</span>
+<span class="nc" id="L607">      throw new TiBatchWriteException(&quot;commit secondary key error&quot;, commitResult.getException());</span>
+    }
+<span class="nc" id="L609">    LOG.info(</span>
+        &quot;commit {} rows successfully, size={}KB, regionId={}&quot;,
+<span class="nc" id="L611">        batchKeys.getKeys().size(),</span>
+<span class="nc" id="L612">        batchKeys.getSizeInKB(),</span>
+<span class="nc" id="L613">        batchKeys.getRegion().getId());</span>
+<span class="nc" id="L614">  }</span>
+
+  private GroupKeyResult groupKeysByRegion(ByteString[] keys, int size, BackOffer backOffer)
+      throws TiBatchWriteException {
+<span class="nc" id="L618">    Map&lt;Pair&lt;TiRegion, TiStore&gt;, List&lt;ByteString&gt;&gt; groups = new HashMap&lt;&gt;();</span>
+<span class="nc" id="L619">    int index = 0;</span>
+    try {
+<span class="nc bnc" id="L621" title="All 2 branches missed.">      for (; index &lt; size; index++) {</span>
+<span class="nc" id="L622">        ByteString key = keys[index];</span>
+<span class="nc" id="L623">        Pair&lt;TiRegion, TiStore&gt; pair = this.regionManager.getRegionStorePairByKey(key, backOffer);</span>
+<span class="nc bnc" id="L624" title="All 2 branches missed.">        if (pair != null) {</span>
+<span class="nc" id="L625">          groups.computeIfAbsent(pair, e -&gt; new ArrayList&lt;&gt;()).add(key);</span>
+        }
+      }
+<span class="nc" id="L628">    } catch (Exception e) {</span>
+<span class="nc" id="L629">      throw new TiBatchWriteException(&quot;Txn groupKeysByRegion error&quot;, e);</span>
+<span class="nc" id="L630">    }</span>
+<span class="nc" id="L631">    GroupKeyResult result = new GroupKeyResult();</span>
+<span class="nc" id="L632">    result.setGroupsResult(groups);</span>
+<span class="nc" id="L633">    return result;</span>
+  }
+
+  private long getTxnLockTTL(long startTime) {
+    // TODO: calculate txn lock ttl
+<span class="nc" id="L638">    return this.lockTTL;</span>
+  }
+
+  private long getTxnLockTTL(long startTime, int txnSize) {
+    // TODO: calculate txn lock ttl
+<span class="nc" id="L643">    return this.lockTTL;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

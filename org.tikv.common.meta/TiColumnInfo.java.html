@@ -1,0 +1,373 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TiColumnInfo.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.meta</a> &gt; <span class="el_source">TiColumnInfo.java</span></div><h1>TiColumnInfo.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.meta;
+
+import static java.util.Objects.requireNonNull;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.protobuf.ByteString;
+import com.pingcap.tidb.tipb.ColumnInfo;
+import java.io.Serializable;
+import java.util.List;
+import java.util.Objects;
+import org.tikv.common.codec.CodecDataOutput;
+import org.tikv.common.types.DataType;
+import org.tikv.common.types.DataType.EncodeType;
+import org.tikv.common.types.DataTypeFactory;
+import org.tikv.common.types.IntegerType;
+import org.tikv.common.types.MySQLType;
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class TiColumnInfo implements Serializable {
+  @VisibleForTesting private static final int PK_MASK = 0x2;
+  private final long id;
+  private final String name;
+  private final int offset;
+  private final DataType type;
+  private final org.tikv.common.meta.SchemaState schemaState;
+  private final String comment;
+  private final boolean isPrimaryKey;
+  private final String defaultValue;
+  private final String originDefaultValue;
+  private final String defaultValueBit;
+  // this version is from ColumnInfo which is used to address compatible issue.
+  // If version is 0 then timestamp's default value will be read and decoded as local timezone.
+  // if version is 1 then timestamp's default value will be read and decoded as utc.
+  private final long version;
+  private final String generatedExprString;
+
+  @JsonCreator
+<span class="nc" id="L56">  public TiColumnInfo(</span>
+      @JsonProperty(&quot;id&quot;) long id,
+      @JsonProperty(&quot;name&quot;) org.tikv.common.meta.CIStr name,
+      @JsonProperty(&quot;offset&quot;) int offset,
+      @JsonProperty(&quot;type&quot;) InternalTypeHolder type,
+      @JsonProperty(&quot;state&quot;) int schemaState,
+      @JsonProperty(&quot;origin_default&quot;) String originalDefaultValue,
+      @JsonProperty(&quot;default&quot;) String defaultValue,
+      @JsonProperty(&quot;default_bit&quot;) String defaultValueBit,
+      @JsonProperty(&quot;comment&quot;) String comment,
+      @JsonProperty(&quot;version&quot;) long version,
+      @JsonProperty(&quot;generated_expr_string&quot;) String generatedExprString) {
+<span class="nc" id="L68">    this.id = id;</span>
+<span class="nc" id="L69">    this.name = requireNonNull(name, &quot;column name is null&quot;).getL();</span>
+<span class="nc" id="L70">    this.offset = offset;</span>
+<span class="nc" id="L71">    this.type = DataTypeFactory.of(requireNonNull(type, &quot;type is null&quot;));</span>
+<span class="nc" id="L72">    this.schemaState = org.tikv.common.meta.SchemaState.fromValue(schemaState);</span>
+<span class="nc" id="L73">    this.comment = comment;</span>
+<span class="nc" id="L74">    this.defaultValue = defaultValue;</span>
+<span class="nc" id="L75">    this.originDefaultValue = originalDefaultValue;</span>
+<span class="nc" id="L76">    this.defaultValueBit = defaultValueBit;</span>
+    // I don't think pk flag should be set on type
+    // Refactor against original tidb code
+<span class="nc bnc" id="L79" title="All 2 branches missed.">    this.isPrimaryKey = (type.getFlag() &amp; PK_MASK) &gt; 0;</span>
+<span class="nc" id="L80">    this.version = version;</span>
+<span class="nc" id="L81">    this.generatedExprString = generatedExprString;</span>
+<span class="nc" id="L82">  }</span>
+
+<span class="nc" id="L84">  public TiColumnInfo(</span>
+      long id,
+      String name,
+      int offset,
+      DataType type,
+      org.tikv.common.meta.SchemaState schemaState,
+      String originalDefaultValue,
+      String defaultValue,
+      String defaultValueBit,
+      String comment,
+      long version,
+      String generatedExprString) {
+<span class="nc" id="L96">    this.id = id;</span>
+<span class="nc" id="L97">    this.name = requireNonNull(name, &quot;column name is null&quot;).toLowerCase();</span>
+<span class="nc" id="L98">    this.offset = offset;</span>
+<span class="nc" id="L99">    this.type = requireNonNull(type, &quot;data type is null&quot;);</span>
+<span class="nc" id="L100">    this.schemaState = schemaState;</span>
+<span class="nc" id="L101">    this.comment = comment;</span>
+<span class="nc" id="L102">    this.defaultValue = defaultValue;</span>
+<span class="nc" id="L103">    this.originDefaultValue = originalDefaultValue;</span>
+<span class="nc" id="L104">    this.defaultValueBit = defaultValueBit;</span>
+<span class="nc bnc" id="L105" title="All 2 branches missed.">    this.isPrimaryKey = (type.getFlag() &amp; PK_MASK) &gt; 0;</span>
+<span class="nc" id="L106">    this.version = version;</span>
+<span class="nc" id="L107">    this.generatedExprString = generatedExprString;</span>
+<span class="nc" id="L108">  }</span>
+
+  @VisibleForTesting
+<span class="nc" id="L111">  public TiColumnInfo(long id, String name, int offset, DataType type, boolean isPrimaryKey) {</span>
+<span class="nc" id="L112">    this.id = id;</span>
+<span class="nc" id="L113">    this.name = requireNonNull(name, &quot;column name is null&quot;).toLowerCase();</span>
+<span class="nc" id="L114">    this.offset = offset;</span>
+<span class="nc" id="L115">    this.type = requireNonNull(type, &quot;data type is null&quot;);</span>
+<span class="nc" id="L116">    this.schemaState = org.tikv.common.meta.SchemaState.StatePublic;</span>
+<span class="nc" id="L117">    this.comment = &quot;&quot;;</span>
+<span class="nc" id="L118">    this.isPrimaryKey = isPrimaryKey;</span>
+<span class="nc" id="L119">    this.originDefaultValue = &quot;1&quot;;</span>
+<span class="nc" id="L120">    this.defaultValue = &quot;&quot;;</span>
+<span class="nc" id="L121">    this.defaultValueBit = null;</span>
+<span class="nc" id="L122">    this.version = DataType.COLUMN_VERSION_FLAG;</span>
+<span class="nc" id="L123">    this.generatedExprString = &quot;&quot;;</span>
+<span class="nc" id="L124">  }</span>
+
+  static TiColumnInfo getRowIdColumn(int offset) {
+<span class="nc" id="L127">    return new TiColumnInfo(-1, &quot;_tidb_rowid&quot;, offset, IntegerType.ROW_ID_TYPE, true);</span>
+  }
+
+  TiColumnInfo copyWithoutPrimaryKey() {
+<span class="nc" id="L131">    InternalTypeHolder typeHolder = type.toTypeHolder();</span>
+<span class="nc" id="L132">    typeHolder.setFlag(type.getFlag() &amp; (~TiColumnInfo.PK_MASK));</span>
+<span class="nc" id="L133">    DataType newType = DataTypeFactory.of(typeHolder);</span>
+<span class="nc" id="L134">    return new TiColumnInfo(</span>
+<span class="nc" id="L135">        this.id,</span>
+<span class="nc" id="L136">        this.name,</span>
+<span class="nc" id="L137">        this.offset,</span>
+<span class="nc" id="L138">        newType,</span>
+<span class="nc" id="L139">        this.schemaState,</span>
+<span class="nc" id="L140">        this.originDefaultValue,</span>
+<span class="nc" id="L141">        this.defaultValue,</span>
+<span class="nc" id="L142">        this.defaultValueBit,</span>
+<span class="nc" id="L143">        this.comment,</span>
+<span class="nc" id="L144">        this.version,</span>
+<span class="nc" id="L145">        this.generatedExprString);</span>
+  }
+
+  public long getId() {
+<span class="nc" id="L149">    return this.id;</span>
+  }
+
+  public String getName() {
+<span class="nc" id="L153">    return this.name;</span>
+  }
+
+  public boolean matchName(String name) {
+<span class="nc bnc" id="L157" title="All 2 branches missed.">    return this.name.equalsIgnoreCase(name)</span>
+<span class="nc bnc" id="L158" title="All 2 branches missed.">        || String.format(&quot;`%s`&quot;, this.name).equalsIgnoreCase(name);</span>
+  }
+
+  public int getOffset() {
+<span class="nc" id="L162">    return this.offset;</span>
+  }
+
+  public DataType getType() {
+<span class="nc" id="L166">    return type;</span>
+  }
+
+  public long getLength() {
+<span class="nc" id="L170">    return getType().getLength();</span>
+  }
+
+  public long getSize() {
+<span class="nc" id="L174">    return getType().getSize();</span>
+  }
+
+  org.tikv.common.meta.SchemaState getSchemaState() {
+<span class="nc" id="L178">    return schemaState;</span>
+  }
+
+  public String getComment() {
+<span class="nc" id="L182">    return comment;</span>
+  }
+
+  public boolean isPrimaryKey() {
+<span class="nc" id="L186">    return isPrimaryKey;</span>
+  }
+
+  String getDefaultValue() {
+<span class="nc" id="L190">    return defaultValue;</span>
+  }
+
+  public String getDefaultValueBit() {
+<span class="nc" id="L194">    return defaultValueBit;</span>
+  }
+
+  // Default value use to stored in DefaultValue field, but now, bit type default value will store
+  // in DefaultValueBit for fix bit default value decode/encode bug.
+  String getOriginDefaultValue() {
+<span class="nc bnc" id="L200" title="All 2 branches missed.">    if (this.getType().getType() == MySQLType.TypeBit</span>
+<span class="nc bnc" id="L201" title="All 2 branches missed.">        &amp;&amp; originDefaultValue != null</span>
+<span class="nc bnc" id="L202" title="All 2 branches missed.">        &amp;&amp; defaultValueBit != null) {</span>
+<span class="nc" id="L203">      return defaultValueBit;</span>
+    } else {
+<span class="nc" id="L205">      return originDefaultValue;</span>
+    }
+  }
+
+  private ByteString getOriginDefaultValueAsByteString() {
+<span class="nc" id="L210">    CodecDataOutput cdo = new CodecDataOutput();</span>
+<span class="nc" id="L211">    type.encode(</span>
+<span class="nc" id="L212">        cdo, EncodeType.VALUE, type.getOriginDefaultValue(getOriginDefaultValue(), version));</span>
+<span class="nc" id="L213">    return cdo.toByteString();</span>
+  }
+
+  public long getVersion() {
+<span class="nc" id="L217">    return version;</span>
+  }
+
+  public boolean isAutoIncrement() {
+<span class="nc" id="L221">    return this.type.isAutoIncrement();</span>
+  }
+
+  TiIndexColumn toFakeIndexColumn() {
+    // we don't use original length of column since for a clustered index column
+    // it always full index instead of prefix index
+<span class="nc" id="L227">    return new TiIndexColumn(</span>
+<span class="nc" id="L228">        org.tikv.common.meta.CIStr.newCIStr(getName()), getOffset(), DataType.UNSPECIFIED_LEN);</span>
+  }
+
+  TiIndexColumn toIndexColumn() {
+<span class="nc" id="L232">    return new TiIndexColumn(</span>
+<span class="nc" id="L233">        org.tikv.common.meta.CIStr.newCIStr(getName()), getOffset(), getType().getLength());</span>
+  }
+
+  ColumnInfo toProto(TiTableInfo tableInfo) {
+<span class="nc" id="L237">    return ColumnInfo.newBuilder()</span>
+<span class="nc" id="L238">        .setColumnId(id)</span>
+<span class="nc" id="L239">        .setTp(type.getTypeCode())</span>
+<span class="nc" id="L240">        .setCollation(type.getCollationCode())</span>
+<span class="nc" id="L241">        .setColumnLen((int) type.getLength())</span>
+<span class="nc" id="L242">        .setDecimal(type.getDecimal())</span>
+<span class="nc" id="L243">        .setFlag(type.getFlag())</span>
+<span class="nc" id="L244">        .setDefaultVal(getOriginDefaultValueAsByteString())</span>
+<span class="nc bnc" id="L245" title="All 4 branches missed.">        .setPkHandle(tableInfo.isPkHandle() &amp;&amp; isPrimaryKey())</span>
+<span class="nc" id="L246">        .addAllElems(type.getElems())</span>
+<span class="nc" id="L247">        .build();</span>
+  }
+
+  @Override
+  public boolean equals(Object other) {
+<span class="nc bnc" id="L252" title="All 2 branches missed.">    if (other == this) {</span>
+<span class="nc" id="L253">      return true;</span>
+    }
+
+<span class="nc bnc" id="L256" title="All 2 branches missed.">    if (!(other instanceof TiColumnInfo)) {</span>
+<span class="nc" id="L257">      return false;</span>
+    }
+
+<span class="nc" id="L260">    TiColumnInfo col = (TiColumnInfo) other;</span>
+<span class="nc bnc" id="L261" title="All 2 branches missed.">    return Objects.equals(id, col.id)</span>
+<span class="nc bnc" id="L262" title="All 2 branches missed.">        &amp;&amp; Objects.equals(name, col.name)</span>
+<span class="nc bnc" id="L263" title="All 2 branches missed.">        &amp;&amp; Objects.equals(type, col.type)</span>
+<span class="nc bnc" id="L264" title="All 2 branches missed.">        &amp;&amp; Objects.equals(schemaState, col.schemaState)</span>
+<span class="nc bnc" id="L265" title="All 2 branches missed.">        &amp;&amp; isPrimaryKey == col.isPrimaryKey</span>
+<span class="nc bnc" id="L266" title="All 2 branches missed.">        &amp;&amp; Objects.equals(defaultValue, col.defaultValue)</span>
+<span class="nc bnc" id="L267" title="All 2 branches missed.">        &amp;&amp; Objects.equals(originDefaultValue, col.originDefaultValue);</span>
+  }
+
+  @Override
+  public int hashCode() {
+<span class="nc" id="L272">    return Objects.hash(</span>
+<span class="nc" id="L273">        id, name, type, schemaState, isPrimaryKey, defaultValue, originDefaultValue);</span>
+  }
+
+  public String getGeneratedExprString() {
+<span class="nc" id="L277">    return generatedExprString;</span>
+  }
+
+  public boolean isGeneratedColumn() {
+<span class="nc bnc" id="L281" title="All 4 branches missed.">    return generatedExprString != null &amp;&amp; !generatedExprString.isEmpty();</span>
+  }
+
+  @JsonIgnoreProperties(ignoreUnknown = true)
+  public static class InternalTypeHolder {
+    private int tp;
+    private int flag;
+    private long flen;
+    private int decimal;
+    private String charset;
+    private String collate;
+    private List&lt;String&gt; elems;
+
+    @JsonCreator
+<span class="nc" id="L295">    public InternalTypeHolder(</span>
+        @JsonProperty(&quot;Tp&quot;) int tp,
+        @JsonProperty(&quot;Flag&quot;) int flag,
+        @JsonProperty(&quot;Flen&quot;) long flen,
+        @JsonProperty(&quot;Decimal&quot;) int decimal,
+        @JsonProperty(&quot;Charset&quot;) String charset,
+        @JsonProperty(&quot;Collate&quot;) String collate,
+        @JsonProperty(&quot;Elems&quot;) List&lt;String&gt; elems) {
+<span class="nc" id="L303">      this.tp = tp;</span>
+<span class="nc" id="L304">      this.flag = flag;</span>
+<span class="nc" id="L305">      this.flen = flen;</span>
+<span class="nc" id="L306">      this.decimal = decimal;</span>
+<span class="nc" id="L307">      this.charset = charset;</span>
+<span class="nc" id="L308">      this.collate = collate;</span>
+<span class="nc" id="L309">      this.elems = elems;</span>
+<span class="nc" id="L310">    }</span>
+
+    public int getTp() {
+<span class="nc" id="L313">      return tp;</span>
+    }
+
+    public void setTp(int tp) {
+<span class="nc" id="L317">      this.tp = tp;</span>
+<span class="nc" id="L318">    }</span>
+
+    public int getFlag() {
+<span class="nc" id="L321">      return flag;</span>
+    }
+
+    public void setFlag(int flag) {
+<span class="nc" id="L325">      this.flag = flag;</span>
+<span class="nc" id="L326">    }</span>
+
+    public long getFlen() {
+<span class="nc" id="L329">      return flen;</span>
+    }
+
+    public void setFlen(long flen) {
+<span class="nc" id="L333">      this.flen = flen;</span>
+<span class="nc" id="L334">    }</span>
+
+    public int getDecimal() {
+<span class="nc" id="L337">      return decimal;</span>
+    }
+
+    public void setDecimal(int decimal) {
+<span class="nc" id="L341">      this.decimal = decimal;</span>
+<span class="nc" id="L342">    }</span>
+
+    public String getCharset() {
+<span class="nc" id="L345">      return charset;</span>
+    }
+
+    public void setCharset(String charset) {
+<span class="nc" id="L349">      this.charset = charset;</span>
+<span class="nc" id="L350">    }</span>
+
+    public String getCollate() {
+<span class="nc" id="L353">      return collate;</span>
+    }
+
+    public void setCollate(String collate) {
+<span class="nc" id="L357">      this.collate = collate;</span>
+<span class="nc" id="L358">    }</span>
+
+    public List&lt;String&gt; getElems() {
+<span class="nc" id="L361">      return elems;</span>
+    }
+
+    public void setElems(List&lt;String&gt; elems) {
+<span class="nc" id="L365">      this.elems = elems;</span>
+<span class="nc" id="L366">    }</span>
+
+    interface Builder&lt;E extends DataType&gt; {
+      E build(InternalTypeHolder holder);
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

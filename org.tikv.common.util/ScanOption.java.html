@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ScanOption.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.util</a> &gt; <span class="el_source">ScanOption.java</span></div><h1>ScanOption.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.util;
+
+import com.google.protobuf.ByteString;
+
+/** if Limit of a ScanBatch is 0, it means to scan all keys in */
+public class ScanOption {
+  private final ByteString startKey;
+  private final ByteString endKey;
+  private final int limit;
+  private final boolean keyOnly;
+
+<span class="fc" id="L27">  private ScanOption(ByteString startKey, ByteString endKey, int limit, boolean keyOnly) {</span>
+<span class="fc" id="L28">    this.startKey = startKey;</span>
+<span class="fc" id="L29">    this.endKey = endKey;</span>
+<span class="fc" id="L30">    this.limit = limit;</span>
+<span class="fc" id="L31">    this.keyOnly = keyOnly;</span>
+<span class="fc" id="L32">  }</span>
+
+  public static ScanOptionBuilder newBuilder() {
+<span class="fc" id="L35">    return new ScanOptionBuilder();</span>
+  }
+
+  public ByteString getStartKey() {
+<span class="fc" id="L39">    return startKey;</span>
+  }
+
+  public ByteString getEndKey() {
+<span class="fc" id="L43">    return endKey;</span>
+  }
+
+  public int getLimit() {
+<span class="fc" id="L47">    return limit;</span>
+  }
+
+  public boolean isKeyOnly() {
+<span class="fc" id="L51">    return keyOnly;</span>
+  }
+
+  public static class ScanOptionBuilder {
+    private ByteString startKey;
+    private ByteString endKey;
+    private int limit;
+    private boolean keyOnly;
+
+<span class="fc" id="L60">    private ScanOptionBuilder() {</span>
+<span class="fc" id="L61">      this.startKey = ByteString.EMPTY;</span>
+<span class="fc" id="L62">      this.endKey = ByteString.EMPTY;</span>
+<span class="fc" id="L63">      this.limit = 0;</span>
+<span class="fc" id="L64">      this.keyOnly = false;</span>
+<span class="fc" id="L65">    }</span>
+
+    public ScanOption build() {
+<span class="fc" id="L68">      return new ScanOption(startKey, endKey, limit, keyOnly);</span>
+    }
+
+    public ScanOptionBuilder setStartKey(ByteString startKey) {
+<span class="fc" id="L72">      this.startKey = startKey;</span>
+<span class="fc" id="L73">      return this;</span>
+    }
+
+    public ScanOptionBuilder setEndKey(ByteString endKey) {
+<span class="fc" id="L77">      this.endKey = endKey;</span>
+<span class="fc" id="L78">      return this;</span>
+    }
+
+    public ScanOptionBuilder setLimit(int limit) {
+<span class="fc" id="L82">      this.limit = limit;</span>
+<span class="fc" id="L83">      return this;</span>
+    }
+
+    public ScanOptionBuilder setKeyOnly(boolean keyOnly) {
+<span class="nc" id="L87">      this.keyOnly = keyOnly;</span>
+<span class="nc" id="L88">      return this;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

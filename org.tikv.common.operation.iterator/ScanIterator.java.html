@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ScanIterator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.operation.iterator</a> &gt; <span class="el_source">ScanIterator.java</span></div><h1>ScanIterator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2018 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.operation.iterator;
+
+import static java.util.Objects.requireNonNull;
+
+import com.google.protobuf.ByteString;
+import java.util.Iterator;
+import java.util.List;
+import org.tikv.common.TiConfiguration;
+import org.tikv.common.exception.GrpcException;
+import org.tikv.common.exception.TiClientInternalException;
+import org.tikv.common.key.Key;
+import org.tikv.common.region.RegionStoreClient.RegionStoreClientBuilder;
+import org.tikv.common.region.TiRegion;
+import org.tikv.kvproto.Kvrpcpb;
+
+public abstract class ScanIterator implements Iterator&lt;Kvrpcpb.KvPair&gt; {
+  protected final TiConfiguration conf;
+  protected final RegionStoreClientBuilder builder;
+  protected List&lt;Kvrpcpb.KvPair&gt; currentCache;
+  protected ByteString startKey;
+<span class="fc" id="L36">  protected int index = -1;</span>
+  protected int limit;
+  protected boolean keyOnly;
+<span class="fc" id="L39">  protected boolean endOfScan = false;</span>
+
+  protected Key endKey;
+  protected boolean hasEndKey;
+<span class="fc" id="L43">  protected boolean processingLastBatch = false;</span>
+
+  ScanIterator(
+      TiConfiguration conf,
+      RegionStoreClientBuilder builder,
+      ByteString startKey,
+      ByteString endKey,
+      int limit,
+<span class="fc" id="L51">      boolean keyOnly) {</span>
+<span class="fc" id="L52">    this.startKey = requireNonNull(startKey, &quot;start key is null&quot;);</span>
+<span class="fc" id="L53">    this.endKey = Key.toRawKey(requireNonNull(endKey, &quot;end key is null&quot;));</span>
+<span class="fc bfc" id="L54" title="All 2 branches covered.">    this.hasEndKey = !endKey.isEmpty();</span>
+<span class="fc" id="L55">    this.limit = limit;</span>
+<span class="fc" id="L56">    this.keyOnly = keyOnly;</span>
+<span class="fc" id="L57">    this.conf = conf;</span>
+<span class="fc" id="L58">    this.builder = builder;</span>
+<span class="fc" id="L59">  }</span>
+
+  /**
+   * Load current region to cache, returns the region if loaded.
+   *
+   * @return TiRegion of current data loaded to cache
+   * @throws GrpcException if scan still fails after backoff
+   */
+  abstract TiRegion loadCurrentRegionToCache() throws GrpcException;
+
+  // return true if current cache is not loaded or empty
+  boolean cacheLoadFails() {
+<span class="pc bpc" id="L71" title="1 of 4 branches missed.">    if (endOfScan || processingLastBatch) {</span>
+<span class="fc" id="L72">      return true;</span>
+    }
+<span class="pc bpc" id="L74" title="1 of 2 branches missed.">    if (startKey == null) {</span>
+<span class="nc" id="L75">      return true;</span>
+    }
+    try {
+<span class="fc" id="L78">      TiRegion region = loadCurrentRegionToCache();</span>
+<span class="fc" id="L79">      ByteString curRegionEndKey = region.getEndKey();</span>
+      // currentCache is null means no keys found, whereas currentCache is empty means no values
+      // found. The difference lies in whether to continue scanning, because chances are that
+      // an empty region exists due to deletion, region split, e.t.c.
+      // See https://github.com/pingcap/tispark/issues/393 for details
+<span class="pc bpc" id="L84" title="1 of 2 branches missed.">      if (currentCache == null) {</span>
+<span class="nc" id="L85">        return true;</span>
+      }
+<span class="fc" id="L87">      index = 0;</span>
+<span class="fc" id="L88">      Key lastKey = Key.EMPTY;</span>
+      // Session should be single-threaded itself
+      // so that we don't worry about conf change in the middle
+      // of a transaction. Otherwise below code might lose data
+<span class="pc bpc" id="L92" title="1 of 2 branches missed.">      if (currentCache.size() &lt; limit) {</span>
+<span class="fc" id="L93">        startKey = curRegionEndKey;</span>
+<span class="fc" id="L94">        lastKey = Key.toRawKey(curRegionEndKey);</span>
+<span class="nc bnc" id="L95" title="All 2 branches missed.">      } else if (currentCache.size() &gt; limit) {</span>
+<span class="nc" id="L96">        throw new IndexOutOfBoundsException(</span>
+            &quot;current cache size = &quot;
+<span class="nc" id="L98">                + currentCache.size()</span>
+                + &quot;, larger than &quot;
+<span class="nc" id="L100">                + conf.getScanBatchSize());</span>
+      } else {
+        // Start new scan from exact next key in current region
+<span class="nc" id="L103">        lastKey = Key.toRawKey(currentCache.get(currentCache.size() - 1).getKey());</span>
+<span class="nc" id="L104">        startKey = lastKey.next().toByteString();</span>
+      }
+      // notify last batch if lastKey is greater than or equal to endKey
+      // if startKey is empty, it indicates +∞
+<span class="pc bpc" id="L108" title="2 of 6 branches missed.">      if (hasEndKey &amp;&amp; lastKey.compareTo(endKey) &gt;= 0 || startKey.isEmpty()) {</span>
+<span class="fc" id="L109">        processingLastBatch = true;</span>
+<span class="fc" id="L110">        startKey = null;</span>
+      }
+<span class="nc" id="L112">    } catch (Exception e) {</span>
+<span class="nc" id="L113">      throw new TiClientInternalException(&quot;Error scanning data from region.&quot;, e);</span>
+<span class="fc" id="L114">    }</span>
+<span class="fc" id="L115">    return false;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

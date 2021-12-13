@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TiDBInfo.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.meta</a> &gt; <span class="el_source">TiDBInfo.java</span></div><h1>TiDBInfo.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.meta;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import java.io.Serializable;
+import java.util.List;
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class TiDBInfo implements Serializable {
+  private final long id;
+  private final String name;
+  private final String charset;
+  private final String collate;
+  private final List&lt;TiTableInfo&gt; tables;
+  private final org.tikv.common.meta.SchemaState schemaState;
+
+  @JsonCreator
+  public TiDBInfo(
+      @JsonProperty(&quot;id&quot;) long id,
+      @JsonProperty(&quot;db_name&quot;) org.tikv.common.meta.CIStr name,
+      @JsonProperty(&quot;charset&quot;) String charset,
+      @JsonProperty(&quot;collate&quot;) String collate,
+      @JsonProperty(&quot;-&quot;) List&lt;TiTableInfo&gt; tables,
+<span class="nc" id="L40">      @JsonProperty(&quot;state&quot;) int schemaState) {</span>
+<span class="nc" id="L41">    this.id = id;</span>
+<span class="nc" id="L42">    this.name = name.getL();</span>
+<span class="nc" id="L43">    this.charset = charset;</span>
+<span class="nc" id="L44">    this.collate = collate;</span>
+<span class="nc" id="L45">    this.tables = tables;</span>
+<span class="nc" id="L46">    this.schemaState = org.tikv.common.meta.SchemaState.fromValue(schemaState);</span>
+<span class="nc" id="L47">  }</span>
+
+  private TiDBInfo(
+      long id,
+      String name,
+      String charset,
+      String collate,
+      List&lt;TiTableInfo&gt; tables,
+<span class="nc" id="L55">      org.tikv.common.meta.SchemaState schemaState) {</span>
+<span class="nc" id="L56">    this.id = id;</span>
+<span class="nc" id="L57">    this.name = name;</span>
+<span class="nc" id="L58">    this.charset = charset;</span>
+<span class="nc" id="L59">    this.collate = collate;</span>
+<span class="nc" id="L60">    this.tables = tables;</span>
+<span class="nc" id="L61">    this.schemaState = schemaState;</span>
+<span class="nc" id="L62">  }</span>
+
+  public TiDBInfo rename(String newName) {
+<span class="nc" id="L65">    return new TiDBInfo(id, newName, charset, collate, tables, schemaState);</span>
+  }
+
+  public long getId() {
+<span class="nc" id="L69">    return id;</span>
+  }
+
+  public String getName() {
+<span class="nc" id="L73">    return name;</span>
+  }
+
+  public String getCharset() {
+<span class="nc" id="L77">    return charset;</span>
+  }
+
+  public String getCollate() {
+<span class="nc" id="L81">    return collate;</span>
+  }
+
+  public List&lt;TiTableInfo&gt; getTables() {
+<span class="nc" id="L85">    return tables;</span>
+  }
+
+  org.tikv.common.meta.SchemaState getSchemaState() {
+<span class="nc" id="L89">    return schemaState;</span>
+  }
+
+  @Override
+  public boolean equals(Object other) {
+<span class="nc bnc" id="L94" title="All 2 branches missed.">    if (other == this) {</span>
+<span class="nc" id="L95">      return true;</span>
+    }
+<span class="nc bnc" id="L97" title="All 2 branches missed.">    if (!(other instanceof TiDBInfo)) {</span>
+<span class="nc" id="L98">      return false;</span>
+    }
+<span class="nc" id="L100">    TiDBInfo otherDB = (TiDBInfo) other;</span>
+<span class="nc bnc" id="L101" title="All 4 branches missed.">    return otherDB.getId() == getId() &amp;&amp; otherDB.getName().equals(getName());</span>
+  }
+
+  @Override
+  public int hashCode() {
+<span class="nc" id="L106">    final int prime = 31;</span>
+<span class="nc" id="L107">    int result = prime + Long.hashCode(getId());</span>
+<span class="nc" id="L108">    return result * prime + getName().hashCode();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

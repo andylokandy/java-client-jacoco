@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>StoreVersion.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common</a> &gt; <span class="el_source">StoreVersion.java</span></div><h1>StoreVersion.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common;
+
+import java.util.List;
+import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.region.TiStoreType;
+import org.tikv.common.util.BackOffer;
+import org.tikv.common.util.ConcreteBackOffer;
+import org.tikv.kvproto.Metapb;
+
+public class StoreVersion {
+
+  private static final int SCALE = 10000;
+<span class="fc" id="L30">  private final Logger logger = LoggerFactory.getLogger(this.getClass());</span>
+<span class="fc" id="L31">  private int v0 = 9999;</span>
+<span class="fc" id="L32">  private int v1 = 9999;</span>
+<span class="fc" id="L33">  private int v2 = 9999;</span>
+
+<span class="fc" id="L35">  private StoreVersion(String version) {</span>
+    try {
+      // tiflash version starts with `v`
+<span class="pc bpc" id="L38" title="1 of 2 branches missed.">      if (version.startsWith(&quot;v&quot;)) {</span>
+<span class="nc" id="L39">        version = version.substring(1);</span>
+      }
+<span class="fc" id="L41">      String[] parts = version.split(&quot;[.-]&quot;);</span>
+<span class="pc bpc" id="L42" title="1 of 2 branches missed.">      if (parts.length &gt; 0) {</span>
+<span class="fc" id="L43">        v0 = Integer.parseInt(parts[0]);</span>
+      }
+<span class="pc bpc" id="L45" title="1 of 2 branches missed.">      if (parts.length &gt; 1) {</span>
+<span class="fc" id="L46">        v1 = Integer.parseInt(parts[1]);</span>
+      }
+<span class="pc bpc" id="L48" title="1 of 2 branches missed.">      if (parts.length &gt; 2) {</span>
+<span class="fc" id="L49">        v2 = Integer.parseInt(parts[2]);</span>
+      }
+<span class="nc" id="L51">    } catch (Exception e) {</span>
+<span class="nc" id="L52">      logger.warn(&quot;invalid store version: &quot; + version, e);</span>
+<span class="fc" id="L53">    }</span>
+<span class="fc" id="L54">  }</span>
+
+  public static int compareTo(String v0, String v1) {
+<span class="fc" id="L57">    return new StoreVersion(v0).toIntVersion() - new StoreVersion(v1).toIntVersion();</span>
+  }
+
+  public static boolean minTiKVVersion(String version, PDClient pdClient) {
+<span class="fc" id="L61">    StoreVersion storeVersion = new StoreVersion(version);</span>
+
+<span class="fc" id="L63">    BackOffer bo = ConcreteBackOffer.newCustomBackOff(BackOffer.PD_INFO_BACKOFF);</span>
+<span class="fc" id="L64">    List&lt;Metapb.Store&gt; storeList =</span>
+        pdClient
+<span class="fc" id="L66">            .getAllStores(bo)</span>
+<span class="fc" id="L67">            .stream()</span>
+<span class="fc" id="L68">            .filter(</span>
+                store -&gt;
+<span class="fc bfc" id="L70" title="All 2 branches covered.">                    !isTiFlash(store)</span>
+<span class="pc bpc" id="L71" title="1 of 2 branches missed.">                        &amp;&amp; (store.getState() == Metapb.StoreState.Up</span>
+<span class="pc bnc" id="L72" title="All 2 branches missed.">                            || store.getState() == Metapb.StoreState.Offline))</span>
+<span class="fc" id="L73">            .collect(Collectors.toList());</span>
+
+<span class="fc bfc" id="L75" title="All 2 branches covered.">    for (Metapb.Store store : storeList) {</span>
+<span class="pc bpc" id="L76" title="1 of 2 branches missed.">      if (storeVersion.greatThan(new StoreVersion(store.getVersion()))) {</span>
+<span class="nc" id="L77">        return false;</span>
+      }
+<span class="fc" id="L79">    }</span>
+<span class="fc" id="L80">    return true;</span>
+  }
+
+  private static boolean isTiFlash(Metapb.Store store) {
+<span class="fc bfc" id="L84" title="All 2 branches covered.">    for (Metapb.StoreLabel label : store.getLabelsList()) {</span>
+<span class="pc bpc" id="L85" title="1 of 2 branches missed.">      if (label.getKey().equals(TiStoreType.TiFlash.getLabelKey())</span>
+<span class="pc bpc" id="L86" title="1 of 2 branches missed.">          &amp;&amp; label.getValue().equals(TiStoreType.TiFlash.getLabelValue())) {</span>
+<span class="fc" id="L87">        return true;</span>
+      }
+<span class="nc" id="L89">    }</span>
+<span class="fc" id="L90">    return false;</span>
+  }
+
+  private int toIntVersion() {
+<span class="fc" id="L94">    return v0 * SCALE * SCALE + v1 * SCALE + v2;</span>
+  }
+
+  private boolean greatThan(StoreVersion other) {
+<span class="pc bpc" id="L98" title="1 of 2 branches missed.">    return toIntVersion() &gt; other.toIntVersion();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

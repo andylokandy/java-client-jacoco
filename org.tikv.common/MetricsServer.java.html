@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MetricsServer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common</a> &gt; <span class="el_source">MetricsServer.java</span></div><h1>MetricsServer.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2021 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.tikv.common;
+
+import io.prometheus.client.exporter.HTTPServer;
+import io.prometheus.client.hotspot.DefaultExports;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class MetricsServer {
+<span class="fc" id="L23">  private static final Logger logger = LoggerFactory.getLogger(MetricsServer.class);</span>
+
+<span class="fc" id="L25">  private static MetricsServer METRICS_SERVER_INSTANCE = null;</span>
+<span class="fc" id="L26">  private static int metricsServerRefCount = 0;</span>
+
+  private int port;
+  private HTTPServer server;
+
+  public static MetricsServer getInstance(TiConfiguration conf) {
+<span class="fc bfc" id="L32" title="All 2 branches covered.">    if (!conf.isMetricsEnable()) {</span>
+<span class="fc" id="L33">      return null;</span>
+    }
+
+<span class="fc" id="L36">    synchronized (MetricsServer.class) {</span>
+<span class="fc" id="L37">      int port = conf.getMetricsPort();</span>
+<span class="fc bfc" id="L38" title="All 2 branches covered.">      if (METRICS_SERVER_INSTANCE != null) {</span>
+<span class="fc bfc" id="L39" title="All 2 branches covered.">        if (port != METRICS_SERVER_INSTANCE.port) {</span>
+<span class="fc" id="L40">          throw new IllegalArgumentException(</span>
+<span class="fc" id="L41">              String.format(</span>
+                  &quot;Do dot support multiple tikv.metrics.port, which are %d and %d&quot;,
+<span class="fc" id="L43">                  port, METRICS_SERVER_INSTANCE.port));</span>
+        }
+      } else {
+<span class="fc" id="L46">        METRICS_SERVER_INSTANCE = new MetricsServer(port);</span>
+      }
+<span class="fc" id="L48">      metricsServerRefCount += 1;</span>
+<span class="fc" id="L49">      return METRICS_SERVER_INSTANCE;</span>
+    }
+  }
+
+<span class="fc" id="L53">  private MetricsServer(int port) {</span>
+    try {
+<span class="fc" id="L55">      this.port = port;</span>
+<span class="fc" id="L56">      DefaultExports.initialize();</span>
+<span class="fc" id="L57">      this.server = new HTTPServer(port, true);</span>
+<span class="fc" id="L58">      logger.info(&quot;http server is up &quot; + this.server.getPort());</span>
+<span class="nc" id="L59">    } catch (Exception e) {</span>
+<span class="nc" id="L60">      logger.error(&quot;http server not up&quot;);</span>
+<span class="nc" id="L61">      throw new RuntimeException(e);</span>
+<span class="fc" id="L62">    }</span>
+<span class="fc" id="L63">  }</span>
+
+  public void close() {
+<span class="fc" id="L66">    synchronized (MetricsServer.class) {</span>
+<span class="fc bfc" id="L67" title="All 2 branches covered.">      if (metricsServerRefCount == 1) {</span>
+<span class="pc bpc" id="L68" title="1 of 2 branches missed.">        if (server != null) {</span>
+<span class="fc" id="L69">          server.stop();</span>
+<span class="fc" id="L70">          logger.info(&quot;Metrics server on &quot; + server.getPort() + &quot; is stopped&quot;);</span>
+        }
+<span class="fc" id="L72">        METRICS_SERVER_INSTANCE = null;</span>
+      }
+
+<span class="pc bpc" id="L75" title="1 of 2 branches missed.">      if (metricsServerRefCount &gt;= 1) {</span>
+<span class="fc" id="L76">        metricsServerRefCount -= 1;</span>
+      }
+<span class="fc" id="L78">    }</span>
+<span class="fc" id="L79">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

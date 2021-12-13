@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RowDecoderV2.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.codec</a> &gt; <span class="el_source">RowDecoderV2.java</span></div><h1>RowDecoderV2.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.codec;
+
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.sql.Date;
+import java.sql.Timestamp;
+import java.util.Arrays;
+import java.util.List;
+import org.joda.time.DateTimeZone;
+import org.tikv.common.ExtendedDateTime;
+import org.tikv.common.codec.Codec.DateTimeCodec;
+import org.tikv.common.codec.Codec.DecimalCodec;
+import org.tikv.common.codec.Codec.EnumCodec;
+import org.tikv.common.codec.Codec.SetCodec;
+import org.tikv.common.exception.CodecException;
+import org.tikv.common.types.Converter;
+import org.tikv.common.types.DataType;
+import org.tikv.common.util.JsonUtils;
+
+<span class="nc" id="L35">public class RowDecoderV2 {</span>
+
+  private static final long SIGN_MASK = 0x8000000000000000L;
+
+  public static Object decodeCol(byte[] colData, DataType tp) {
+<span class="nc bnc" id="L40" title="All 17 branches missed.">    switch (tp.getType()) {</span>
+      case TypeLonglong:
+      case TypeLong:
+      case TypeInt24:
+      case TypeShort:
+      case TypeTiny:
+        // TODO: decode consider unsigned
+<span class="nc" id="L47">        return decodeInt(colData);</span>
+      case TypeFloat:
+<span class="nc" id="L49">        return decodeFloat(colData);</span>
+      case TypeDouble:
+<span class="nc" id="L51">        return decodeDouble(colData);</span>
+      case TypeString:
+      case TypeVarString:
+      case TypeVarchar:
+<span class="nc" id="L55">        return new String(colData, StandardCharsets.UTF_8);</span>
+      case TypeBlob:
+      case TypeTinyBlob:
+      case TypeMediumBlob:
+      case TypeLongBlob:
+<span class="nc" id="L60">        return colData;</span>
+      case TypeNewDecimal:
+<span class="nc" id="L62">        return decodeDecimal(colData);</span>
+      case TypeBit:
+<span class="nc" id="L64">        int byteSize = (int) ((tp.getLength() + 7) &gt;&gt;&gt; 3);</span>
+<span class="nc" id="L65">        return decodeBit(decodeInt(colData), byteSize);</span>
+      case TypeDate:
+<span class="nc" id="L67">        return new Date(decodeTimestamp(colData, Converter.getLocalTimezone()).getTime());</span>
+      case TypeDatetime:
+<span class="nc" id="L69">        return decodeTimestamp(colData, Converter.getLocalTimezone());</span>
+      case TypeTimestamp:
+<span class="nc" id="L71">        return decodeTimestamp(colData, DateTimeZone.UTC);</span>
+      case TypeDuration:
+      case TypeYear:
+<span class="nc" id="L74">        return decodeInt(colData);</span>
+      case TypeEnum:
+<span class="nc" id="L76">        return decodeEnum(colData, tp.getElems());</span>
+      case TypeSet:
+<span class="nc" id="L78">        return decodeSet(colData, tp.getElems());</span>
+      case TypeJSON:
+<span class="nc" id="L80">        return decodeJson(colData);</span>
+      case TypeNull:
+<span class="nc" id="L82">        return null;</span>
+      case TypeDecimal:
+      case TypeGeometry:
+      case TypeNewDate:
+<span class="nc" id="L86">        throw new CodecException(&quot;type should not appear in colData&quot;);</span>
+      default:
+<span class="nc" id="L88">        throw new CodecException(&quot;invalid data type &quot; + tp.getType().name());</span>
+    }
+  }
+
+  private static long decodeInt(byte[] val) {
+<span class="nc bnc" id="L93" title="All 4 branches missed.">    switch (val.length) {</span>
+      case 1:
+<span class="nc" id="L95">        return val[0];</span>
+      case 2:
+<span class="nc" id="L97">        return new CodecDataInputLittleEndian(val).readShort();</span>
+      case 4:
+<span class="nc" id="L99">        return new CodecDataInputLittleEndian(val).readInt();</span>
+      default:
+<span class="nc" id="L101">        return new CodecDataInputLittleEndian(val).readLong();</span>
+    }
+  }
+
+  private static float decodeFloat(byte[] val) {
+<span class="nc" id="L106">    return (float) decodeDouble(val);</span>
+  }
+
+  private static double decodeDouble(byte[] val) {
+<span class="nc" id="L110">    CodecDataInput cdi = new CodecDataInput(val);</span>
+<span class="nc bnc" id="L111" title="All 2 branches missed.">    if (val.length &lt; 8) {</span>
+<span class="nc" id="L112">      throw new CodecException(&quot;insufficient bytes to decode value&quot;);</span>
+    }
+<span class="nc" id="L114">    long u = cdi.readLong();</span>
+    // signMask is less than zero in int64.
+<span class="nc bnc" id="L116" title="All 2 branches missed.">    if ((u &amp; SIGN_MASK) &lt; 0) {</span>
+<span class="nc" id="L117">      u &amp;= ~SIGN_MASK;</span>
+    } else {
+<span class="nc" id="L119">      u = ~u;</span>
+    }
+<span class="nc" id="L121">    return Double.longBitsToDouble(u);</span>
+  }
+
+  private static BigDecimal decodeDecimal(byte[] val) {
+<span class="nc" id="L125">    return DecimalCodec.readDecimal(new CodecDataInputLittleEndian(val));</span>
+  }
+
+  private static byte[] trimLeadingZeroBytes(byte[] bytes) {
+<span class="nc bnc" id="L129" title="All 2 branches missed.">    if (bytes.length == 0) {</span>
+<span class="nc" id="L130">      return bytes;</span>
+    }
+<span class="nc" id="L132">    int pos = 0, posMax = bytes.length - 1;</span>
+<span class="nc bnc" id="L133" title="All 2 branches missed.">    for (; pos &lt; posMax; pos++) {</span>
+<span class="nc bnc" id="L134" title="All 2 branches missed.">      if (bytes[pos] != 0) {</span>
+<span class="nc" id="L135">        break;</span>
+      }
+    }
+<span class="nc" id="L138">    return Arrays.copyOfRange(bytes, pos, bytes.length);</span>
+  }
+
+  private static byte[] decodeBit(long val, int byteSize) {
+<span class="nc bnc" id="L142" title="All 6 branches missed.">    if (byteSize != -1 &amp;&amp; (byteSize &lt; 1 || byteSize &gt; 8)) {</span>
+<span class="nc" id="L143">      throw new CodecException(&quot;Invalid byteSize &quot; + byteSize);</span>
+    }
+<span class="nc" id="L145">    CodecDataOutput cdo = new CodecDataOutput();</span>
+<span class="nc" id="L146">    cdo.writeLong(val);</span>
+<span class="nc bnc" id="L147" title="All 2 branches missed.">    if (byteSize != -1) {</span>
+<span class="nc" id="L148">      return trimLeadingZeroBytes(cdo.toBytes());</span>
+    } else {
+<span class="nc" id="L150">      return Arrays.copyOfRange(cdo.toBytes(), 8 - byteSize, 8);</span>
+    }
+  }
+
+  private static Timestamp decodeTimestamp(byte[] val, DateTimeZone tz) {
+<span class="nc" id="L155">    ExtendedDateTime extendedDateTime =</span>
+<span class="nc" id="L156">        DateTimeCodec.fromPackedLong(new CodecDataInputLittleEndian(val).readLong(), tz);</span>
+    // Even though null is filtered out but data like 0000-00-00 exists
+    // according to MySQL JDBC behavior, it can chose the **ROUND** behavior converted to the
+    // nearest
+    // value which is 0001-01-01.
+<span class="nc bnc" id="L161" title="All 2 branches missed.">    if (extendedDateTime == null) {</span>
+<span class="nc" id="L162">      return DateTimeCodec.createExtendedDateTime(tz, 1, 1, 1, 0, 0, 0, 0).toTimeStamp();</span>
+    }
+<span class="nc" id="L164">    return extendedDateTime.toTimeStamp();</span>
+  }
+
+  private static String decodeEnum(byte[] val, List&lt;String&gt; elems) {
+<span class="nc" id="L168">    int idx = (int) decodeInt(val) - 1;</span>
+<span class="nc" id="L169">    return EnumCodec.readEnumFromIndex(idx, elems);</span>
+  }
+
+  private static String decodeSet(byte[] val, List&lt;String&gt; elems) {
+<span class="nc" id="L173">    long number = decodeInt(val);</span>
+<span class="nc" id="L174">    return SetCodec.readSetFromLong(number, elems);</span>
+  }
+
+  private static String decodeJson(byte[] val) {
+<span class="nc" id="L178">    return JsonUtils.parseJson(new CodecDataInput(val)).toString();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

@@ -1,0 +1,220 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FastByteComparisons.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.util</a> &gt; <span class="el_source">FastByteComparisons.java</span></div><h1>FastByteComparisons.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one or more contributor license
+ * agreements. See the NOTICE file distributed with this work for additional information regarding
+ * copyright ownership. The ASF licenses this file to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance with the License. You may obtain a
+ * copy of the License at
+ *
+ * &lt;p&gt;http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * &lt;p&gt;Unless required by applicable law or agreed to in writing, software distributed under the
+ * License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+ * express or implied. See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.tikv.common.util;
+
+import com.google.common.primitives.Longs;
+import com.google.common.primitives.UnsignedBytes;
+import java.lang.reflect.Field;
+import java.nio.ByteOrder;
+import java.security.AccessController;
+import java.security.PrivilegedAction;
+import sun.misc.Unsafe;
+
+/**
+ * Utility code to do optimized byte-array comparison. This is borrowed from Apache Cassandra which
+ * was borrowed from Guava in turn with minor change
+ */
+<span class="nc" id="L29">public abstract class FastByteComparisons {</span>
+
+  /** Lexicographically compare two byte arrays. */
+  public static int compareTo(byte[] b1, int s1, int l1, byte[] b2, int s2, int l2) {
+<span class="fc" id="L33">    return LexicographicalComparerHolder.BEST_COMPARER.compareTo(b1, s1, l1, b2, s2, l2);</span>
+  }
+
+  public static int compareTo(byte[] b1, byte[] b2) {
+<span class="fc" id="L37">    return LexicographicalComparerHolder.BEST_COMPARER.compareTo(</span>
+        b1, 0, b1.length, b2, 0, b2.length);
+  }
+
+  private interface Comparer&lt;T&gt; {
+    int compareTo(T buffer1, int offset1, int length1, T buffer2, int offset2, int length2);
+  }
+
+  private static Comparer&lt;byte[]&gt; lexicographicalComparerJavaImpl() {
+<span class="nc" id="L46">    return LexicographicalComparerHolder.PureJavaComparer.INSTANCE;</span>
+  }
+
+  /**
+   * Provides a lexicographical comparer implementation; either a Java implementation or a faster
+   * implementation based on {@link Unsafe}.
+   *
+   * &lt;p&gt;Uses reflection to gracefully fall back to the Java implementation if {@code Unsafe} isn't
+   * available.
+   */
+  private static class LexicographicalComparerHolder {
+<span class="fc" id="L57">    static final String UNSAFE_COMPARER_NAME =</span>
+<span class="fc" id="L58">        LexicographicalComparerHolder.class.getName() + &quot;$UnsafeComparer&quot;;</span>
+
+<span class="fc" id="L60">    static final Comparer&lt;byte[]&gt; BEST_COMPARER = getBestComparer();</span>
+    /**
+     * Returns the Unsafe-using Comparer, or falls back to the pure-Java implementation if unable to
+     * do so.
+     */
+    static Comparer&lt;byte[]&gt; getBestComparer() {
+      try {
+<span class="fc" id="L67">        Class&lt;?&gt; theClass = Class.forName(UNSAFE_COMPARER_NAME);</span>
+
+        // yes, UnsafeComparer does implement Comparer&lt;byte[]&gt;
+        @SuppressWarnings(&quot;unchecked&quot;)
+<span class="fc" id="L71">        Comparer&lt;byte[]&gt; comparer = (Comparer&lt;byte[]&gt;) theClass.getEnumConstants()[0];</span>
+<span class="fc" id="L72">        return comparer;</span>
+<span class="nc" id="L73">      } catch (Throwable t) { // ensure we really catch *everything*</span>
+<span class="nc" id="L74">        return lexicographicalComparerJavaImpl();</span>
+      }
+    }
+
+<span class="nc" id="L78">    private enum PureJavaComparer implements Comparer&lt;byte[]&gt; {</span>
+<span class="nc" id="L79">      INSTANCE;</span>
+
+      @Override
+      public int compareTo(
+          byte[] buffer1, int offset1, int length1, byte[] buffer2, int offset2, int length2) {
+        // Short circuit equal case
+<span class="nc bnc" id="L85" title="All 6 branches missed.">        if (buffer1 == buffer2 &amp;&amp; offset1 == offset2 &amp;&amp; length1 == length2) {</span>
+<span class="nc" id="L86">          return 0;</span>
+        }
+<span class="nc" id="L88">        int end1 = offset1 + length1;</span>
+<span class="nc" id="L89">        int end2 = offset2 + length2;</span>
+<span class="nc bnc" id="L90" title="All 4 branches missed.">        for (int i = offset1, j = offset2; i &lt; end1 &amp;&amp; j &lt; end2; i++, j++) {</span>
+<span class="nc" id="L91">          int a = (buffer1[i] &amp; 0xff);</span>
+<span class="nc" id="L92">          int b = (buffer2[j] &amp; 0xff);</span>
+<span class="nc bnc" id="L93" title="All 2 branches missed.">          if (a != b) {</span>
+<span class="nc" id="L94">            return a - b;</span>
+          }
+        }
+<span class="nc" id="L97">        return length1 - length2;</span>
+      }
+    }
+
+<span class="fc" id="L101">    @SuppressWarnings(&quot;unused&quot;) // used via reflection</span>
+    private enum UnsafeComparer implements Comparer&lt;byte[]&gt; {
+<span class="fc" id="L103">      INSTANCE;</span>
+
+      static final Unsafe theUnsafe;
+
+      /** The offset to the first element in a byte array. */
+      static final int BYTE_ARRAY_BASE_OFFSET;
+
+      static {
+<span class="fc" id="L111">        theUnsafe =</span>
+            (Unsafe)
+<span class="fc" id="L113">                AccessController.doPrivileged(</span>
+<span class="fc" id="L114">                    new PrivilegedAction&lt;Object&gt;() {</span>
+                      @Override
+                      public Object run() {
+                        try {
+<span class="fc" id="L118">                          Field f = Unsafe.class.getDeclaredField(&quot;theUnsafe&quot;);</span>
+<span class="fc" id="L119">                          f.setAccessible(true);</span>
+<span class="fc" id="L120">                          return f.get(null);</span>
+<span class="nc" id="L121">                        } catch (NoSuchFieldException e) {</span>
+                          // It doesn't matter what we throw;
+                          // it's swallowed in getBestComparer().
+<span class="nc" id="L124">                          throw new Error();</span>
+<span class="nc" id="L125">                        } catch (IllegalAccessException e) {</span>
+<span class="nc" id="L126">                          throw new Error();</span>
+                        }
+                      }
+                    });
+
+<span class="fc" id="L131">        BYTE_ARRAY_BASE_OFFSET = theUnsafe.arrayBaseOffset(byte[].class);</span>
+
+        // sanity check - this should never fail
+<span class="pc bpc" id="L134" title="1 of 2 branches missed.">        if (theUnsafe.arrayIndexScale(byte[].class) != 1) {</span>
+<span class="nc" id="L135">          throw new AssertionError();</span>
+        }
+      }
+
+<span class="fc" id="L139">      static final boolean littleEndian = ByteOrder.nativeOrder().equals(ByteOrder.LITTLE_ENDIAN);</span>
+
+      /** Returns true if x1 is less than x2, when both values are treated as unsigned. */
+      static boolean lessThanUnsigned(long x1, long x2) {
+<span class="nc bnc" id="L143" title="All 2 branches missed.">        return (x1 + Long.MIN_VALUE) &lt; (x2 + Long.MIN_VALUE);</span>
+      }
+
+      /**
+       * Lexicographically compare two arrays.
+       *
+       * @param buffer1 left operand
+       * @param buffer2 right operand
+       * @param offset1 Where to start comparing in the left buffer
+       * @param offset2 Where to start comparing in the right buffer
+       * @param length1 How much to compare from the left buffer
+       * @param length2 How much to compare from the right buffer
+       * @return 0 if equal, &lt; 0 if left is less than right, etc.
+       */
+      @Override
+      public int compareTo(
+          byte[] buffer1, int offset1, int length1, byte[] buffer2, int offset2, int length2) {
+        // Short circuit equal case
+<span class="pc bpc" id="L161" title="2 of 6 branches missed.">        if (buffer1 == buffer2 &amp;&amp; offset1 == offset2 &amp;&amp; length1 == length2) {</span>
+<span class="fc" id="L162">          return 0;</span>
+        }
+<span class="fc" id="L164">        int minLength = Math.min(length1, length2);</span>
+<span class="fc" id="L165">        int minWords = minLength / Longs.BYTES;</span>
+<span class="fc" id="L166">        int offset1Adj = offset1 + BYTE_ARRAY_BASE_OFFSET;</span>
+<span class="fc" id="L167">        int offset2Adj = offset2 + BYTE_ARRAY_BASE_OFFSET;</span>
+
+        /*
+         * Compare 8 bytes at a time. Benchmarking shows comparing 8 bytes at a
+         * time is no slower than comparing 4 bytes at a time even on 32-bit.
+         * On the other hand, it is substantially faster on 64-bit.
+         */
+<span class="fc bfc" id="L174" title="All 2 branches covered.">        for (int i = 0; i &lt; minWords * Longs.BYTES; i += Longs.BYTES) {</span>
+<span class="fc" id="L175">          long lw = theUnsafe.getLong(buffer1, offset1Adj + (long) i);</span>
+<span class="fc" id="L176">          long rw = theUnsafe.getLong(buffer2, offset2Adj + (long) i);</span>
+<span class="fc" id="L177">          long diff = lw ^ rw;</span>
+
+<span class="fc bfc" id="L179" title="All 2 branches covered.">          if (diff != 0) {</span>
+<span class="pc bpc" id="L180" title="1 of 2 branches missed.">            if (!littleEndian) {</span>
+<span class="nc bnc" id="L181" title="All 2 branches missed.">              return lessThanUnsigned(lw, rw) ? -1 : 1;</span>
+            }
+
+            // Use binary search
+<span class="fc" id="L185">            int n = 0;</span>
+            int y;
+<span class="fc" id="L187">            int x = (int) diff;</span>
+<span class="fc bfc" id="L188" title="All 2 branches covered.">            if (x == 0) {</span>
+<span class="fc" id="L189">              x = (int) (diff &gt;&gt;&gt; 32);</span>
+<span class="fc" id="L190">              n = 32;</span>
+            }
+
+<span class="fc" id="L193">            y = x &lt;&lt; 16;</span>
+<span class="fc bfc" id="L194" title="All 2 branches covered.">            if (y == 0) {</span>
+<span class="fc" id="L195">              n += 16;</span>
+            } else {
+<span class="fc" id="L197">              x = y;</span>
+            }
+
+<span class="fc" id="L200">            y = x &lt;&lt; 8;</span>
+<span class="fc bfc" id="L201" title="All 2 branches covered.">            if (y == 0) {</span>
+<span class="fc" id="L202">              n += 8;</span>
+            }
+<span class="fc" id="L204">            return (int) (((lw &gt;&gt;&gt; n) &amp; 0xFFL) - ((rw &gt;&gt;&gt; n) &amp; 0xFFL));</span>
+          }
+        }
+
+        // The epilogue to cover the last (minLength % 8) elements.
+<span class="fc bfc" id="L209" title="All 2 branches covered.">        for (int i = minWords * Longs.BYTES; i &lt; minLength; i++) {</span>
+<span class="fc" id="L210">          int result = UnsignedBytes.compare(buffer1[offset1 + i], buffer2[offset2 + i]);</span>
+<span class="fc bfc" id="L211" title="All 2 branches covered.">          if (result != 0) {</span>
+<span class="fc" id="L212">            return result;</span>
+          }
+        }
+<span class="fc" id="L215">        return length1 - length2;</span>
+      }
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

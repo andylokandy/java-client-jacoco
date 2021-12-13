@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MetaCodec.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.codec</a> &gt; <span class="el_source">MetaCodec.java</span></div><h1>MetaCodec.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.codec;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import com.google.protobuf.ByteString;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import org.tikv.common.Snapshot;
+import org.tikv.common.codec.Codec.BytesCodec;
+import org.tikv.common.codec.Codec.IntegerCodec;
+import org.tikv.common.exception.TiClientInternalException;
+import org.tikv.common.util.Pair;
+import org.tikv.kvproto.Kvrpcpb.KvPair;
+
+<span class="nc" id="L31">public class MetaCodec {</span>
+  public static final String ENCODED_DB_PREFIX = &quot;DB&quot;;
+  public static final String KEY_TID = &quot;TID&quot;;
+<span class="nc" id="L34">  private static final byte[] META_PREFIX = new byte[] {'m'};</span>
+  private static final byte HASH_DATA_FLAG = 'h';
+  private static final byte HASH_META_FLAG = 'H';
+  private static final byte STR_DATA_FLAG = 's';
+<span class="nc" id="L38">  public static ByteString KEY_DBs = ByteString.copyFromUtf8(&quot;DBs&quot;);</span>
+<span class="nc" id="L39">  public static String KEY_TABLE = &quot;Table&quot;;</span>
+<span class="nc" id="L40">  public static ByteString KEY_SCHEMA_VERSION = ByteString.copyFromUtf8(&quot;SchemaVersionKey&quot;);</span>
+
+  public static void encodeStringDataKey(CodecDataOutput cdo, byte[] key) {
+<span class="nc" id="L43">    cdo.write(META_PREFIX);</span>
+<span class="nc" id="L44">    BytesCodec.writeBytes(cdo, key);</span>
+<span class="nc" id="L45">    IntegerCodec.writeULong(cdo, STR_DATA_FLAG);</span>
+<span class="nc" id="L46">  }</span>
+
+  public static void encodeHashDataKey(CodecDataOutput cdo, byte[] key, byte[] field) {
+<span class="nc" id="L49">    cdo.write(META_PREFIX);</span>
+<span class="nc" id="L50">    BytesCodec.writeBytes(cdo, key);</span>
+<span class="nc" id="L51">    IntegerCodec.writeULong(cdo, HASH_DATA_FLAG);</span>
+<span class="nc" id="L52">    BytesCodec.writeBytes(cdo, field);</span>
+<span class="nc" id="L53">  }</span>
+
+  public static ByteString encodeHashMetaKey(CodecDataOutput cdo, byte[] key) {
+<span class="nc" id="L56">    cdo.write(META_PREFIX);</span>
+<span class="nc" id="L57">    BytesCodec.writeBytes(cdo, key);</span>
+<span class="nc" id="L58">    IntegerCodec.writeULong(cdo, HASH_META_FLAG);</span>
+<span class="nc" id="L59">    return cdo.toByteString();</span>
+  }
+
+  public static void encodeHashDataKeyPrefix(CodecDataOutput cdo, byte[] key) {
+<span class="nc" id="L63">    cdo.write(META_PREFIX);</span>
+<span class="nc" id="L64">    BytesCodec.writeBytes(cdo, key);</span>
+<span class="nc" id="L65">    IntegerCodec.writeULong(cdo, HASH_DATA_FLAG);</span>
+<span class="nc" id="L66">  }</span>
+
+  public static Pair&lt;ByteString, ByteString&gt; decodeHashDataKey(ByteString rawKey) {
+<span class="nc" id="L69">    checkArgument(</span>
+<span class="nc" id="L70">        KeyUtils.hasPrefix(rawKey, ByteString.copyFrom(META_PREFIX)),</span>
+        &quot;invalid encoded hash data key prefix: &quot; + new String(META_PREFIX));
+<span class="nc" id="L72">    CodecDataInput cdi = new CodecDataInput(rawKey.toByteArray());</span>
+<span class="nc" id="L73">    cdi.skipBytes(META_PREFIX.length);</span>
+<span class="nc" id="L74">    byte[] key = BytesCodec.readBytes(cdi);</span>
+<span class="nc" id="L75">    long typeFlag = IntegerCodec.readULong(cdi);</span>
+<span class="nc bnc" id="L76" title="All 2 branches missed.">    if (typeFlag != HASH_DATA_FLAG) {</span>
+<span class="nc" id="L77">      throw new TiClientInternalException(&quot;Invalid hash data flag: &quot; + typeFlag);</span>
+    }
+<span class="nc" id="L79">    byte[] field = BytesCodec.readBytes(cdi);</span>
+<span class="nc" id="L80">    return Pair.create(ByteString.copyFrom(key), ByteString.copyFrom(field));</span>
+  }
+
+  public static ByteString autoTableIDKey(long tableId) {
+<span class="nc" id="L84">    return ByteString.copyFrom(String.format(&quot;%s:%d&quot;, KEY_TID, tableId).getBytes());</span>
+  }
+
+  public static ByteString tableKey(long tableId) {
+<span class="nc" id="L88">    return ByteString.copyFrom(String.format(&quot;%s:%d&quot;, KEY_TABLE, tableId).getBytes());</span>
+  }
+
+  public static ByteString encodeDatabaseID(long id) {
+<span class="nc" id="L92">    return ByteString.copyFrom(String.format(&quot;%s:%d&quot;, ENCODED_DB_PREFIX, id).getBytes());</span>
+  }
+
+  public static ByteString hashGet(ByteString key, ByteString field, Snapshot snapshot) {
+<span class="nc" id="L96">    CodecDataOutput cdo = new CodecDataOutput();</span>
+<span class="nc" id="L97">    MetaCodec.encodeHashDataKey(cdo, key.toByteArray(), field.toByteArray());</span>
+<span class="nc" id="L98">    return snapshot.get(cdo.toByteString());</span>
+  }
+
+  public static ByteString bytesGet(ByteString key, Snapshot snapshot) {
+<span class="nc" id="L102">    CodecDataOutput cdo = new CodecDataOutput();</span>
+<span class="nc" id="L103">    MetaCodec.encodeStringDataKey(cdo, key.toByteArray());</span>
+<span class="nc" id="L104">    return snapshot.get(cdo.toByteString());</span>
+  }
+
+  public static List&lt;Pair&lt;ByteString, ByteString&gt;&gt; hashGetFields(
+      ByteString key, Snapshot snapshot) {
+<span class="nc" id="L109">    CodecDataOutput cdo = new CodecDataOutput();</span>
+<span class="nc" id="L110">    MetaCodec.encodeHashDataKeyPrefix(cdo, key.toByteArray());</span>
+<span class="nc" id="L111">    ByteString encodedKey = cdo.toByteString();</span>
+
+<span class="nc" id="L113">    Iterator&lt;KvPair&gt; iterator = snapshot.scanPrefix(encodedKey);</span>
+<span class="nc" id="L114">    List&lt;Pair&lt;ByteString, ByteString&gt;&gt; fields = new ArrayList&lt;&gt;();</span>
+<span class="nc bnc" id="L115" title="All 2 branches missed.">    while (iterator.hasNext()) {</span>
+<span class="nc" id="L116">      KvPair kv = iterator.next();</span>
+<span class="nc bnc" id="L117" title="All 4 branches missed.">      if (kv == null || kv.getKey() == null) {</span>
+<span class="nc" id="L118">        continue;</span>
+      }
+<span class="nc" id="L120">      fields.add(Pair.create(MetaCodec.decodeHashDataKey(kv.getKey()).second, kv.getValue()));</span>
+<span class="nc" id="L121">    }</span>
+
+<span class="nc" id="L123">    return fields;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

@@ -1,0 +1,819 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TiConfiguration.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common</a> &gt; <span class="el_source">TiConfiguration.java</span></div><h1>TiConfiguration.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common;
+
+import static org.tikv.common.ConfigUtils.*;
+
+import io.grpc.Metadata;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.Serializable;
+import java.net.URI;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.pd.PDUtils;
+import org.tikv.common.replica.ReplicaSelector;
+import org.tikv.kvproto.Kvrpcpb.CommandPri;
+import org.tikv.kvproto.Kvrpcpb.IsolationLevel;
+
+<span class="fc" id="L34">public class TiConfiguration implements Serializable {</span>
+
+<span class="fc" id="L36">  private static final Logger logger = LoggerFactory.getLogger(TiConfiguration.class);</span>
+<span class="fc" id="L37">  private static final ConcurrentHashMap&lt;String, String&gt; settings = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L38">  public static final Metadata.Key&lt;String&gt; FORWARD_META_DATA_KEY =</span>
+<span class="fc" id="L39">      Metadata.Key.of(&quot;tikv-forwarded-host&quot;, Metadata.ASCII_STRING_MARSHALLER);</span>
+<span class="fc" id="L40">  public static final Metadata.Key&lt;String&gt; PD_FORWARD_META_DATA_KEY =</span>
+<span class="fc" id="L41">      Metadata.Key.of(&quot;pd-forwarded-host&quot;, Metadata.ASCII_STRING_MARSHALLER);</span>
+
+  static {
+    // priority: system environment &gt; config file &gt; default
+<span class="fc" id="L45">    loadFromSystemProperties();</span>
+<span class="fc" id="L46">    loadFromConfigurationFile();</span>
+<span class="fc" id="L47">    loadFromDefaultProperties();</span>
+<span class="fc" id="L48">    listAll();</span>
+<span class="fc" id="L49">  }</span>
+
+  private static void loadFromSystemProperties() {
+<span class="fc bfc" id="L52" title="All 2 branches covered.">    for (Map.Entry&lt;String, String&gt; prop : Utils.getSystemProperties().entrySet()) {</span>
+<span class="pc bpc" id="L53" title="1 of 2 branches missed.">      if (prop.getKey().startsWith(&quot;tikv.&quot;)) {</span>
+<span class="nc" id="L54">        set(prop.getKey(), prop.getValue());</span>
+      }
+<span class="fc" id="L56">    }</span>
+<span class="fc" id="L57">  }</span>
+
+  private static void loadFromConfigurationFile() {
+<span class="fc" id="L60">    try (InputStream input =</span>
+        TiConfiguration.class
+<span class="fc" id="L62">            .getClassLoader()</span>
+<span class="fc" id="L63">            .getResourceAsStream(ConfigUtils.TIKV_CONFIGURATION_FILENAME)) {</span>
+<span class="fc" id="L64">      Properties properties = new Properties();</span>
+
+<span class="pc bpc" id="L66" title="1 of 2 branches missed.">      if (input == null) {</span>
+<span class="nc" id="L67">        logger.warn(&quot;Unable to find &quot; + ConfigUtils.TIKV_CONFIGURATION_FILENAME);</span>
+<span class="nc" id="L68">        return;</span>
+      }
+
+<span class="fc" id="L71">      logger.info(&quot;loading &quot; + ConfigUtils.TIKV_CONFIGURATION_FILENAME);</span>
+<span class="fc" id="L72">      properties.load(input);</span>
+<span class="fc bfc" id="L73" title="All 2 branches covered.">      for (String key : properties.stringPropertyNames()) {</span>
+<span class="pc bpc" id="L74" title="1 of 2 branches missed.">        if (key.startsWith(&quot;tikv.&quot;)) {</span>
+<span class="fc" id="L75">          String value = properties.getProperty(key);</span>
+<span class="fc" id="L76">          setIfMissing(key, value);</span>
+        }
+<span class="fc" id="L78">      }</span>
+<span class="nc" id="L79">    } catch (IOException e) {</span>
+<span class="nc" id="L80">      logger.error(&quot;load config file error&quot;, e);</span>
+<span class="fc" id="L81">    }</span>
+<span class="fc" id="L82">  }</span>
+
+  private static void loadFromDefaultProperties() {
+<span class="fc" id="L85">    setIfMissing(TIKV_PD_ADDRESSES, DEF_PD_ADDRESSES);</span>
+<span class="fc" id="L86">    setIfMissing(TIKV_GRPC_TIMEOUT, DEF_TIMEOUT);</span>
+<span class="fc" id="L87">    setIfMissing(TIKV_GRPC_FORWARD_TIMEOUT, DEF_FORWARD_TIMEOUT);</span>
+<span class="fc" id="L88">    setIfMissing(TIKV_GRPC_SCAN_TIMEOUT, DEF_SCAN_TIMEOUT);</span>
+<span class="fc" id="L89">    setIfMissing(TIKV_GRPC_SCAN_BATCH_SIZE, DEF_SCAN_BATCH_SIZE);</span>
+<span class="fc" id="L90">    setIfMissing(TIKV_GRPC_MAX_FRAME_SIZE, DEF_MAX_FRAME_SIZE);</span>
+<span class="fc" id="L91">    setIfMissing(TIKV_INDEX_SCAN_BATCH_SIZE, DEF_INDEX_SCAN_BATCH_SIZE);</span>
+<span class="fc" id="L92">    setIfMissing(TIKV_INDEX_SCAN_CONCURRENCY, DEF_INDEX_SCAN_CONCURRENCY);</span>
+<span class="fc" id="L93">    setIfMissing(TIKV_TABLE_SCAN_CONCURRENCY, DEF_TABLE_SCAN_CONCURRENCY);</span>
+<span class="fc" id="L94">    setIfMissing(TIKV_BATCH_GET_CONCURRENCY, DEF_BATCH_GET_CONCURRENCY);</span>
+<span class="fc" id="L95">    setIfMissing(TIKV_BATCH_PUT_CONCURRENCY, DEF_BATCH_PUT_CONCURRENCY);</span>
+<span class="fc" id="L96">    setIfMissing(TIKV_BATCH_DELETE_CONCURRENCY, DEF_BATCH_DELETE_CONCURRENCY);</span>
+<span class="fc" id="L97">    setIfMissing(TIKV_BATCH_SCAN_CONCURRENCY, DEF_BATCH_SCAN_CONCURRENCY);</span>
+<span class="fc" id="L98">    setIfMissing(TIKV_DELETE_RANGE_CONCURRENCY, DEF_DELETE_RANGE_CONCURRENCY);</span>
+<span class="fc" id="L99">    setIfMissing(TIKV_REQUEST_COMMAND_PRIORITY, LOW_COMMAND_PRIORITY);</span>
+<span class="fc" id="L100">    setIfMissing(TIKV_REQUEST_ISOLATION_LEVEL, SNAPSHOT_ISOLATION_LEVEL);</span>
+<span class="fc" id="L101">    setIfMissing(TIKV_REQUEST_ISOLATION_LEVEL, SNAPSHOT_ISOLATION_LEVEL);</span>
+<span class="fc" id="L102">    setIfMissing(TIKV_SHOW_ROWID, DEF_SHOW_ROWID);</span>
+<span class="fc" id="L103">    setIfMissing(TIKV_DB_PREFIX, DEF_DB_PREFIX);</span>
+<span class="fc" id="L104">    setIfMissing(TIKV_DB_PREFIX, DEF_DB_PREFIX);</span>
+<span class="fc" id="L105">    setIfMissing(TIKV_KV_CLIENT_CONCURRENCY, DEF_KV_CLIENT_CONCURRENCY);</span>
+<span class="fc" id="L106">    setIfMissing(TIKV_KV_MODE, TXN_KV_MODE);</span>
+<span class="fc" id="L107">    setIfMissing(TIKV_REPLICA_READ, DEF_REPLICA_READ);</span>
+<span class="fc" id="L108">    setIfMissing(TIKV_METRICS_ENABLE, DEF_METRICS_ENABLE);</span>
+<span class="fc" id="L109">    setIfMissing(TIKV_METRICS_PORT, DEF_METRICS_PORT);</span>
+<span class="fc" id="L110">    setIfMissing(TIKV_NETWORK_MAPPING_NAME, DEF_TIKV_NETWORK_MAPPING_NAME);</span>
+<span class="fc" id="L111">    setIfMissing(TIKV_ENABLE_GRPC_FORWARD, DEF_GRPC_FORWARD_ENABLE);</span>
+<span class="fc" id="L112">    setIfMissing(TIKV_GRPC_HEALTH_CHECK_TIMEOUT, DEF_CHECK_HEALTH_TIMEOUT);</span>
+<span class="fc" id="L113">    setIfMissing(TIKV_HEALTH_CHECK_PERIOD_DURATION, DEF_HEALTH_CHECK_PERIOD_DURATION);</span>
+<span class="fc" id="L114">    setIfMissing(TIKV_RAWKV_DEFAULT_BACKOFF_IN_MS, DEF_TIKV_RAWKV_DEFAULT_BACKOFF_IN_MS);</span>
+<span class="fc" id="L115">    setIfMissing(TIKV_GRPC_IDLE_TIMEOUT, DEF_TIKV_GRPC_IDLE_TIMEOUT);</span>
+<span class="fc" id="L116">    setIfMissing(TIKV_RAWKV_READ_TIMEOUT_IN_MS, DEF_TIKV_RAWKV_READ_TIMEOUT_IN_MS);</span>
+<span class="fc" id="L117">    setIfMissing(TIKV_RAWKV_WRITE_TIMEOUT_IN_MS, DEF_TIKV_RAWKV_WRITE_TIMEOUT_IN_MS);</span>
+<span class="fc" id="L118">    setIfMissing(TIKV_RAWKV_BATCH_READ_TIMEOUT_IN_MS, DEF_TIKV_RAWKV_BATCH_READ_TIMEOUT_IN_MS);</span>
+<span class="fc" id="L119">    setIfMissing(TIKV_RAWKV_BATCH_WRITE_TIMEOUT_IN_MS, DEF_TIKV_RAWKV_BATCH_WRITE_TIMEOUT_IN_MS);</span>
+<span class="fc" id="L120">    setIfMissing(TIKV_RAWKV_SCAN_TIMEOUT_IN_MS, DEF_TIKV_RAWKV_SCAN_TIMEOUT_IN_MS);</span>
+<span class="fc" id="L121">    setIfMissing(TIKV_RAWKV_CLEAN_TIMEOUT_IN_MS, DEF_TIKV_RAWKV_CLEAN_TIMEOUT_IN_MS);</span>
+<span class="fc" id="L122">    setIfMissing(TIKV_BO_REGION_MISS_BASE_IN_MS, DEF_TIKV_BO_REGION_MISS_BASE_IN_MS);</span>
+<span class="fc" id="L123">    setIfMissing(TIKV_RAWKV_SCAN_SLOWLOG_IN_MS, DEF_TIKV_RAWKV_SCAN_SLOWLOG_IN_MS);</span>
+<span class="fc" id="L124">    setIfMissing(TiKV_CIRCUIT_BREAK_ENABLE, DEF_TiKV_CIRCUIT_BREAK_ENABLE);</span>
+<span class="fc" id="L125">    setIfMissing(</span>
+        TiKV_CIRCUIT_BREAK_AVAILABILITY_WINDOW_IN_SECONDS,
+        DEF_TiKV_CIRCUIT_BREAK_AVAILABILITY_WINDOW_IN_SECONDS);
+<span class="fc" id="L128">    setIfMissing(</span>
+        TiKV_CIRCUIT_BREAK_AVAILABILITY_ERROR_THRESHOLD_PERCENTAGE,
+        DEF_TiKV_CIRCUIT_BREAK_AVAILABILITY_ERROR_THRESHOLD_PERCENTAGE);
+<span class="fc" id="L131">    setIfMissing(</span>
+        TiKV_CIRCUIT_BREAK_AVAILABILITY_REQUEST_VOLUMN_THRESHOLD,
+        DEF_TiKV_CIRCUIT_BREAK_AVAILABILITY_REQUST_VOLUMN_THRESHOLD);
+<span class="fc" id="L134">    setIfMissing(</span>
+        TiKV_CIRCUIT_BREAK_SLEEP_WINDOW_IN_SECONDS, DEF_TiKV_CIRCUIT_BREAK_SLEEP_WINDOW_IN_SECONDS);
+<span class="fc" id="L136">    setIfMissing(</span>
+        TiKV_CIRCUIT_BREAK_ATTEMPT_REQUEST_COUNT, DEF_TiKV_CIRCUIT_BREAK_ATTEMPT_REQUEST_COUNT);
+<span class="fc" id="L138">  }</span>
+
+  public static void listAll() {
+<span class="fc" id="L141">    logger.info(&quot;static configurations are:&quot; + new ArrayList&lt;&gt;(settings.entrySet()).toString());</span>
+<span class="fc" id="L142">  }</span>
+
+  private static void set(String key, String value) {
+<span class="nc bnc" id="L145" title="All 2 branches missed.">    if (key == null) {</span>
+<span class="nc" id="L146">      throw new NullPointerException(&quot;null key&quot;);</span>
+    }
+<span class="nc bnc" id="L148" title="All 2 branches missed.">    if (value == null) {</span>
+<span class="nc" id="L149">      throw new NullPointerException(&quot;null value for &quot; + key);</span>
+    }
+<span class="nc" id="L151">    settings.put(key, value);</span>
+<span class="nc" id="L152">  }</span>
+
+  private static void setIfMissing(String key, int value) {
+<span class="fc" id="L155">    setIfMissing(key, String.valueOf(value));</span>
+<span class="fc" id="L156">  }</span>
+
+  private static void setIfMissing(String key, boolean value) {
+<span class="fc" id="L159">    setIfMissing(key, String.valueOf(value));</span>
+<span class="fc" id="L160">  }</span>
+
+  private static void setIfMissing(String key, String value) {
+<span class="pc bpc" id="L163" title="1 of 2 branches missed.">    if (key == null) {</span>
+<span class="nc" id="L164">      throw new NullPointerException(&quot;null key&quot;);</span>
+    }
+<span class="pc bpc" id="L166" title="1 of 2 branches missed.">    if (value == null) {</span>
+<span class="nc" id="L167">      throw new NullPointerException(&quot;null value for &quot; + key);</span>
+    }
+<span class="fc" id="L169">    settings.putIfAbsent(key, value);</span>
+<span class="fc" id="L170">  }</span>
+
+  private static Optional&lt;String&gt; getOption(String key) {
+<span class="fc" id="L173">    return Optional.ofNullable(settings.get(key));</span>
+  }
+
+  private static String get(String key) {
+<span class="fc" id="L177">    Optional&lt;String&gt; option = getOption(key);</span>
+<span class="pc bpc" id="L178" title="1 of 2 branches missed.">    if (!option.isPresent()) {</span>
+<span class="nc" id="L179">      throw new NoSuchElementException(key);</span>
+    }
+<span class="fc" id="L181">    return option.get();</span>
+  }
+
+  public static int getInt(String key) {
+<span class="fc" id="L185">    return Integer.parseInt(get(key));</span>
+  }
+
+  public static Optional&lt;Integer&gt; getIntOption(String key) {
+<span class="fc" id="L189">    return getOption(key).map(Integer::parseInt);</span>
+  }
+
+  private static int getInt(String key, int defaultValue) {
+    try {
+<span class="nc" id="L194">      return getOption(key).map(Integer::parseInt).orElse(defaultValue);</span>
+<span class="nc" id="L195">    } catch (NumberFormatException e) {</span>
+<span class="nc" id="L196">      return defaultValue;</span>
+    }
+  }
+
+  private static long getLong(String key) {
+<span class="nc" id="L201">    return Long.parseLong(get(key));</span>
+  }
+
+  private static long getLong(String key, long defaultValue) {
+    try {
+<span class="nc" id="L206">      return getOption(key).map(Long::parseLong).orElse(defaultValue);</span>
+<span class="nc" id="L207">    } catch (NumberFormatException e) {</span>
+<span class="nc" id="L208">      return defaultValue;</span>
+    }
+  }
+
+  private static double getDouble(String key) {
+<span class="nc" id="L213">    return Double.parseDouble(get(key));</span>
+  }
+
+  private static double getDouble(String key, double defaultValue) {
+    try {
+<span class="nc" id="L218">      return getOption(key).map(Double::parseDouble).orElse(defaultValue);</span>
+<span class="nc" id="L219">    } catch (NumberFormatException e) {</span>
+<span class="nc" id="L220">      return defaultValue;</span>
+    }
+  }
+
+  private static boolean getBoolean(String key) {
+<span class="fc" id="L225">    return Boolean.parseBoolean(get(key));</span>
+  }
+
+  private static boolean getBoolean(String key, boolean defaultValue) {
+    try {
+<span class="nc" id="L230">      return getOption(key).map(Boolean::parseBoolean).orElse(defaultValue);</span>
+<span class="nc" id="L231">    } catch (NumberFormatException e) {</span>
+<span class="nc" id="L232">      return defaultValue;</span>
+    }
+  }
+
+  private static Long getTimeAsMs(String key) {
+<span class="fc" id="L237">    return Utils.timeStringAsMs(get(key));</span>
+  }
+
+  private static Long getTimeAsSeconds(String key) {
+<span class="nc" id="L241">    return Utils.timeStringAsSec(get(key));</span>
+  }
+
+  private static List&lt;URI&gt; getPdAddrs(String key) {
+<span class="fc" id="L245">    Optional&lt;String&gt; pdAddrs = getOption(key);</span>
+<span class="pc bpc" id="L246" title="1 of 2 branches missed.">    if (pdAddrs.isPresent()) {</span>
+<span class="fc" id="L247">      return strToURI(pdAddrs.get());</span>
+    } else {
+<span class="nc" id="L249">      return new ArrayList&lt;&gt;();</span>
+    }
+  }
+
+  private static CommandPri getCommandPri(String key) {
+<span class="fc" id="L254">    String priority = get(key).toUpperCase(Locale.ROOT);</span>
+<span class="pc bpc" id="L255" title="3 of 4 branches missed.">    switch (priority) {</span>
+      case NORMAL_COMMAND_PRIORITY:
+<span class="nc" id="L257">        return CommandPri.Normal;</span>
+      case LOW_COMMAND_PRIORITY:
+<span class="fc" id="L259">        return CommandPri.Low;</span>
+      case HIGH_COMMAND_PRIORITY:
+<span class="nc" id="L261">        return CommandPri.High;</span>
+      default:
+<span class="nc" id="L263">        return CommandPri.UNRECOGNIZED;</span>
+    }
+  }
+
+  private static IsolationLevel getIsolationLevel(String key) {
+<span class="fc" id="L268">    String isolationLevel = get(key).toUpperCase(Locale.ROOT);</span>
+<span class="pc bpc" id="L269" title="2 of 3 branches missed.">    switch (isolationLevel) {</span>
+      case READ_COMMITTED_ISOLATION_LEVEL:
+<span class="nc" id="L271">        return IsolationLevel.RC;</span>
+      case SNAPSHOT_ISOLATION_LEVEL:
+<span class="fc" id="L273">        return IsolationLevel.SI;</span>
+      default:
+<span class="nc" id="L275">        return IsolationLevel.UNRECOGNIZED;</span>
+    }
+  }
+
+  private static KVMode getKvMode(String key) {
+<span class="pc bpc" id="L280" title="1 of 2 branches missed.">    if (get(key).toUpperCase(Locale.ROOT).equals(RAW_KV_MODE)) {</span>
+<span class="nc" id="L281">      return KVMode.RAW;</span>
+    } else {
+<span class="fc" id="L283">      return KVMode.TXN;</span>
+    }
+  }
+
+  private static ReplicaRead getReplicaRead(String key) {
+<span class="fc" id="L288">    String value = get(key).toUpperCase(Locale.ROOT);</span>
+<span class="pc bpc" id="L289" title="1 of 2 branches missed.">    if (FOLLOWER.equals(value)) {</span>
+<span class="nc" id="L290">      return ReplicaRead.FOLLOWER;</span>
+<span class="pc bpc" id="L291" title="1 of 2 branches missed.">    } else if (LEADER_AND_FOLLOWER.equals(value)) {</span>
+<span class="nc" id="L292">      return ReplicaRead.LEADER_AND_FOLLOWER;</span>
+    } else {
+<span class="fc" id="L294">      return ReplicaRead.LEADER;</span>
+    }
+  }
+
+<span class="fc" id="L298">  private long timeout = getTimeAsMs(TIKV_GRPC_TIMEOUT);</span>
+<span class="fc" id="L299">  private long forwardTimeout = getTimeAsMs(TIKV_GRPC_FORWARD_TIMEOUT);</span>
+<span class="fc" id="L300">  private long scanTimeout = getTimeAsMs(TIKV_GRPC_SCAN_TIMEOUT);</span>
+<span class="fc" id="L301">  private int maxFrameSize = getInt(TIKV_GRPC_MAX_FRAME_SIZE);</span>
+<span class="fc" id="L302">  private List&lt;URI&gt; pdAddrs = getPdAddrs(TIKV_PD_ADDRESSES);</span>
+<span class="fc" id="L303">  private int indexScanBatchSize = getInt(TIKV_INDEX_SCAN_BATCH_SIZE);</span>
+<span class="fc" id="L304">  private int indexScanConcurrency = getInt(TIKV_INDEX_SCAN_CONCURRENCY);</span>
+<span class="fc" id="L305">  private int tableScanConcurrency = getInt(TIKV_TABLE_SCAN_CONCURRENCY);</span>
+<span class="fc" id="L306">  private int batchGetConcurrency = getInt(TIKV_BATCH_GET_CONCURRENCY);</span>
+<span class="fc" id="L307">  private int batchPutConcurrency = getInt(TIKV_BATCH_PUT_CONCURRENCY);</span>
+<span class="fc" id="L308">  private int batchDeleteConcurrency = getInt(TIKV_BATCH_DELETE_CONCURRENCY);</span>
+<span class="fc" id="L309">  private int batchScanConcurrency = getInt(TIKV_BATCH_SCAN_CONCURRENCY);</span>
+<span class="fc" id="L310">  private int deleteRangeConcurrency = getInt(TIKV_DELETE_RANGE_CONCURRENCY);</span>
+<span class="fc" id="L311">  private CommandPri commandPriority = getCommandPri(TIKV_REQUEST_COMMAND_PRIORITY);</span>
+<span class="fc" id="L312">  private IsolationLevel isolationLevel = getIsolationLevel(TIKV_REQUEST_ISOLATION_LEVEL);</span>
+<span class="fc" id="L313">  private boolean showRowId = getBoolean(TIKV_SHOW_ROWID);</span>
+<span class="fc" id="L314">  private String dbPrefix = get(TIKV_DB_PREFIX);</span>
+<span class="fc" id="L315">  private KVMode kvMode = getKvMode(TIKV_KV_MODE);</span>
+<span class="fc" id="L316">  private boolean enableGrpcForward = getBoolean(TIKV_ENABLE_GRPC_FORWARD);</span>
+
+<span class="fc" id="L318">  private int kvClientConcurrency = getInt(TIKV_KV_CLIENT_CONCURRENCY);</span>
+<span class="fc" id="L319">  private ReplicaRead replicaRead = getReplicaRead(TIKV_REPLICA_READ);</span>
+<span class="fc" id="L320">  private ReplicaSelector internalReplicaSelector = getReplicaSelector(replicaRead);</span>
+  private ReplicaSelector replicaSelector;
+
+<span class="fc" id="L323">  private boolean metricsEnable = getBoolean(TIKV_METRICS_ENABLE);</span>
+<span class="fc" id="L324">  private int metricsPort = getInt(TIKV_METRICS_PORT);</span>
+<span class="fc" id="L325">  private int grpcHealthCheckTimeout = getInt(TIKV_GRPC_HEALTH_CHECK_TIMEOUT);</span>
+<span class="fc" id="L326">  private int healthCheckPeriodDuration = getInt(TIKV_HEALTH_CHECK_PERIOD_DURATION);</span>
+
+<span class="fc" id="L328">  private final String networkMappingName = get(TIKV_NETWORK_MAPPING_NAME);</span>
+<span class="fc" id="L329">  private HostMapping hostMapping = null;</span>
+
+<span class="fc" id="L331">  private int rawKVDefaultBackoffInMS = getInt(TIKV_RAWKV_DEFAULT_BACKOFF_IN_MS);</span>
+<span class="fc" id="L332">  private int rawKVReadTimeoutInMS = getInt(TIKV_RAWKV_READ_TIMEOUT_IN_MS);</span>
+<span class="fc" id="L333">  private int rawKVWriteTimeoutInMS = getInt(TIKV_RAWKV_WRITE_TIMEOUT_IN_MS);</span>
+<span class="fc" id="L334">  private int rawKVBatchReadTimeoutInMS = getInt(TIKV_RAWKV_BATCH_READ_TIMEOUT_IN_MS);</span>
+<span class="fc" id="L335">  private int rawKVBatchWriteTimeoutInMS = getInt(TIKV_RAWKV_BATCH_WRITE_TIMEOUT_IN_MS);</span>
+<span class="fc" id="L336">  private int rawKVScanTimeoutInMS = getInt(TIKV_RAWKV_SCAN_TIMEOUT_IN_MS);</span>
+<span class="fc" id="L337">  private int rawKVCleanTimeoutInMS = getInt(TIKV_RAWKV_CLEAN_TIMEOUT_IN_MS);</span>
+<span class="fc" id="L338">  private Optional&lt;Integer&gt; rawKVReadSlowLogInMS = getIntOption(TIKV_RAWKV_READ_SLOWLOG_IN_MS);</span>
+<span class="fc" id="L339">  private Optional&lt;Integer&gt; rawKVWriteSlowLogInMS = getIntOption(TIKV_RAWKV_WRITE_SLOWLOG_IN_MS);</span>
+<span class="fc" id="L340">  private Optional&lt;Integer&gt; rawKVBatchReadSlowLogInMS =</span>
+<span class="fc" id="L341">      getIntOption(TIKV_RAWKV_BATCH_READ_SLOWLOG_IN_MS);</span>
+<span class="fc" id="L342">  private Optional&lt;Integer&gt; rawKVBatchWriteSlowLogInMS =</span>
+<span class="fc" id="L343">      getIntOption(TIKV_RAWKV_BATCH_WRITE_SLOWLOG_IN_MS);</span>
+<span class="fc" id="L344">  private int rawKVScanSlowLogInMS = getInt(TIKV_RAWKV_SCAN_SLOWLOG_IN_MS);</span>
+<span class="fc" id="L345">  private int idleTimeout = getInt(TIKV_GRPC_IDLE_TIMEOUT);</span>
+<span class="fc" id="L346">  private boolean circuitBreakEnable = getBoolean(TiKV_CIRCUIT_BREAK_ENABLE);</span>
+<span class="fc" id="L347">  private int circuitBreakAvailabilityWindowInSeconds =</span>
+<span class="fc" id="L348">      getInt(TiKV_CIRCUIT_BREAK_AVAILABILITY_WINDOW_IN_SECONDS);</span>
+<span class="fc" id="L349">  private int circuitBreakAvailabilityErrorThresholdPercentage =</span>
+<span class="fc" id="L350">      getInt(TiKV_CIRCUIT_BREAK_AVAILABILITY_ERROR_THRESHOLD_PERCENTAGE);</span>
+<span class="fc" id="L351">  private int circuitBreakAvailabilityRequestVolumnThreshold =</span>
+<span class="fc" id="L352">      getInt(TiKV_CIRCUIT_BREAK_AVAILABILITY_REQUEST_VOLUMN_THRESHOLD);</span>
+<span class="fc" id="L353">  private int circuitBreakSleepWindowInSeconds = getInt(TiKV_CIRCUIT_BREAK_SLEEP_WINDOW_IN_SECONDS);</span>
+<span class="fc" id="L354">  private int circuitBreakAttemptRequestCount = getInt(TiKV_CIRCUIT_BREAK_ATTEMPT_REQUEST_COUNT);</span>
+
+<span class="fc" id="L356">  public enum KVMode {</span>
+<span class="fc" id="L357">    TXN,</span>
+<span class="fc" id="L358">    RAW</span>
+  }
+
+<span class="fc" id="L361">  public enum ReplicaRead {</span>
+<span class="fc" id="L362">    LEADER,</span>
+<span class="fc" id="L363">    FOLLOWER,</span>
+<span class="fc" id="L364">    LEADER_AND_FOLLOWER</span>
+  }
+
+  public static TiConfiguration createDefault() {
+<span class="fc" id="L368">    return new TiConfiguration();</span>
+  }
+
+  public static TiConfiguration createDefault(String pdAddrsStr) {
+<span class="fc" id="L372">    Objects.requireNonNull(pdAddrsStr, &quot;pdAddrsStr is null&quot;);</span>
+<span class="fc" id="L373">    TiConfiguration conf = new TiConfiguration();</span>
+<span class="fc" id="L374">    conf.pdAddrs = strToURI(pdAddrsStr);</span>
+<span class="fc" id="L375">    return conf;</span>
+  }
+
+  public static TiConfiguration createRawDefault() {
+<span class="fc" id="L379">    TiConfiguration conf = new TiConfiguration();</span>
+<span class="fc" id="L380">    conf.kvMode = KVMode.RAW;</span>
+<span class="fc" id="L381">    return conf;</span>
+  }
+
+  public static TiConfiguration createRawDefault(String pdAddrsStr) {
+<span class="nc" id="L385">    Objects.requireNonNull(pdAddrsStr, &quot;pdAddrsStr is null&quot;);</span>
+<span class="nc" id="L386">    TiConfiguration conf = new TiConfiguration();</span>
+<span class="nc" id="L387">    conf.pdAddrs = strToURI(pdAddrsStr);</span>
+<span class="nc" id="L388">    conf.kvMode = KVMode.RAW;</span>
+<span class="nc" id="L389">    return conf;</span>
+  }
+
+  private static List&lt;URI&gt; strToURI(String addressStr) {
+<span class="fc" id="L393">    Objects.requireNonNull(addressStr);</span>
+<span class="fc" id="L394">    String[] addrs = addressStr.split(&quot;,&quot;);</span>
+<span class="fc" id="L395">    Arrays.sort(addrs);</span>
+<span class="fc" id="L396">    return PDUtils.addrsToUrls(addrs);</span>
+  }
+
+  public static &lt;E&gt; String listToString(List&lt;E&gt; list) {
+<span class="fc" id="L400">    StringBuilder sb = new StringBuilder();</span>
+<span class="fc" id="L401">    sb.append(&quot;[&quot;);</span>
+<span class="fc bfc" id="L402" title="All 2 branches covered.">    for (int i = 0; i &lt; list.size(); i++) {</span>
+<span class="fc" id="L403">      sb.append(list.get(i).toString());</span>
+<span class="pc bpc" id="L404" title="1 of 2 branches missed.">      if (i != list.size() - 1) {</span>
+<span class="nc" id="L405">        sb.append(&quot;,&quot;);</span>
+      }
+    }
+<span class="fc" id="L408">    sb.append(&quot;]&quot;);</span>
+<span class="fc" id="L409">    return sb.toString();</span>
+  }
+
+  public long getTimeout() {
+<span class="fc" id="L413">    return timeout;</span>
+  }
+
+  public TiConfiguration setTimeout(long timeout) {
+<span class="nc" id="L417">    this.timeout = timeout;</span>
+<span class="nc" id="L418">    return this;</span>
+  }
+
+  public long getForwardTimeout() {
+<span class="nc" id="L422">    return forwardTimeout;</span>
+  }
+
+  public TiConfiguration setForwardTimeout(long timeout) {
+<span class="nc" id="L426">    this.forwardTimeout = timeout;</span>
+<span class="nc" id="L427">    return this;</span>
+  }
+
+  public long getScanTimeout() {
+<span class="fc" id="L431">    return scanTimeout;</span>
+  }
+
+  public TiConfiguration setScanTimeout(long scanTimeout) {
+<span class="nc" id="L435">    this.scanTimeout = scanTimeout;</span>
+<span class="nc" id="L436">    return this;</span>
+  }
+
+  public List&lt;URI&gt; getPdAddrs() {
+<span class="fc" id="L440">    return pdAddrs;</span>
+  }
+
+  public String getPdAddrsString() {
+<span class="fc" id="L444">    return listToString(pdAddrs);</span>
+  }
+
+  public int getScanBatchSize() {
+<span class="fc" id="L448">    return DEF_SCAN_BATCH_SIZE;</span>
+  }
+
+  public int getMaxFrameSize() {
+<span class="fc" id="L452">    return maxFrameSize;</span>
+  }
+
+  public TiConfiguration setMaxFrameSize(int maxFrameSize) {
+<span class="nc" id="L456">    this.maxFrameSize = maxFrameSize;</span>
+<span class="nc" id="L457">    return this;</span>
+  }
+
+  public int getIndexScanBatchSize() {
+<span class="nc" id="L461">    return indexScanBatchSize;</span>
+  }
+
+  public TiConfiguration setIndexScanBatchSize(int indexScanBatchSize) {
+<span class="nc" id="L465">    this.indexScanBatchSize = indexScanBatchSize;</span>
+<span class="nc" id="L466">    return this;</span>
+  }
+
+  public int getIndexScanConcurrency() {
+<span class="nc" id="L470">    return indexScanConcurrency;</span>
+  }
+
+  public TiConfiguration setIndexScanConcurrency(int indexScanConcurrency) {
+<span class="nc" id="L474">    this.indexScanConcurrency = indexScanConcurrency;</span>
+<span class="nc" id="L475">    return this;</span>
+  }
+
+  public int getTableScanConcurrency() {
+<span class="nc" id="L479">    return tableScanConcurrency;</span>
+  }
+
+  public TiConfiguration setTableScanConcurrency(int tableScanConcurrency) {
+<span class="nc" id="L483">    this.tableScanConcurrency = tableScanConcurrency;</span>
+<span class="nc" id="L484">    return this;</span>
+  }
+
+  public int getBatchGetConcurrency() {
+<span class="fc" id="L488">    return batchGetConcurrency;</span>
+  }
+
+  public TiConfiguration setBatchGetConcurrency(int batchGetConcurrency) {
+<span class="nc" id="L492">    this.batchGetConcurrency = batchGetConcurrency;</span>
+<span class="nc" id="L493">    return this;</span>
+  }
+
+  public int getBatchPutConcurrency() {
+<span class="fc" id="L497">    return batchPutConcurrency;</span>
+  }
+
+  public TiConfiguration setBatchPutConcurrency(int batchPutConcurrency) {
+<span class="nc" id="L501">    this.batchPutConcurrency = batchPutConcurrency;</span>
+<span class="nc" id="L502">    return this;</span>
+  }
+
+  public int getBatchDeleteConcurrency() {
+<span class="fc" id="L506">    return batchDeleteConcurrency;</span>
+  }
+
+  public TiConfiguration setBatchDeleteConcurrency(int batchDeleteConcurrency) {
+<span class="nc" id="L510">    this.batchDeleteConcurrency = batchDeleteConcurrency;</span>
+<span class="nc" id="L511">    return this;</span>
+  }
+
+  public int getBatchScanConcurrency() {
+<span class="fc" id="L515">    return batchScanConcurrency;</span>
+  }
+
+  public TiConfiguration setBatchScanConcurrency(int batchScanConcurrency) {
+<span class="nc" id="L519">    this.batchScanConcurrency = batchScanConcurrency;</span>
+<span class="nc" id="L520">    return this;</span>
+  }
+
+  public int getDeleteRangeConcurrency() {
+<span class="fc" id="L524">    return deleteRangeConcurrency;</span>
+  }
+
+  public TiConfiguration setDeleteRangeConcurrency(int deleteRangeConcurrency) {
+<span class="nc" id="L528">    this.deleteRangeConcurrency = deleteRangeConcurrency;</span>
+<span class="nc" id="L529">    return this;</span>
+  }
+
+  public CommandPri getCommandPriority() {
+<span class="fc" id="L533">    return commandPriority;</span>
+  }
+
+  public TiConfiguration setCommandPriority(CommandPri commandPriority) {
+<span class="nc" id="L537">    this.commandPriority = commandPriority;</span>
+<span class="nc" id="L538">    return this;</span>
+  }
+
+  public IsolationLevel getIsolationLevel() {
+<span class="fc" id="L542">    return isolationLevel;</span>
+  }
+
+  public TiConfiguration setIsolationLevel(IsolationLevel isolationLevel) {
+<span class="nc" id="L546">    this.isolationLevel = isolationLevel;</span>
+<span class="nc" id="L547">    return this;</span>
+  }
+
+  public boolean ifShowRowId() {
+<span class="nc" id="L551">    return showRowId;</span>
+  }
+
+  public TiConfiguration setShowRowId(boolean flag) {
+<span class="nc" id="L555">    this.showRowId = flag;</span>
+<span class="nc" id="L556">    return this;</span>
+  }
+
+  public String getDBPrefix() {
+<span class="fc" id="L560">    return dbPrefix;</span>
+  }
+
+  public TiConfiguration setDBPrefix(String dbPrefix) {
+<span class="nc" id="L564">    this.dbPrefix = dbPrefix;</span>
+<span class="nc" id="L565">    return this;</span>
+  }
+
+  public KVMode getKvMode() {
+<span class="fc" id="L569">    return kvMode;</span>
+  }
+
+  public TiConfiguration setKvMode(String kvMode) {
+<span class="nc" id="L573">    this.kvMode = KVMode.valueOf(kvMode);</span>
+<span class="nc" id="L574">    return this;</span>
+  }
+
+  public int getKvClientConcurrency() {
+<span class="nc" id="L578">    return kvClientConcurrency;</span>
+  }
+
+  public TiConfiguration setKvClientConcurrency(int kvClientConcurrency) {
+<span class="nc" id="L582">    this.kvClientConcurrency = kvClientConcurrency;</span>
+<span class="nc" id="L583">    return this;</span>
+  }
+
+  public ReplicaRead getReplicaRead() {
+<span class="nc" id="L587">    return replicaRead;</span>
+  }
+
+  public TiConfiguration setReplicaRead(ReplicaRead replicaRead) {
+<span class="fc" id="L591">    this.replicaRead = replicaRead;</span>
+<span class="fc" id="L592">    this.internalReplicaSelector = getReplicaSelector(this.replicaRead);</span>
+<span class="fc" id="L593">    return this;</span>
+  }
+
+  private ReplicaSelector getReplicaSelector(ReplicaRead replicaRead) {
+<span class="fc bfc" id="L597" title="All 2 branches covered.">    if (TiConfiguration.ReplicaRead.LEADER.equals(replicaRead)) {</span>
+<span class="fc" id="L598">      return ReplicaSelector.LEADER;</span>
+<span class="pc bpc" id="L599" title="1 of 2 branches missed.">    } else if (TiConfiguration.ReplicaRead.FOLLOWER.equals(replicaRead)) {</span>
+<span class="nc" id="L600">      return ReplicaSelector.FOLLOWER;</span>
+<span class="pc bpc" id="L601" title="1 of 2 branches missed.">    } else if (TiConfiguration.ReplicaRead.LEADER_AND_FOLLOWER.equals(replicaRead)) {</span>
+<span class="fc" id="L602">      return ReplicaSelector.LEADER_AND_FOLLOWER;</span>
+    } else {
+<span class="nc" id="L604">      return null;</span>
+    }
+  }
+
+  public ReplicaSelector getReplicaSelector() {
+<span class="fc bfc" id="L609" title="All 2 branches covered.">    if (replicaSelector != null) {</span>
+<span class="fc" id="L610">      return replicaSelector;</span>
+    } else {
+<span class="fc" id="L612">      return internalReplicaSelector;</span>
+    }
+  }
+
+  public void setReplicaSelector(ReplicaSelector replicaSelector) {
+<span class="fc" id="L617">    this.replicaSelector = replicaSelector;</span>
+<span class="fc" id="L618">  }</span>
+
+  public boolean isMetricsEnable() {
+<span class="fc" id="L621">    return metricsEnable;</span>
+  }
+
+  public TiConfiguration setMetricsEnable(boolean metricsEnable) {
+<span class="fc" id="L625">    this.metricsEnable = metricsEnable;</span>
+<span class="fc" id="L626">    return this;</span>
+  }
+
+  public int getMetricsPort() {
+<span class="fc" id="L630">    return metricsPort;</span>
+  }
+
+  public TiConfiguration setMetricsPort(int metricsPort) {
+<span class="fc" id="L634">    this.metricsPort = metricsPort;</span>
+<span class="fc" id="L635">    return this;</span>
+  }
+
+  public String getNetworkMappingName() {
+<span class="fc" id="L639">    return this.networkMappingName;</span>
+  }
+
+  public HostMapping getHostMapping() {
+<span class="fc" id="L643">    return hostMapping;</span>
+  }
+
+  public void setHostMapping(HostMapping mapping) {
+<span class="nc" id="L647">    this.hostMapping = mapping;</span>
+<span class="nc" id="L648">  }</span>
+
+  public boolean getEnableGrpcForward() {
+<span class="fc" id="L651">    return this.enableGrpcForward;</span>
+  }
+
+  public long getGrpcHealthCheckTimeout() {
+<span class="fc" id="L655">    return this.grpcHealthCheckTimeout;</span>
+  }
+
+  public long getHealthCheckPeriodDuration() {
+<span class="fc" id="L659">    return this.healthCheckPeriodDuration;</span>
+  }
+
+  public int getRawKVDefaultBackoffInMS() {
+<span class="fc" id="L663">    return rawKVDefaultBackoffInMS;</span>
+  }
+
+  public void setRawKVDefaultBackoffInMS(int rawKVDefaultBackoffInMS) {
+<span class="nc" id="L667">    this.rawKVDefaultBackoffInMS = rawKVDefaultBackoffInMS;</span>
+<span class="nc" id="L668">  }</span>
+
+  public int getIdleTimeout() {
+<span class="fc" id="L671">    return idleTimeout;</span>
+  }
+
+  public void setIdleTimeout(int timeout) {
+<span class="fc" id="L675">    this.idleTimeout = timeout;</span>
+<span class="fc" id="L676">  }</span>
+
+  public int getRawKVReadTimeoutInMS() {
+<span class="fc" id="L679">    return rawKVReadTimeoutInMS;</span>
+  }
+
+  public void setRawKVReadTimeoutInMS(int rawKVReadTimeoutInMS) {
+<span class="nc" id="L683">    this.rawKVReadTimeoutInMS = rawKVReadTimeoutInMS;</span>
+<span class="nc" id="L684">  }</span>
+
+  public int getRawKVWriteTimeoutInMS() {
+<span class="fc" id="L687">    return rawKVWriteTimeoutInMS;</span>
+  }
+
+  public void setRawKVWriteTimeoutInMS(int rawKVWriteTimeoutInMS) {
+<span class="nc" id="L691">    this.rawKVWriteTimeoutInMS = rawKVWriteTimeoutInMS;</span>
+<span class="nc" id="L692">  }</span>
+
+  public int getRawKVBatchReadTimeoutInMS() {
+<span class="fc" id="L695">    return rawKVBatchReadTimeoutInMS;</span>
+  }
+
+  public void setRawKVBatchReadTimeoutInMS(int rawKVBatchReadTimeoutInMS) {
+<span class="nc" id="L699">    this.rawKVBatchReadTimeoutInMS = rawKVBatchReadTimeoutInMS;</span>
+<span class="nc" id="L700">  }</span>
+
+  public int getRawKVBatchWriteTimeoutInMS() {
+<span class="fc" id="L703">    return rawKVBatchWriteTimeoutInMS;</span>
+  }
+
+  public void setRawKVBatchWriteTimeoutInMS(int rawKVBatchWriteTimeoutInMS) {
+<span class="nc" id="L707">    this.rawKVBatchWriteTimeoutInMS = rawKVBatchWriteTimeoutInMS;</span>
+<span class="nc" id="L708">  }</span>
+
+  public int getRawKVScanTimeoutInMS() {
+<span class="fc" id="L711">    return rawKVScanTimeoutInMS;</span>
+  }
+
+  public void setRawKVScanTimeoutInMS(int rawKVScanTimeoutInMS) {
+<span class="nc" id="L715">    this.rawKVScanTimeoutInMS = rawKVScanTimeoutInMS;</span>
+<span class="nc" id="L716">  }</span>
+
+  public int getRawKVCleanTimeoutInMS() {
+<span class="fc" id="L719">    return rawKVCleanTimeoutInMS;</span>
+  }
+
+  public void setRawKVCleanTimeoutInMS(int rawKVCleanTimeoutInMS) {
+<span class="nc" id="L723">    this.rawKVCleanTimeoutInMS = rawKVCleanTimeoutInMS;</span>
+<span class="nc" id="L724">  }</span>
+
+  public Integer getRawKVReadSlowLogInMS() {
+<span class="fc" id="L727">    return rawKVReadSlowLogInMS.orElse((int) (getTimeout() * 2));</span>
+  }
+
+  public void setRawKVReadSlowLogInMS(Integer rawKVReadSlowLogInMS) {
+<span class="nc" id="L731">    this.rawKVReadSlowLogInMS = Optional.of(rawKVReadSlowLogInMS);</span>
+<span class="nc" id="L732">  }</span>
+
+  public Integer getRawKVWriteSlowLogInMS() {
+<span class="fc" id="L735">    return rawKVWriteSlowLogInMS.orElse((int) (getTimeout() * 2));</span>
+  }
+
+  public void setRawKVWriteSlowLogInMS(Integer rawKVWriteSlowLogInMS) {
+<span class="nc" id="L739">    this.rawKVWriteSlowLogInMS = Optional.of(rawKVWriteSlowLogInMS);</span>
+<span class="nc" id="L740">  }</span>
+
+  public Integer getRawKVBatchReadSlowLogInMS() {
+<span class="fc" id="L743">    return rawKVBatchReadSlowLogInMS.orElse((int) (getTimeout() * 2));</span>
+  }
+
+  public void setRawKVBatchReadSlowLogInMS(Integer rawKVBatchReadSlowLogInMS) {
+<span class="nc" id="L747">    this.rawKVBatchReadSlowLogInMS = Optional.of(rawKVBatchReadSlowLogInMS);</span>
+<span class="nc" id="L748">  }</span>
+
+  public Integer getRawKVBatchWriteSlowLogInMS() {
+<span class="fc" id="L751">    return rawKVBatchWriteSlowLogInMS.orElse((int) (getTimeout() * 2));</span>
+  }
+
+  public void setRawKVBatchWriteSlowLogInMS(Integer rawKVBatchWriteSlowLogInMS) {
+<span class="nc" id="L755">    this.rawKVBatchWriteSlowLogInMS = Optional.of(rawKVBatchWriteSlowLogInMS);</span>
+<span class="nc" id="L756">  }</span>
+
+  public int getRawKVScanSlowLogInMS() {
+<span class="fc" id="L759">    return rawKVScanSlowLogInMS;</span>
+  }
+
+  public void setRawKVScanSlowLogInMS(int rawKVScanSlowLogInMS) {
+<span class="nc" id="L763">    this.rawKVScanSlowLogInMS = rawKVScanSlowLogInMS;</span>
+<span class="nc" id="L764">  }</span>
+
+  public boolean isCircuitBreakEnable() {
+<span class="fc" id="L767">    return circuitBreakEnable;</span>
+  }
+
+  public void setCircuitBreakEnable(boolean circuitBreakEnable) {
+<span class="fc" id="L771">    this.circuitBreakEnable = circuitBreakEnable;</span>
+<span class="fc" id="L772">  }</span>
+
+  public int getCircuitBreakAvailabilityWindowInSeconds() {
+<span class="fc" id="L775">    return circuitBreakAvailabilityWindowInSeconds;</span>
+  }
+
+  public void setCircuitBreakAvailabilityWindowInSeconds(
+      int circuitBreakAvailabilityWindowInSeconds) {
+<span class="fc" id="L780">    this.circuitBreakAvailabilityWindowInSeconds = circuitBreakAvailabilityWindowInSeconds;</span>
+<span class="fc" id="L781">  }</span>
+
+  public int getCircuitBreakAvailabilityErrorThresholdPercentage() {
+<span class="fc" id="L784">    return circuitBreakAvailabilityErrorThresholdPercentage;</span>
+  }
+
+  public void setCircuitBreakAvailabilityErrorThresholdPercentage(
+      int circuitBreakAvailabilityErrorThresholdPercentage) {
+<span class="fc" id="L789">    this.circuitBreakAvailabilityErrorThresholdPercentage =</span>
+        circuitBreakAvailabilityErrorThresholdPercentage;
+<span class="fc" id="L791">  }</span>
+
+  public int getCircuitBreakAvailabilityRequestVolumnThreshold() {
+<span class="fc" id="L794">    return circuitBreakAvailabilityRequestVolumnThreshold;</span>
+  }
+
+  public void setCircuitBreakAvailabilityRequestVolumnThreshold(
+      int circuitBreakAvailabilityRequestVolumnThreshold) {
+<span class="fc" id="L799">    this.circuitBreakAvailabilityRequestVolumnThreshold =</span>
+        circuitBreakAvailabilityRequestVolumnThreshold;
+<span class="fc" id="L801">  }</span>
+
+  public int getCircuitBreakSleepWindowInSeconds() {
+<span class="fc" id="L804">    return circuitBreakSleepWindowInSeconds;</span>
+  }
+
+  public void setCircuitBreakSleepWindowInSeconds(int circuitBreakSleepWindowInSeconds) {
+<span class="fc" id="L808">    this.circuitBreakSleepWindowInSeconds = circuitBreakSleepWindowInSeconds;</span>
+<span class="fc" id="L809">  }</span>
+
+  public int getCircuitBreakAttemptRequestCount() {
+<span class="fc" id="L812">    return circuitBreakAttemptRequestCount;</span>
+  }
+
+  public void setCircuitBreakAttemptRequestCount(int circuitBreakAttemptRequestCount) {
+<span class="fc" id="L816">    this.circuitBreakAttemptRequestCount = circuitBreakAttemptRequestCount;</span>
+<span class="fc" id="L817">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

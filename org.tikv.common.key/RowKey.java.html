@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RowKey.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.key</a> &gt; <span class="el_source">RowKey.java</span></div><h1>RowKey.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.key;
+
+import static org.tikv.common.codec.Codec.IntegerCodec.writeLong;
+
+import java.io.Serializable;
+import org.tikv.common.codec.Codec.IntegerCodec;
+import org.tikv.common.codec.CodecDataInput;
+import org.tikv.common.codec.CodecDataOutput;
+import org.tikv.common.exception.TiClientInternalException;
+import org.tikv.common.exception.TiExpressionException;
+
+public class RowKey extends Key implements Serializable {
+<span class="nc" id="L28">  private static final byte[] REC_PREFIX_SEP = new byte[] {'_', 'r'};</span>
+
+  private final long tableId;
+  private final long handle;
+  private final boolean maxHandleFlag;
+
+  private RowKey(long tableId, long handle) {
+<span class="nc" id="L35">    super(encode(tableId, handle));</span>
+<span class="nc" id="L36">    this.tableId = tableId;</span>
+<span class="nc" id="L37">    this.handle = handle;</span>
+<span class="nc" id="L38">    this.maxHandleFlag = false;</span>
+<span class="nc" id="L39">  }</span>
+
+  /**
+   * The RowKey indicating maximum handle (its value exceeds Long.Max_Value)
+   *
+   * &lt;p&gt;Initializes an imaginary globally MAXIMUM rowKey with tableId.
+   */
+  private RowKey(long tableId) {
+<span class="nc" id="L47">    super(encodeBeyondMaxHandle(tableId));</span>
+<span class="nc" id="L48">    this.tableId = tableId;</span>
+<span class="nc" id="L49">    this.handle = Long.MAX_VALUE;</span>
+<span class="nc" id="L50">    this.maxHandleFlag = true;</span>
+<span class="nc" id="L51">  }</span>
+
+  public static RowKey toRowKey(long tableId, long handle) {
+<span class="nc" id="L54">    return new RowKey(tableId, handle);</span>
+  }
+
+  public static RowKey toRowKey(long tableId, org.tikv.common.key.TypedKey handle) {
+<span class="nc" id="L58">    Object obj = handle.getValue();</span>
+<span class="nc bnc" id="L59" title="All 2 branches missed.">    if (obj instanceof Long) {</span>
+<span class="nc" id="L60">      return new RowKey(tableId, (long) obj);</span>
+    }
+<span class="nc" id="L62">    throw new TiExpressionException(&quot;Cannot encode row key with non-long type&quot;);</span>
+  }
+
+  public static RowKey createMin(long tableId) {
+<span class="nc" id="L66">    return toRowKey(tableId, Long.MIN_VALUE);</span>
+  }
+
+  public static RowKey createBeyondMax(long tableId) {
+<span class="nc" id="L70">    return new RowKey(tableId);</span>
+  }
+
+  public static RowKey decode(byte[] value) {
+<span class="nc" id="L74">    CodecDataInput cdi = new CodecDataInput(value);</span>
+<span class="nc" id="L75">    cdi.readByte();</span>
+<span class="nc" id="L76">    long tableId = IntegerCodec.readLong(cdi); // tableId</span>
+<span class="nc" id="L77">    cdi.readByte();</span>
+<span class="nc" id="L78">    cdi.readByte();</span>
+<span class="nc" id="L79">    long handle = IntegerCodec.readLong(cdi); // handle</span>
+<span class="nc" id="L80">    return toRowKey(tableId, handle);</span>
+  }
+
+  private static byte[] encode(long tableId, long handle) {
+<span class="nc" id="L84">    CodecDataOutput cdo = new CodecDataOutput();</span>
+<span class="nc" id="L85">    encodePrefix(cdo, tableId);</span>
+<span class="nc" id="L86">    writeLong(cdo, handle);</span>
+<span class="nc" id="L87">    return cdo.toBytes();</span>
+  }
+
+  private static byte[] encodeBeyondMaxHandle(long tableId) {
+<span class="nc" id="L91">    return prefixNext(encode(tableId, Long.MAX_VALUE));</span>
+  }
+
+  private static void encodePrefix(CodecDataOutput cdo, long tableId) {
+<span class="nc" id="L95">    cdo.write(TBL_PREFIX);</span>
+<span class="nc" id="L96">    writeLong(cdo, tableId);</span>
+<span class="nc" id="L97">    cdo.write(REC_PREFIX_SEP);</span>
+<span class="nc" id="L98">  }</span>
+
+  @Override
+  public RowKey next() {
+<span class="nc" id="L102">    long handle = getHandle();</span>
+<span class="nc" id="L103">    boolean maxHandleFlag = getMaxHandleFlag();</span>
+<span class="nc bnc" id="L104" title="All 2 branches missed.">    if (maxHandleFlag) {</span>
+<span class="nc" id="L105">      throw new TiClientInternalException(&quot;Handle overflow for Long MAX&quot;);</span>
+    }
+<span class="nc bnc" id="L107" title="All 2 branches missed.">    if (handle == Long.MAX_VALUE) {</span>
+<span class="nc" id="L108">      return createBeyondMax(tableId);</span>
+    }
+<span class="nc" id="L110">    return new RowKey(tableId, handle + 1);</span>
+  }
+
+  public long getTableId() {
+<span class="nc" id="L114">    return tableId;</span>
+  }
+
+  public long getHandle() {
+<span class="nc" id="L118">    return handle;</span>
+  }
+
+  private boolean getMaxHandleFlag() {
+<span class="nc" id="L122">    return maxHandleFlag;</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L127">    return Long.toString(handle);</span>
+  }
+
+<span class="nc" id="L130">  public static class DecodeResult {</span>
+    public long handle;
+    public Status status;
+
+<span class="nc" id="L134">    public enum Status {</span>
+<span class="nc" id="L135">      MIN,</span>
+<span class="nc" id="L136">      MAX,</span>
+<span class="nc" id="L137">      EQUAL,</span>
+<span class="nc" id="L138">      LESS,</span>
+<span class="nc" id="L139">      GREATER,</span>
+<span class="nc" id="L140">      UNKNOWN_INF</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

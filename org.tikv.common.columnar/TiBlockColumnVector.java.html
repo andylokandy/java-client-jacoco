@@ -1,0 +1,315 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TiBlockColumnVector.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.columnar</a> &gt; <span class="el_source">TiBlockColumnVector.java</span></div><h1>TiBlockColumnVector.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.columnar;
+
+import static org.tikv.common.util.MemoryUtil.EMPTY_BYTE_BUFFER_DIRECT;
+
+import java.math.BigDecimal;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.sql.Timestamp;
+import org.joda.time.LocalDate;
+import org.tikv.common.columnar.datatypes.CHType;
+import org.tikv.common.types.AbstractDateTimeType;
+import org.tikv.common.types.BytesType;
+import org.tikv.common.types.DateType;
+import org.tikv.common.util.MemoryUtil;
+
+public class TiBlockColumnVector extends TiColumnVector {
+  long offsetsAddr;
+  ByteBuffer offsets;
+  long nullMapAddr;
+  ByteBuffer nullMap;
+  long dataAddr;
+  ByteBuffer data;
+  private int fixedLength;
+
+  public TiBlockColumnVector(CHType type, ByteBuffer data, int numOfRows, int fixedLength) {
+<span class="nc" id="L41">    super(type.toDataType(), numOfRows);</span>
+<span class="nc" id="L42">    this.data = data;</span>
+<span class="nc" id="L43">    this.dataAddr = MemoryUtil.getAddress(data);</span>
+<span class="nc" id="L44">    fillEmptyNullMap();</span>
+<span class="nc" id="L45">    fillEmptyOffsets();</span>
+<span class="nc" id="L46">    this.fixedLength = fixedLength;</span>
+<span class="nc" id="L47">  }</span>
+
+  public TiBlockColumnVector(CHType type) {
+<span class="nc" id="L50">    super(type.toDataType(), 0);</span>
+<span class="nc" id="L51">  }</span>
+
+  public TiBlockColumnVector(
+      CHType type, ByteBuffer nullMap, ByteBuffer data, int numOfRows, int fixedLength) {
+    // chType -&gt; data type
+<span class="nc" id="L56">    super(type.toDataType(), numOfRows);</span>
+<span class="nc" id="L57">    this.nullMap = nullMap;</span>
+<span class="nc" id="L58">    this.nullMapAddr = MemoryUtil.getAddress(nullMap);</span>
+<span class="nc" id="L59">    this.data = data;</span>
+<span class="nc" id="L60">    this.dataAddr = MemoryUtil.getAddress(data);</span>
+<span class="nc" id="L61">    fillEmptyOffsets();</span>
+<span class="nc" id="L62">    this.fixedLength = fixedLength;</span>
+<span class="nc" id="L63">  }</span>
+
+  /** Sets up the data type of this column vector. */
+  public TiBlockColumnVector(
+      CHType type, ByteBuffer nullMap, ByteBuffer offsets, ByteBuffer data, int numOfRows) {
+    // chType -&gt; data type
+<span class="nc" id="L69">    super(type.toDataType(), numOfRows);</span>
+<span class="nc" id="L70">    this.offsets = offsets;</span>
+<span class="nc" id="L71">    this.offsetsAddr = MemoryUtil.getAddress(offsets);</span>
+<span class="nc" id="L72">    this.nullMap = nullMap;</span>
+<span class="nc" id="L73">    this.nullMapAddr = MemoryUtil.getAddress(nullMap);</span>
+<span class="nc" id="L74">    this.data = data;</span>
+<span class="nc" id="L75">    this.dataAddr = MemoryUtil.getAddress(data);</span>
+<span class="nc" id="L76">    this.fixedLength = -1;</span>
+<span class="nc" id="L77">  }</span>
+
+  private void fillEmptyNullMap() {
+<span class="nc" id="L80">    this.nullMap = EMPTY_BYTE_BUFFER_DIRECT;</span>
+<span class="nc" id="L81">    this.nullMapAddr = MemoryUtil.getAddress(this.nullMap);</span>
+<span class="nc" id="L82">  }</span>
+
+  private void fillEmptyOffsets() {
+<span class="nc" id="L85">    this.offsets = EMPTY_BYTE_BUFFER_DIRECT;</span>
+<span class="nc" id="L86">    this.offsetsAddr = MemoryUtil.getAddress(this.offsets);</span>
+<span class="nc" id="L87">  }</span>
+
+  /**
+   * Cleans up memory for this column vector. The column vector is not usable after this.
+   *
+   * &lt;p&gt;This overwrites `AutoCloseable.close` to remove the `throws` clause, as column vector is
+   * in-memory and we don't expect any exception to happen during closing.
+   */
+  @Override
+  public void close() {
+<span class="nc bnc" id="L97" title="All 2 branches missed.">    if (dataAddr != 0) {</span>
+<span class="nc" id="L98">      MemoryUtil.free(data);</span>
+    }
+
+<span class="nc bnc" id="L101" title="All 2 branches missed.">    if (offsetsAddr != 0) {</span>
+<span class="nc" id="L102">      MemoryUtil.free(offsets);</span>
+    }
+
+<span class="nc bnc" id="L105" title="All 2 branches missed.">    if (nullMapAddr != 0) {</span>
+<span class="nc" id="L106">      MemoryUtil.free(nullMap);</span>
+    }
+<span class="nc" id="L108">    dataAddr = 0;</span>
+<span class="nc" id="L109">    offsetsAddr = 0;</span>
+<span class="nc" id="L110">    nullMapAddr = 0;</span>
+<span class="nc" id="L111">  }</span>
+
+  /** Returns true if this column vector contains any null values. */
+  @Override
+  public boolean hasNull() {
+<span class="nc bnc" id="L116" title="All 2 branches missed.">    return nullMap == null;</span>
+  }
+
+  /** Returns the number of nulls in this column vector. */
+  @Override
+  public int numNulls() {
+<span class="nc" id="L122">    throw new UnsupportedOperationException(&quot;numNulls is not supported for TiBlockColumnVector&quot;);</span>
+  }
+
+  /** Returns whether the value at rowId is NULL. */
+  @Override
+  public boolean isNullAt(int rowId) {
+<span class="nc bnc" id="L128" title="All 2 branches missed.">    if (nullMap == EMPTY_BYTE_BUFFER_DIRECT) {</span>
+<span class="nc" id="L129">      return false;</span>
+    }
+<span class="nc bnc" id="L131" title="All 2 branches missed.">    return MemoryUtil.getByte(nullMapAddr + rowId) != 0;</span>
+  }
+
+  /**
+   * Returns the boolean type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  @Override
+  public boolean getBoolean(int rowId) {
+<span class="nc" id="L140">    return false;</span>
+  }
+
+  /**
+   * Returns the byte type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  @Override
+  public byte getByte(int rowId) {
+<span class="nc" id="L149">    return MemoryUtil.getByte(dataAddr + rowId);</span>
+  }
+
+  /**
+   * Returns the short type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  @Override
+  public short getShort(int rowId) {
+<span class="nc" id="L158">    return MemoryUtil.getShort(dataAddr + (rowId &lt;&lt; 1));</span>
+  }
+
+  /**
+   * Returns the int type value for rowId. The return value is undefined and can be anything, if the
+   * slot for rowId is null.
+   */
+  @Override
+  public int getInt(int rowId) {
+<span class="nc bnc" id="L167" title="All 2 branches missed.">    if (type instanceof DateType) {</span>
+<span class="nc" id="L168">      return (int) getTime(rowId);</span>
+    }
+<span class="nc" id="L170">    return MemoryUtil.getInt(dataAddr + (rowId &lt;&lt; 2));</span>
+  }
+
+  private long getDateTime(int rowId) {
+<span class="nc" id="L174">    long v = MemoryUtil.getLong(dataAddr + (rowId &lt;&lt; 3));</span>
+<span class="nc" id="L175">    long ymdhms = v &gt;&gt;&gt; 24;</span>
+<span class="nc" id="L176">    long ymd = ymdhms &gt;&gt;&gt; 17;</span>
+<span class="nc" id="L177">    int day = (int) (ymd &amp; ((1 &lt;&lt; 5) - 1));</span>
+<span class="nc" id="L178">    long ym = ymd &gt;&gt;&gt; 5;</span>
+<span class="nc" id="L179">    int month = (int) (ym % 13);</span>
+<span class="nc" id="L180">    int year = (int) (ym / 13);</span>
+
+<span class="nc" id="L182">    int hms = (int) (ymdhms &amp; ((1 &lt;&lt; 17) - 1));</span>
+<span class="nc" id="L183">    int second = hms &amp; ((1 &lt;&lt; 6) - 1);</span>
+<span class="nc" id="L184">    int minute = (hms &gt;&gt;&gt; 6) &amp; ((1 &lt;&lt; 6) - 1);</span>
+<span class="nc" id="L185">    int hour = hms &gt;&gt;&gt; 12;</span>
+<span class="nc" id="L186">    int microsec = (int) (v % (1 &lt;&lt; 24));</span>
+<span class="nc" id="L187">    Timestamp ts =</span>
+        new Timestamp(year - 1900, month - 1, day, hour, minute, second, microsec * 1000);
+<span class="nc" id="L189">    return ts.getTime() / 1000 * 1000000 + ts.getNanos() / 1000;</span>
+  }
+
+  private long getTime(int rowId) {
+<span class="nc" id="L193">    long v = MemoryUtil.getLong(dataAddr + (rowId &lt;&lt; 3));</span>
+<span class="nc" id="L194">    long ymd = v &gt;&gt;&gt; 41;</span>
+<span class="nc" id="L195">    long ym = ymd &gt;&gt;&gt; 5;</span>
+<span class="nc" id="L196">    int year = (int) (ym / 13);</span>
+<span class="nc" id="L197">    int month = (int) (ym % 13);</span>
+<span class="nc" id="L198">    int day = (int) (ymd &amp; ((1 &lt;&lt; 5) - 1));</span>
+<span class="nc" id="L199">    LocalDate date = new LocalDate(year, month, day);</span>
+<span class="nc" id="L200">    return ((DateType) type).getDays(date);</span>
+  }
+  /**
+   * Returns the long type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  @Override
+  public long getLong(int rowId) {
+<span class="nc bnc" id="L208" title="All 2 branches missed.">    if (type instanceof AbstractDateTimeType) {</span>
+<span class="nc" id="L209">      return getDateTime(rowId);</span>
+    }
+<span class="nc bnc" id="L211" title="All 2 branches missed.">    if (fixedLength == 1) {</span>
+<span class="nc" id="L212">      return getByte(rowId);</span>
+<span class="nc bnc" id="L213" title="All 2 branches missed.">    } else if (fixedLength == 2) {</span>
+<span class="nc" id="L214">      return getShort(rowId);</span>
+<span class="nc bnc" id="L215" title="All 2 branches missed.">    } else if (fixedLength == 4) {</span>
+<span class="nc" id="L216">      return getInt(rowId);</span>
+<span class="nc bnc" id="L217" title="All 2 branches missed.">    } else if (fixedLength == 8) {</span>
+<span class="nc" id="L218">      return MemoryUtil.getLong(dataAddr + (rowId * fixedLength));</span>
+    }
+<span class="nc" id="L220">    throw new UnsupportedOperationException(</span>
+<span class="nc" id="L221">        String.format(&quot;getting long with fixed length %d&quot;, fixedLength));</span>
+  }
+
+  /**
+   * Returns the float type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  @Override
+  public float getFloat(int rowId) {
+<span class="nc" id="L230">    return MemoryUtil.getFloat(dataAddr + (rowId * fixedLength));</span>
+  }
+
+  /**
+   * Returns the double type value for rowId. The return value is undefined and can be anything, if
+   * the slot for rowId is null.
+   */
+  @Override
+  public double getDouble(int rowId) {
+<span class="nc" id="L239">    return MemoryUtil.getDouble(dataAddr + (rowId * fixedLength));</span>
+  }
+
+  /**
+   * Returns the decimal type value for rowId. If the slot for rowId is null, it should return null.
+   */
+  @Override
+  public BigDecimal getDecimal(int rowId, int precision, int scale) {
+<span class="nc" id="L247">    long rowIdAddr = rowId * fixedLength + dataAddr;</span>
+<span class="nc bnc" id="L248" title="All 2 branches missed.">    if (fixedLength == 4) {</span>
+<span class="nc" id="L249">      return MemoryUtil.getDecimal32(rowIdAddr, scale);</span>
+<span class="nc bnc" id="L250" title="All 2 branches missed.">    } else if (fixedLength == 8) {</span>
+<span class="nc" id="L251">      return MemoryUtil.getDecimal64(rowIdAddr, scale);</span>
+<span class="nc bnc" id="L252" title="All 2 branches missed.">    } else if (fixedLength == 16) {</span>
+<span class="nc" id="L253">      return MemoryUtil.getDecimal128(rowIdAddr, scale);</span>
+    } else {
+<span class="nc" id="L255">      return MemoryUtil.getDecimal256(rowIdAddr, scale);</span>
+    }
+  }
+
+  private long offsetAt(int i) {
+<span class="nc bnc" id="L260" title="All 2 branches missed.">    return i == 0 ? 0 : MemoryUtil.getLong(offsetsAddr + ((i - 1) &lt;&lt; 3));</span>
+  }
+
+  public int sizeAt(int i) {
+<span class="nc bnc" id="L264" title="All 2 branches missed.">    return (int)</span>
+        (i == 0
+<span class="nc" id="L266">            ? MemoryUtil.getLong(offsetsAddr)</span>
+<span class="nc" id="L267">            : MemoryUtil.getLong(offsetsAddr + (i &lt;&lt; 3))</span>
+<span class="nc" id="L268">                - MemoryUtil.getLong(offsetsAddr + ((i - 1) &lt;&lt; 3)));</span>
+  }
+
+  /**
+   * Returns the string type value for rowId. If the slot for rowId is null, it should return null.
+   * Note that the returned UTF8String may point to the data of this column vector, please copy it
+   * if you want to keep it after this column vector is freed.
+   */
+  @Override
+  public String getUTF8String(int rowId) {
+    // FixedString case
+<span class="nc bnc" id="L279" title="All 2 branches missed.">    if (fixedLength != -1) {</span>
+<span class="nc" id="L280">      byte[] chars = new byte[fixedLength];</span>
+<span class="nc" id="L281">      MemoryUtil.getBytes((int) (dataAddr + fixedLength * rowId), chars, 0, fixedLength);</span>
+<span class="nc" id="L282">      return new String(chars);</span>
+    } else {
+<span class="nc" id="L284">      long offset = (dataAddr + offsetAt(rowId));</span>
+<span class="nc" id="L285">      int numBytes = sizeAt(rowId) - 1;</span>
+<span class="nc" id="L286">      byte[] chars = new byte[numBytes];</span>
+<span class="nc" id="L287">      MemoryUtil.getBytes(offset, chars, 0, numBytes);</span>
+<span class="nc" id="L288">      return new String(chars, StandardCharsets.UTF_8);</span>
+    }
+  }
+
+  /**
+   * Returns the binary type value for rowId. If the slot for rowId is null, it should return null.
+   */
+  @Override
+  public byte[] getBinary(int rowId) {
+<span class="nc bnc" id="L297" title="All 4 branches missed.">    if (type.equals(BytesType.BLOB) || type.equals(BytesType.TINY_BLOB)) {</span>
+<span class="nc" id="L298">      long offset = (dataAddr + offsetAt(rowId));</span>
+<span class="nc" id="L299">      int numBytes = sizeAt(rowId) - 1;</span>
+<span class="nc" id="L300">      byte[] ret = new byte[numBytes];</span>
+<span class="nc" id="L301">      MemoryUtil.getBytes(offset, ret, 0, numBytes);</span>
+<span class="nc" id="L302">      return ret;</span>
+    } else {
+<span class="nc" id="L304">      throw new UnsupportedOperationException(</span>
+          &quot;get Binary for TiBlockColumnVector is not supported&quot;);
+    }
+  }
+
+  /** @return child [[TiColumnVector]] at the given ordinal. */
+  @Override
+  protected TiColumnVector getChild(int ordinal) {
+<span class="nc" id="L312">    throw new UnsupportedOperationException(&quot;getChild is not supported for TiBlockColumnVector&quot;);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

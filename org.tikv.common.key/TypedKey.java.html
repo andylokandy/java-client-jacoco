@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TypedKey.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.key</a> &gt; <span class="el_source">TypedKey.java</span></div><h1>TypedKey.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.key;
+
+import static java.util.Objects.requireNonNull;
+
+import org.tikv.common.codec.CodecDataInput;
+import org.tikv.common.codec.CodecDataOutput;
+import org.tikv.common.codec.KeyUtils;
+import org.tikv.common.exception.TypeException;
+import org.tikv.common.types.BytesType;
+import org.tikv.common.types.DataType;
+import org.tikv.common.types.IntegerType;
+import org.tikv.common.types.StringType;
+
+public class TypedKey extends Key {
+  private final DataType type;
+  private final int prefixLength;
+
+  public TypedKey(Object val, DataType type, int prefixLength) {
+<span class="nc" id="L34">    super(encodeKey(val, type, prefixLength));</span>
+<span class="nc" id="L35">    this.type = type;</span>
+<span class="nc" id="L36">    this.prefixLength = prefixLength;</span>
+<span class="nc" id="L37">  }</span>
+
+  private TypedKey(byte[] val, DataType type) {
+<span class="nc" id="L40">    super(val);</span>
+<span class="nc" id="L41">    this.type = type;</span>
+<span class="nc" id="L42">    this.prefixLength = DataType.UNSPECIFIED_LEN;</span>
+<span class="nc" id="L43">  }</span>
+
+  /**
+   * Map a typed value into TypedKey, only encoding first prefixLength bytes
+   *
+   * &lt;p&gt;When prefixLength is DataType.UNSPECIFIED_LEN, encode full length of value
+   *
+   * @param val value
+   * @param type type of value
+   * @param prefixLength described above
+   * @return an encoded TypedKey
+   */
+  public static TypedKey toTypedKey(Object val, DataType type, int prefixLength) {
+<span class="nc" id="L56">    requireNonNull(type, &quot;type is null&quot;);</span>
+<span class="nc" id="L57">    return new TypedKey(val, type, prefixLength);</span>
+  }
+
+  public static TypedKey toTypedKey(Object val, DataType type) {
+<span class="nc" id="L61">    return toTypedKey(val, type, DataType.UNSPECIFIED_LEN);</span>
+  }
+
+  private static byte[] encodeKey(Object val, DataType type, int prefixLength) {
+<span class="nc" id="L65">    CodecDataOutput cdo = new CodecDataOutput();</span>
+<span class="nc" id="L66">    type.encodeKey(cdo, val, prefixLength);</span>
+<span class="nc" id="L67">    return cdo.toBytes();</span>
+  }
+
+  public DataType getType() {
+<span class="nc" id="L71">    return type;</span>
+  }
+
+  public Object getValue() {
+<span class="nc" id="L75">    CodecDataInput cdi = new CodecDataInput(value);</span>
+<span class="nc" id="L76">    return type.decode(cdi);</span>
+  }
+
+  @Override
+  public TypedKey nextPrefix() {
+<span class="nc" id="L81">    return toRawTypedKey(prefixNext(value), type);</span>
+  }
+
+  private TypedKey toRawTypedKey(byte[] val, DataType type) {
+<span class="nc" id="L85">    return new TypedKey(val, type);</span>
+  }
+
+  /**
+   * Next TypedKey be truncated with prefixLength
+   *
+   * @return next TypedKey with same prefix length
+   */
+  @Override
+  public TypedKey next() {
+<span class="nc" id="L95">    DataType tp = getType();</span>
+<span class="nc" id="L96">    Object val = getValue();</span>
+<span class="nc bnc" id="L97" title="All 2 branches missed.">    if (tp instanceof StringType) {</span>
+<span class="nc" id="L98">      return toTypedKey(prefixNext(((String) val).getBytes()), type, prefixLength);</span>
+<span class="nc bnc" id="L99" title="All 2 branches missed.">    } else if (tp instanceof BytesType) {</span>
+<span class="nc" id="L100">      return toTypedKey(prefixNext(((byte[]) val)), type, prefixLength);</span>
+<span class="nc bnc" id="L101" title="All 2 branches missed.">    } else if (DataType.isLengthUnSpecified(prefixLength)) {</span>
+<span class="nc bnc" id="L102" title="All 2 branches missed.">      if (tp instanceof IntegerType) {</span>
+<span class="nc" id="L103">        return toTypedKey(((long) val) + 1, type);</span>
+      } else {
+        // use byte array type when next key is hard to identify
+<span class="nc" id="L106">        return toRawTypedKey(prefixNext(value), type);</span>
+      }
+    } else {
+<span class="nc" id="L109">      throw new TypeException(</span>
+          &quot;When prefix length is defined, type for TypedKey in next() function must be either String or Byte array. Actual: &quot;
+<span class="nc" id="L111">              + val.getClass().getName());</span>
+    }
+  }
+
+  @Override
+  public String toString() {
+    try {
+<span class="nc" id="L118">      CodecDataInput cdi = new CodecDataInput(value);</span>
+<span class="nc" id="L119">      Object val = type.decode(cdi);</span>
+<span class="nc bnc" id="L120" title="All 2 branches missed.">      if (val instanceof byte[]) {</span>
+<span class="nc" id="L121">        return KeyUtils.formatBytes(value);</span>
+      }
+<span class="nc" id="L123">      return val.toString();</span>
+<span class="nc" id="L124">    } catch (Exception e) {</span>
+<span class="nc" id="L125">      return &quot;raw value:&quot; + KeyUtils.formatBytesUTF8(value);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

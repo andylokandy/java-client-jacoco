@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>KVErrorHandler.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.operation</a> &gt; <span class="el_source">KVErrorHandler.java</span></div><h1>KVErrorHandler.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.operation;
+
+import static org.tikv.common.util.BackOffFunction.BackOffFuncType.BoTxnLockFast;
+
+import java.util.Collections;
+import java.util.function.Function;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.exception.GrpcException;
+import org.tikv.common.exception.KeyException;
+import org.tikv.common.region.RegionErrorReceiver;
+import org.tikv.common.region.RegionManager;
+import org.tikv.common.util.BackOffer;
+import org.tikv.kvproto.Errorpb;
+import org.tikv.kvproto.Kvrpcpb;
+import org.tikv.txn.AbstractLockResolverClient;
+import org.tikv.txn.Lock;
+import org.tikv.txn.ResolveLockResult;
+
+// TODO: consider refactor to Builder mode
+public class KVErrorHandler&lt;RespT&gt; implements ErrorHandler&lt;RespT&gt; {
+<span class="fc" id="L39">  private static final Logger logger = LoggerFactory.getLogger(KVErrorHandler.class);</span>
+  private final Function&lt;RespT, Kvrpcpb.KeyError&gt; getKeyError;
+  private final Function&lt;ResolveLockResult, Object&gt; resolveLockResultCallback;
+  private final AbstractLockResolverClient lockResolverClient;
+  private final long callerStartTS;
+  private final boolean forWrite;
+  private final RegionErrorHandler&lt;RespT&gt; regionHandler;
+
+  public KVErrorHandler(
+      RegionManager regionManager,
+      RegionErrorReceiver recv,
+      AbstractLockResolverClient lockResolverClient,
+      Function&lt;RespT, Errorpb.Error&gt; getRegionError,
+      Function&lt;RespT, Kvrpcpb.KeyError&gt; getKeyError,
+      Function&lt;ResolveLockResult, Object&gt; resolveLockResultCallback,
+      long callerStartTS,
+<span class="fc" id="L55">      boolean forWrite) {</span>
+<span class="fc" id="L56">    this.regionHandler = new RegionErrorHandler&lt;&gt;(regionManager, recv, getRegionError);</span>
+<span class="fc" id="L57">    this.lockResolverClient = lockResolverClient;</span>
+<span class="fc" id="L58">    this.getKeyError = getKeyError;</span>
+<span class="fc" id="L59">    this.resolveLockResultCallback = resolveLockResultCallback;</span>
+<span class="fc" id="L60">    this.callerStartTS = callerStartTS;</span>
+<span class="fc" id="L61">    this.forWrite = forWrite;</span>
+<span class="fc" id="L62">  }</span>
+
+  private void resolveLock(BackOffer backOffer, Lock lock) {
+<span class="nc bnc" id="L65" title="All 2 branches missed.">    if (lockResolverClient != null) {</span>
+<span class="nc" id="L66">      logger.warn(&quot;resolving lock&quot;);</span>
+
+<span class="nc" id="L68">      ResolveLockResult resolveLockResult =</span>
+<span class="nc" id="L69">          lockResolverClient.resolveLocks(</span>
+<span class="nc" id="L70">              backOffer, callerStartTS, Collections.singletonList(lock), forWrite);</span>
+<span class="nc" id="L71">      resolveLockResultCallback.apply(resolveLockResult);</span>
+<span class="nc" id="L72">      long msBeforeExpired = resolveLockResult.getMsBeforeTxnExpired();</span>
+<span class="nc bnc" id="L73" title="All 2 branches missed.">      if (msBeforeExpired &gt; 0) {</span>
+        // if not resolve all locks, we wait and retry
+<span class="nc" id="L75">        backOffer.doBackOffWithMaxSleep(</span>
+<span class="nc" id="L76">            BoTxnLockFast, msBeforeExpired, new KeyException(lock.toString()));</span>
+      }
+    }
+<span class="nc" id="L79">  }</span>
+
+  // Referenced from TiDB
+  // store/tikv/region_request.go - onRegionError
+
+  /** @return true: client should retry */
+  @Override
+  public boolean handleResponseError(BackOffer backOffer, RespT resp) {
+<span class="pc bpc" id="L87" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L88">      String msg =</span>
+<span class="nc" id="L89">          String.format(&quot;Request Failed with unknown reason for [%s]&quot;, regionHandler.getRegion());</span>
+<span class="nc" id="L90">      logger.warn(msg);</span>
+<span class="nc" id="L91">      return handleRequestError(backOffer, new GrpcException(msg));</span>
+    }
+
+<span class="fc" id="L94">    Errorpb.Error error = regionHandler.getRegionError(resp);</span>
+<span class="fc bfc" id="L95" title="All 2 branches covered.">    if (error != null) {</span>
+<span class="nc" id="L96">      return regionHandler.handleRegionError(backOffer, error);</span>
+    }
+
+    // Key error handling logic
+<span class="fc" id="L100">    Kvrpcpb.KeyError keyError = getKeyError.apply(resp);</span>
+<span class="fc bfc" id="L101" title="All 2 branches covered.">    if (keyError != null) {</span>
+      try {
+<span class="nc" id="L103">        Lock lock = AbstractLockResolverClient.extractLockFromKeyErr(keyError);</span>
+<span class="nc" id="L104">        resolveLock(backOffer, lock);</span>
+<span class="nc" id="L105">        return true;</span>
+<span class="fc" id="L106">      } catch (KeyException e) {</span>
+<span class="fc" id="L107">        logger.warn(&quot;Unable to handle KeyExceptions other than LockException&quot;, e);</span>
+      }
+    }
+<span class="fc" id="L110">    return false;</span>
+  }
+
+  @Override
+  public boolean handleRequestError(BackOffer backOffer, Exception e) {
+<span class="nc" id="L115">    return regionHandler.handleRequestError(backOffer, e);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

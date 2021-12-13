@@ -1,0 +1,268 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DAGIterator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.operation.iterator</a> &gt; <span class="el_source">DAGIterator.java</span></div><h1>DAGIterator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.operation.iterator;
+
+import static org.tikv.common.meta.TiDAGRequest.PushDownType.STREAMING;
+
+import com.pingcap.tidb.tipb.Chunk;
+import com.pingcap.tidb.tipb.DAGRequest;
+import com.pingcap.tidb.tipb.EncodeType;
+import com.pingcap.tidb.tipb.SelectResponse;
+import java.util.*;
+import java.util.concurrent.ExecutorCompletionService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.TiSession;
+import org.tikv.common.exception.RegionTaskException;
+import org.tikv.common.exception.TiClientInternalException;
+import org.tikv.common.meta.TiDAGRequest.PushDownType;
+import org.tikv.common.operation.SchemaInfer;
+import org.tikv.common.region.RegionStoreClient;
+import org.tikv.common.region.TiRegion;
+import org.tikv.common.region.TiStore;
+import org.tikv.common.region.TiStoreType;
+import org.tikv.common.util.BackOffer;
+import org.tikv.common.util.ConcreteBackOffer;
+import org.tikv.common.util.RangeSplitter;
+import org.tikv.kvproto.Coprocessor;
+
+public abstract class DAGIterator&lt;T&gt;
+    extends org.tikv.common.operation.iterator.CoprocessorIterator&lt;T&gt; {
+<span class="nc" id="L44">  private static final Logger logger = LoggerFactory.getLogger(DAGIterator.class.getName());</span>
+  private final PushDownType pushDownType;
+  private final TiStoreType storeType;
+  private final long startTs;
+  protected EncodeType encodeType;
+  private ExecutorCompletionService&lt;Iterator&lt;SelectResponse&gt;&gt; streamingService;
+  private ExecutorCompletionService&lt;SelectResponse&gt; dagService;
+  private SelectResponse response;
+  private Iterator&lt;SelectResponse&gt; responseIterator;
+
+  DAGIterator(
+      DAGRequest req,
+      List&lt;RangeSplitter.RegionTask&gt; regionTasks,
+      TiSession session,
+      SchemaInfer infer,
+      PushDownType pushDownType,
+      TiStoreType storeType,
+      long startTs) {
+<span class="nc" id="L62">    super(req, regionTasks, session, infer);</span>
+<span class="nc" id="L63">    this.pushDownType = pushDownType;</span>
+<span class="nc" id="L64">    this.storeType = storeType;</span>
+<span class="nc" id="L65">    this.startTs = startTs;</span>
+<span class="nc bnc" id="L66" title="All 3 branches missed.">    switch (pushDownType) {</span>
+      case NORMAL:
+<span class="nc" id="L68">        dagService = new ExecutorCompletionService&lt;&gt;(session.getThreadPoolForTableScan());</span>
+<span class="nc" id="L69">        break;</span>
+      case STREAMING:
+<span class="nc" id="L71">        streamingService = new ExecutorCompletionService&lt;&gt;(session.getThreadPoolForTableScan());</span>
+        break;
+    }
+<span class="nc" id="L74">    submitTasks();</span>
+<span class="nc" id="L75">  }</span>
+
+  @Override
+  void submitTasks() {
+<span class="nc bnc" id="L79" title="All 2 branches missed.">    for (RangeSplitter.RegionTask task : regionTasks) {</span>
+<span class="nc bnc" id="L80" title="All 3 branches missed.">      switch (pushDownType) {</span>
+        case STREAMING:
+<span class="nc" id="L82">          streamingService.submit(() -&gt; processByStreaming(task));</span>
+<span class="nc" id="L83">          break;</span>
+        case NORMAL:
+<span class="nc" id="L85">          dagService.submit(() -&gt; process(task));</span>
+          break;
+      }
+<span class="nc" id="L88">    }</span>
+<span class="nc" id="L89">  }</span>
+
+  @Override
+  public boolean hasNext() {
+<span class="nc bnc" id="L93" title="All 2 branches missed.">    if (eof) {</span>
+<span class="nc" id="L94">      return false;</span>
+    }
+
+<span class="nc bnc" id="L97" title="All 6 branches missed.">    while (chunkList == null || chunkIndex &gt;= chunkList.size() || dataInput.available() &lt;= 0) {</span>
+      // First we check if our chunk list has remaining chunk
+<span class="nc bnc" id="L99" title="All 2 branches missed.">      if (tryAdvanceChunkIndex()) {</span>
+<span class="nc" id="L100">        createDataInputReader();</span>
+      }
+      // If not, check next region/response
+<span class="nc bnc" id="L103" title="All 2 branches missed.">      else if (pushDownType == STREAMING) {</span>
+<span class="nc bnc" id="L104" title="All 4 branches missed.">        if (!advanceNextResponse() &amp;&amp; !readNextRegionChunks()) {</span>
+<span class="nc" id="L105">          return false;</span>
+        }
+<span class="nc bnc" id="L107" title="All 2 branches missed.">      } else if (!readNextRegionChunks()) {</span>
+<span class="nc" id="L108">        return false;</span>
+      }
+    }
+
+<span class="nc" id="L112">    return true;</span>
+  }
+
+  private boolean hasMoreResponse() {
+<span class="nc bnc" id="L116" title="All 3 branches missed.">    switch (pushDownType) {</span>
+      case STREAMING:
+<span class="nc bnc" id="L118" title="All 4 branches missed.">        return responseIterator != null &amp;&amp; responseIterator.hasNext();</span>
+      case NORMAL:
+<span class="nc bnc" id="L120" title="All 2 branches missed.">        return response != null;</span>
+    }
+
+<span class="nc" id="L123">    throw new IllegalArgumentException(&quot;Invalid push down type:&quot; + pushDownType);</span>
+  }
+
+  private boolean advanceNextResponse() {
+<span class="nc bnc" id="L127" title="All 2 branches missed.">    if (!hasMoreResponse()) {</span>
+<span class="nc" id="L128">      return false;</span>
+    }
+
+<span class="nc bnc" id="L131" title="All 3 branches missed.">    switch (pushDownType) {</span>
+      case STREAMING:
+<span class="nc" id="L133">        SelectResponse resp = responseIterator.next();</span>
+<span class="nc" id="L134">        chunkList = resp.getChunksList();</span>
+<span class="nc" id="L135">        this.encodeType = resp.getEncodeType();</span>
+<span class="nc" id="L136">        break;</span>
+      case NORMAL:
+<span class="nc" id="L138">        chunkList = response.getChunksList();</span>
+<span class="nc" id="L139">        this.encodeType = this.response.getEncodeType();</span>
+        break;
+    }
+
+<span class="nc bnc" id="L143" title="All 4 branches missed.">    if (chunkList == null || chunkList.isEmpty()) {</span>
+<span class="nc" id="L144">      return false;</span>
+    }
+
+<span class="nc" id="L147">    chunkIndex = 0;</span>
+<span class="nc" id="L148">    createDataInputReader();</span>
+<span class="nc" id="L149">    return true;</span>
+  }
+
+  /**
+   * chunk maybe empty while there is still data transmitting from TiKV. In this case, {@code
+   * readNextRegionChunks} cannot just returns false because the iterator thinks there is no data to
+   * process. This while loop ensures we can drain all possible data transmitting from TiKV.
+   *
+   * @return
+   */
+  private boolean readNextRegionChunks() {
+<span class="nc bnc" id="L160" title="All 2 branches missed.">    while (hasNextRegionTask()) {</span>
+<span class="nc bnc" id="L161" title="All 2 branches missed.">      if (doReadNextRegionChunks()) {</span>
+<span class="nc" id="L162">        return true;</span>
+      }
+    }
+<span class="nc" id="L165">    return false;</span>
+  }
+
+  private boolean hasNextRegionTask() {
+<span class="nc bnc" id="L169" title="All 6 branches missed.">    return !(eof || regionTasks == null || taskIndex &gt;= regionTasks.size());</span>
+  }
+
+  private boolean doReadNextRegionChunks() {
+    try {
+<span class="nc bnc" id="L174" title="All 3 branches missed.">      switch (pushDownType) {</span>
+        case STREAMING:
+<span class="nc" id="L176">          responseIterator = streamingService.take().get();</span>
+<span class="nc" id="L177">          break;</span>
+        case NORMAL:
+<span class="nc" id="L179">          response = dagService.take().get();</span>
+          break;
+      }
+
+<span class="nc" id="L183">    } catch (Exception e) {</span>
+<span class="nc" id="L184">      throw new TiClientInternalException(&quot;Error reading region:&quot;, e);</span>
+<span class="nc" id="L185">    }</span>
+
+<span class="nc" id="L187">    taskIndex++;</span>
+<span class="nc" id="L188">    return advanceNextResponse();</span>
+  }
+
+  private SelectResponse process(RangeSplitter.RegionTask regionTask) {
+<span class="nc" id="L192">    Queue&lt;RangeSplitter.RegionTask&gt; remainTasks = new ArrayDeque&lt;&gt;();</span>
+<span class="nc" id="L193">    Queue&lt;SelectResponse&gt; responseQueue = new ArrayDeque&lt;&gt;();</span>
+<span class="nc" id="L194">    remainTasks.add(regionTask);</span>
+<span class="nc" id="L195">    BackOffer backOffer = ConcreteBackOffer.newCopNextMaxBackOff();</span>
+
+<span class="nc" id="L197">    HashSet&lt;Long&gt; resolvedLocks = new HashSet&lt;&gt;();</span>
+    // In case of one region task spilt into several others, we ues a queue to properly handle all
+    // the remaining tasks.
+<span class="nc bnc" id="L200" title="All 2 branches missed.">    while (!remainTasks.isEmpty()) {</span>
+<span class="nc" id="L201">      RangeSplitter.RegionTask task = remainTasks.poll();</span>
+<span class="nc bnc" id="L202" title="All 2 branches missed.">      if (task == null) {</span>
+<span class="nc" id="L203">        continue;</span>
+      }
+<span class="nc" id="L205">      List&lt;Coprocessor.KeyRange&gt; ranges = task.getRanges();</span>
+<span class="nc" id="L206">      TiRegion region = task.getRegion();</span>
+<span class="nc" id="L207">      TiStore store = task.getStore();</span>
+
+      try {
+<span class="nc" id="L210">        RegionStoreClient client =</span>
+<span class="nc" id="L211">            session.getRegionStoreClientBuilder().build(region, store, storeType);</span>
+<span class="nc" id="L212">        client.addResolvedLocks(startTs, resolvedLocks);</span>
+<span class="nc" id="L213">        Collection&lt;RangeSplitter.RegionTask&gt; tasks =</span>
+<span class="nc" id="L214">            client.coprocess(backOffer, dagRequest, ranges, responseQueue, startTs);</span>
+<span class="nc bnc" id="L215" title="All 2 branches missed.">        if (tasks != null) {</span>
+<span class="nc" id="L216">          remainTasks.addAll(tasks);</span>
+        }
+<span class="nc" id="L218">        resolvedLocks.addAll(client.getResolvedLocks(startTs));</span>
+<span class="nc" id="L219">      } catch (Throwable e) {</span>
+        // Handle region task failed
+<span class="nc" id="L221">        logger.error(</span>
+            &quot;Process region tasks failed, remain &quot;
+<span class="nc" id="L223">                + remainTasks.size()</span>
+                + &quot; tasks not executed due to&quot;,
+            e);
+        // Rethrow to upper levels
+<span class="nc" id="L227">        eof = true;</span>
+<span class="nc" id="L228">        throw new RegionTaskException(&quot;Handle region task failed:&quot;, e);</span>
+<span class="nc" id="L229">      }</span>
+<span class="nc" id="L230">    }</span>
+
+    // Add all chunks to the final result
+<span class="nc" id="L233">    List&lt;Chunk&gt; resultChunk = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L234">    EncodeType encodeType = null;</span>
+<span class="nc bnc" id="L235" title="All 2 branches missed.">    while (!responseQueue.isEmpty()) {</span>
+<span class="nc" id="L236">      SelectResponse response = responseQueue.poll();</span>
+<span class="nc bnc" id="L237" title="All 2 branches missed.">      if (response != null) {</span>
+<span class="nc" id="L238">        encodeType = response.getEncodeType();</span>
+<span class="nc" id="L239">        resultChunk.addAll(response.getChunksList());</span>
+      }
+<span class="nc" id="L241">    }</span>
+
+<span class="nc" id="L243">    return SelectResponse.newBuilder().addAllChunks(resultChunk).setEncodeType(encodeType).build();</span>
+  }
+
+  private Iterator&lt;SelectResponse&gt; processByStreaming(RangeSplitter.RegionTask regionTask) {
+<span class="nc" id="L247">    List&lt;Coprocessor.KeyRange&gt; ranges = regionTask.getRanges();</span>
+<span class="nc" id="L248">    TiRegion region = regionTask.getRegion();</span>
+<span class="nc" id="L249">    TiStore store = regionTask.getStore();</span>
+
+    RegionStoreClient client;
+    try {
+<span class="nc" id="L253">      client = session.getRegionStoreClientBuilder().build(region, store, storeType);</span>
+<span class="nc" id="L254">      Iterator&lt;SelectResponse&gt; responseIterator =</span>
+<span class="nc" id="L255">          client.coprocessStreaming(dagRequest, ranges, startTs);</span>
+<span class="nc bnc" id="L256" title="All 2 branches missed.">      if (responseIterator == null) {</span>
+<span class="nc" id="L257">        eof = true;</span>
+<span class="nc" id="L258">        return null;</span>
+      }
+<span class="nc" id="L260">      return responseIterator;</span>
+<span class="nc" id="L261">    } catch (Exception e) {</span>
+      // TODO: Fix stale error handling in streaming
+      // see:https://github.com/pingcap/tikv-client-lib-java/pull/149
+<span class="nc" id="L264">      throw new TiClientInternalException(&quot;Error Closing Store client.&quot;, e);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

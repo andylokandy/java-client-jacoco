@@ -1,0 +1,228 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AstBuilder.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.parser</a> &gt; <span class="el_source">AstBuilder.java</span></div><h1>AstBuilder.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.parser;
+
+import static org.tikv.common.types.IntegerType.BOOLEAN;
+
+import com.google.common.primitives.Doubles;
+import org.antlr.v4.runtime.tree.TerminalNode;
+import org.tikv.common.exception.UnsupportedSyntaxException;
+import org.tikv.common.expression.*;
+import org.tikv.common.expression.FuncCallExpr.Type;
+import org.tikv.common.meta.TiTableInfo;
+import org.tikv.common.parser.MySqlParser.ExpressionContext;
+import org.tikv.common.parser.MySqlParser.FunctionNameBaseContext;
+import org.tikv.common.types.IntegerType;
+import org.tikv.common.types.RealType;
+
+// AstBuilder will convert ParseTree into Ast Node.
+// In tikv java client, we only need to parser expression
+// which is used by partition pruning.
+public class AstBuilder extends MySqlParserBaseVisitor&lt;Expression&gt; {
+  private TiTableInfo tableInfo;
+
+<span class="nc" id="L37">  public AstBuilder() {}</span>
+
+<span class="nc" id="L39">  public AstBuilder(TiTableInfo tableInfo) {</span>
+<span class="nc" id="L40">    this.tableInfo = tableInfo;</span>
+<span class="nc" id="L41">  }</span>
+
+  public Expression visitSimpleId(MySqlParser.SimpleIdContext ctx) {
+<span class="nc bnc" id="L44" title="All 2 branches missed.">    if (ctx.ID() != null) {</span>
+<span class="nc" id="L45">      return createColRef(ctx.ID().getSymbol().getText());</span>
+    }
+
+<span class="nc bnc" id="L48" title="All 2 branches missed.">    if (ctx.functionNameBase() != null) {</span>
+<span class="nc" id="L49">      return createColRef(ctx.functionNameBase().getText());</span>
+    }
+
+<span class="nc" id="L52">    throw new UnsupportedSyntaxException(ctx.getParent().toString() + &quot;: it is not supported&quot;);</span>
+  }
+
+  private Expression createColRef(String id) {
+<span class="nc bnc" id="L56" title="All 2 branches missed.">    if (tableInfo != null) {</span>
+<span class="nc" id="L57">      return ColumnRef.create(id, tableInfo);</span>
+    } else {
+<span class="nc" id="L59">      return ColumnRef.create(id);</span>
+    }
+  }
+
+  @Override
+  public Expression visitUid(MySqlParser.UidContext ctx) {
+<span class="nc bnc" id="L65" title="All 2 branches missed.">    if (ctx.REVERSE_QUOTE_ID() != null) {</span>
+<span class="nc" id="L66">      return createColRef(ctx.REVERSE_QUOTE_ID().getSymbol().getText());</span>
+    }
+<span class="nc" id="L68">    return visitSimpleId(ctx.simpleId());</span>
+  }
+
+  @Override
+  public Expression visitScalarFunctionCall(MySqlParser.ScalarFunctionCallContext ctx) {
+<span class="nc" id="L73">    FunctionNameBaseContext fnNameCtx = ctx.scalarFunctionName().functionNameBase();</span>
+<span class="nc bnc" id="L74" title="All 2 branches missed.">    if (fnNameCtx != null) {</span>
+<span class="nc bnc" id="L75" title="All 2 branches missed.">      if (fnNameCtx.YEAR() != null) {</span>
+<span class="nc" id="L76">        Expression args = visitFunctionArgs(ctx.functionArgs());</span>
+<span class="nc" id="L77">        return new FuncCallExpr(args, Type.YEAR);</span>
+      }
+    }
+<span class="nc" id="L80">    return visitChildren(ctx);</span>
+  }
+
+  @Override
+  public Expression visitFullColumnName(MySqlParser.FullColumnNameContext ctx) {
+<span class="nc" id="L85">    return visitUid(ctx.uid());</span>
+  }
+
+  private Expression parseIntOrLongOrDec(String val) {
+    try {
+<span class="nc" id="L90">      return Constant.create(Integer.parseInt(val), IntegerType.INT);</span>
+<span class="nc" id="L91">    } catch (Exception e) {</span>
+      try {
+<span class="nc" id="L93">        return Constant.create(Long.parseLong(val), IntegerType.BIGINT);</span>
+<span class="nc" id="L94">      } catch (Exception e2) {</span>
+<span class="nc" id="L95">        return Constant.create(Double.parseDouble(val), RealType.DOUBLE);</span>
+      }
+    }
+  }
+
+  @Override
+  public Expression visitDecimalLiteral(MySqlParser.DecimalLiteralContext ctx) {
+<span class="nc bnc" id="L102" title="All 2 branches missed.">    if (ctx.ONE_DECIMAL() != null) {</span>
+<span class="nc" id="L103">      String val = ctx.ONE_DECIMAL().getSymbol().getText();</span>
+<span class="nc" id="L104">      return parseIntOrLongOrDec(val);</span>
+    }
+<span class="nc bnc" id="L106" title="All 2 branches missed.">    if (ctx.TWO_DECIMAL() != null) {</span>
+<span class="nc" id="L107">      String val = ctx.TWO_DECIMAL().getSymbol().getText();</span>
+<span class="nc" id="L108">      return parseIntOrLongOrDec(val);</span>
+    }
+<span class="nc bnc" id="L110" title="All 2 branches missed.">    if (ctx.DECIMAL_LITERAL() != null) {</span>
+<span class="nc" id="L111">      String val = ctx.DECIMAL_LITERAL().getSymbol().getText();</span>
+<span class="nc" id="L112">      return parseIntOrLongOrDec(val);</span>
+    }
+
+<span class="nc bnc" id="L115" title="All 2 branches missed.">    if (ctx.ZERO_DECIMAL() != null) {</span>
+<span class="nc" id="L116">      String val = ctx.ZERO_DECIMAL().getSymbol().getText();</span>
+<span class="nc" id="L117">      return parseIntOrLongOrDec(val);</span>
+    }
+
+<span class="nc" id="L120">    throw new UnsupportedSyntaxException(ctx.toString() + &quot;: it is not supported.&quot;);</span>
+  }
+
+  @Override
+  public Expression visitBooleanLiteral(MySqlParser.BooleanLiteralContext ctx) {
+<span class="nc bnc" id="L125" title="All 2 branches missed.">    if (ctx.FALSE() != null) return Constant.create(0);</span>
+<span class="nc" id="L126">    return Constant.create(1, BOOLEAN);</span>
+  }
+
+  @Override
+  public Expression visitStringLiteral(MySqlParser.StringLiteralContext ctx) {
+<span class="nc bnc" id="L131" title="All 2 branches missed.">    if (ctx.STRING_LITERAL() != null) {</span>
+<span class="nc" id="L132">      StringBuilder sb = new StringBuilder();</span>
+<span class="nc bnc" id="L133" title="All 2 branches missed.">      for (TerminalNode str : ctx.STRING_LITERAL()) {</span>
+<span class="nc" id="L134">        sb.append(str.getSymbol().getText());</span>
+<span class="nc" id="L135">      }</span>
+<span class="nc" id="L136">      return Constant.create(sb.toString().replace(&quot;\&quot;&quot;, &quot;&quot;));</span>
+    }
+<span class="nc" id="L138">    throw new UnsupportedSyntaxException(ctx.toString() + &quot; is not supported yet&quot;);</span>
+  }
+
+  @Override
+  public Expression visitConstant(MySqlParser.ConstantContext ctx) {
+<span class="nc bnc" id="L143" title="All 2 branches missed.">    if (ctx.nullLiteral != null) {</span>
+<span class="nc" id="L144">      return Constant.create(null);</span>
+    }
+
+<span class="nc bnc" id="L147" title="All 2 branches missed.">    if (ctx.booleanLiteral() != null) {</span>
+<span class="nc" id="L148">      return visitBooleanLiteral(ctx.booleanLiteral());</span>
+    }
+
+<span class="nc bnc" id="L151" title="All 2 branches missed.">    if (ctx.decimalLiteral() != null) {</span>
+<span class="nc" id="L152">      return visitDecimalLiteral(ctx.decimalLiteral());</span>
+    }
+
+<span class="nc bnc" id="L155" title="All 2 branches missed.">    if (ctx.stringLiteral() != null) {</span>
+<span class="nc" id="L156">      return visitStringLiteral(ctx.stringLiteral());</span>
+    }
+
+<span class="nc bnc" id="L159" title="All 2 branches missed.">    if (ctx.REAL_LITERAL() != null) {</span>
+<span class="nc" id="L160">      return Constant.create(</span>
+<span class="nc" id="L161">          Doubles.tryParse(ctx.REAL_LITERAL().getSymbol().getText()), RealType.REAL);</span>
+    }
+
+<span class="nc" id="L164">    throw new UnsupportedSyntaxException(ctx.toString() + &quot;not supported constant&quot;);</span>
+  }
+
+  @Override
+  public Expression visitConstantExpressionAtom(MySqlParser.ConstantExpressionAtomContext ctx) {
+<span class="nc" id="L169">    return visitChildren(ctx);</span>
+  }
+
+  @Override
+  public Expression visitBinaryComparisonPredicate(
+      MySqlParser.BinaryComparisonPredicateContext ctx) {
+<span class="nc" id="L175">    Expression left = visitChildren(ctx.left);</span>
+<span class="nc" id="L176">    Expression right = visitChildren(ctx.right);</span>
+<span class="nc bnc" id="L177" title="All 6 branches missed.">    switch (ctx.comparisonOperator().getText()) {</span>
+      case &quot;&lt;&quot;:
+<span class="nc" id="L179">        return ComparisonBinaryExpression.lessThan(left, right);</span>
+      case &quot;&lt;=&quot;:
+<span class="nc" id="L181">        return ComparisonBinaryExpression.lessEqual(left, right);</span>
+      case &quot;=&quot;:
+<span class="nc" id="L183">        return ComparisonBinaryExpression.equal(left, right);</span>
+      case &quot;&gt;&quot;:
+<span class="nc" id="L185">        return ComparisonBinaryExpression.greaterThan(left, right);</span>
+      case &quot;&gt;=&quot;:
+<span class="nc" id="L187">        return ComparisonBinaryExpression.greaterEqual(left, right);</span>
+    }
+
+<span class="nc" id="L190">    throw new UnsupportedSyntaxException(</span>
+<span class="nc" id="L191">        ctx.toString() + &quot;: it is not possible reach to this line of code&quot;);</span>
+  }
+
+  public Expression visitLogicalExpression(MySqlParser.LogicalExpressionContext ctx) {
+<span class="nc" id="L195">    ExpressionContext left = ctx.expression(0);</span>
+<span class="nc" id="L196">    ExpressionContext right = ctx.expression(1);</span>
+<span class="nc bnc" id="L197" title="All 4 branches missed.">    switch (ctx.logicalOperator().getText()) {</span>
+      case &quot;and&quot;:
+<span class="nc" id="L199">        return LogicalBinaryExpression.and(visitChildren(left), visitChildren(right));</span>
+      case &quot;or&quot;:
+<span class="nc" id="L201">        return LogicalBinaryExpression.or(visitChildren(left), visitChildren(right));</span>
+      case &quot;xor&quot;:
+<span class="nc" id="L203">        return LogicalBinaryExpression.xor(visitChildren(left), visitChildren(right));</span>
+    }
+
+<span class="nc" id="L206">    throw new UnsupportedSyntaxException(</span>
+<span class="nc" id="L207">        ctx.toString() + &quot;: it is not possible reach to this line of code&quot;);</span>
+  }
+
+  @Override
+  public Expression visitMathExpressionAtom(MySqlParser.MathExpressionAtomContext ctx) {
+<span class="nc" id="L212">    Expression left = visitChildren(ctx.left);</span>
+<span class="nc" id="L213">    Expression right = visitChildren(ctx.right);</span>
+<span class="nc bnc" id="L214" title="All 5 branches missed.">    switch (ctx.mathOperator().getText()) {</span>
+      case &quot;+&quot;:
+<span class="nc" id="L216">        return ArithmeticBinaryExpression.plus(left, right);</span>
+      case &quot;-&quot;:
+<span class="nc" id="L218">        return ArithmeticBinaryExpression.minus(left, right);</span>
+      case &quot;*&quot;:
+<span class="nc" id="L220">        return ArithmeticBinaryExpression.multiply(left, right);</span>
+      case &quot;/&quot;:
+      case &quot;div&quot;:
+<span class="nc" id="L223">        return ArithmeticBinaryExpression.divide(left, right);</span>
+    }
+<span class="nc" id="L225">    throw new UnsupportedSyntaxException(ctx.toString() + &quot;: it is not supported right now&quot;);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

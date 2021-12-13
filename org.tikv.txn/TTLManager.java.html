@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TTLManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.txn</a> &gt; <span class="el_source">TTLManager.java</span></div><h1>TTLManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.txn;
+
+import com.google.protobuf.ByteString;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.apache.commons.lang3.concurrent.BasicThreadFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.TiSession;
+import org.tikv.common.codec.KeyUtils;
+import org.tikv.common.exception.GrpcException;
+import org.tikv.common.exception.TiBatchWriteException;
+import org.tikv.common.meta.TiTimestamp;
+import org.tikv.common.region.RegionManager;
+import org.tikv.common.region.TiRegion;
+import org.tikv.common.region.TiStore;
+import org.tikv.common.util.BackOffFunction;
+import org.tikv.common.util.BackOffer;
+import org.tikv.common.util.ConcreteBackOffer;
+import org.tikv.common.util.Pair;
+import org.tikv.txn.type.ClientRPCResult;
+
+/**
+ * see funcionts `keepAlive` `close` `sendTxnHeartBeat` in
+ * https://github.com/pingcap/tidb/blob/master/store/tikv/2pc.go
+ */
+public class TTLManager {
+  /** 20 seconds */
+  public static final int MANAGED_LOCK_TTL = 20000;
+
+<span class="nc" id="L48">  private static final Logger LOG = LoggerFactory.getLogger(TTLManager.class);</span>
+  /** status */
+  private static final int STATE_UNINITIALIZED = 0;
+
+  private static final int STATE_RUNNING = 1;
+  private static final int STATE_CLOSED = 2;
+  /** 10 seconds */
+  private static final int SCHEDULER_PERIOD = MANAGED_LOCK_TTL / 2;
+  /** 5 seconds */
+  private static final int SCHEDULER_INITIAL_DELAY = MANAGED_LOCK_TTL / 4;
+
+  private final long startTS;
+  private final ByteString primaryLock;
+  private final TxnKVClient kvClient;
+  private final RegionManager regionManager;
+  private final ScheduledExecutorService scheduler;
+  private final AtomicInteger state;
+
+<span class="nc" id="L66">  public TTLManager(TiSession session, long startTS, byte[] primaryKey) {</span>
+<span class="nc" id="L67">    this.startTS = startTS;</span>
+<span class="nc" id="L68">    this.primaryLock = ByteString.copyFrom(primaryKey);</span>
+<span class="nc" id="L69">    this.state = new AtomicInteger(STATE_UNINITIALIZED);</span>
+
+<span class="nc" id="L71">    this.kvClient = session.createTxnClient();</span>
+<span class="nc" id="L72">    this.regionManager = kvClient.getRegionManager();</span>
+
+<span class="nc" id="L74">    scheduler =</span>
+        new ScheduledThreadPoolExecutor(
+            1,
+            new BasicThreadFactory.Builder()
+<span class="nc" id="L78">                .namingPattern(&quot;ttl-manager-pool-%d&quot;)</span>
+<span class="nc" id="L79">                .daemon(false)</span>
+<span class="nc" id="L80">                .build());</span>
+<span class="nc" id="L81">  }</span>
+
+  public void keepAlive() {
+<span class="nc bnc" id="L84" title="All 2 branches missed.">    if (state.compareAndSet(STATE_UNINITIALIZED, STATE_RUNNING)) {</span>
+<span class="nc" id="L85">      scheduler.scheduleAtFixedRate(</span>
+          this::doKeepAlive, SCHEDULER_INITIAL_DELAY, SCHEDULER_PERIOD, TimeUnit.MILLISECONDS);
+    } else {
+<span class="nc" id="L88">      LOG.warn(&quot;keepAlive failed state={} key={}&quot;, state.get(), KeyUtils.formatBytes(primaryLock));</span>
+    }
+<span class="nc" id="L90">  }</span>
+
+  private void doKeepAlive() {
+<span class="nc" id="L93">    BackOffer bo = ConcreteBackOffer.newCustomBackOff(MANAGED_LOCK_TTL);</span>
+<span class="nc" id="L94">    long uptime = kvClient.getTimestamp().getPhysical() - TiTimestamp.extractPhysical(startTS);</span>
+<span class="nc" id="L95">    long ttl = uptime + MANAGED_LOCK_TTL;</span>
+
+<span class="nc" id="L97">    LOG.info(&quot;doKeepAlive key={} uptime={} ttl={}&quot;, KeyUtils.formatBytes(primaryLock), uptime, ttl);</span>
+
+    try {
+<span class="nc" id="L100">      sendTxnHeartBeat(bo, ttl);</span>
+<span class="nc" id="L101">      LOG.info(&quot;doKeepAlive success&quot;);</span>
+<span class="nc" id="L102">    } catch (Exception e) {</span>
+<span class="nc" id="L103">      LOG.warn(&quot;doKeepAlive error&quot;, e);</span>
+<span class="nc" id="L104">    }</span>
+<span class="nc" id="L105">  }</span>
+
+  private void sendTxnHeartBeat(BackOffer bo, long ttl) {
+<span class="nc" id="L108">    Pair&lt;TiRegion, TiStore&gt; pair = regionManager.getRegionStorePairByKey(primaryLock);</span>
+<span class="nc" id="L109">    TiRegion tiRegion = pair.first;</span>
+<span class="nc" id="L110">    TiStore store = pair.second;</span>
+
+<span class="nc" id="L112">    ClientRPCResult result = kvClient.txnHeartBeat(bo, primaryLock, startTS, ttl, tiRegion, store);</span>
+
+<span class="nc bnc" id="L114" title="All 4 branches missed.">    if (!result.isSuccess() &amp;&amp; !result.isRetry()) {</span>
+<span class="nc" id="L115">      throw new TiBatchWriteException(&quot;sendTxnHeartBeat error&quot;, result.getException());</span>
+    }
+<span class="nc bnc" id="L117" title="All 2 branches missed.">    if (result.isRetry()) {</span>
+      try {
+<span class="nc" id="L119">        bo.doBackOff(</span>
+            BackOffFunction.BackOffFuncType.BoRegionMiss,
+            new GrpcException(
+<span class="nc" id="L122">                String.format(&quot;sendTxnHeartBeat failed, regionId=%s&quot;, tiRegion.getId()),</span>
+<span class="nc" id="L123">                result.getException()));</span>
+<span class="nc" id="L124">        this.regionManager.invalidateStore(store.getStore().getId());</span>
+<span class="nc" id="L125">        this.regionManager.invalidateRegion(tiRegion);</span>
+        // re-split keys and commit again.
+<span class="nc" id="L127">        sendTxnHeartBeat(bo, ttl);</span>
+<span class="nc" id="L128">      } catch (GrpcException e) {</span>
+<span class="nc" id="L129">        String errorMsg =</span>
+<span class="nc" id="L130">            String.format(</span>
+<span class="nc" id="L131">                &quot;sendTxnHeartBeat error, regionId=%s, detail=%s&quot;, tiRegion.getId(), e.getMessage());</span>
+<span class="nc" id="L132">        throw new TiBatchWriteException(errorMsg, e);</span>
+<span class="nc" id="L133">      }</span>
+    }
+
+<span class="nc" id="L136">    LOG.debug(</span>
+<span class="nc" id="L137">        &quot;sendTxnHeartBeat success key={} ttl={} success&quot;, KeyUtils.formatBytes(primaryLock), ttl);</span>
+<span class="nc" id="L138">  }</span>
+
+  public void close() throws InterruptedException {
+<span class="nc bnc" id="L141" title="All 2 branches missed.">    if (state.compareAndSet(STATE_RUNNING, STATE_CLOSED)) {</span>
+<span class="nc" id="L142">      scheduler.shutdown();</span>
+    }
+<span class="nc" id="L144">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

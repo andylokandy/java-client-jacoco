@@ -1,0 +1,212 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RowV2.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.codec</a> &gt; <span class="el_source">RowV2.java</span></div><h1>RowV2.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.codec;
+
+import java.util.Arrays;
+import org.tikv.common.exception.InvalidCodecFormatException;
+
+public class RowV2 {
+  // CodecVer is the constant number that represent the new row format.
+<span class="nc" id="L23">  public static int CODEC_VER = 0x80;</span>
+  // small:  colID byte[], offsets int[], optimized for most cases.
+  // large:  colID long[], offsets long[].
+  boolean large;
+  int numNotNullCols;
+  int numNullCols;
+  byte[] colIDs;
+  int[] offsets;
+  byte[] data;
+  // for large row
+  int[] colIDs32;
+  int[] offsets32;
+
+<span class="nc" id="L36">  private RowV2(byte[] rowData) {</span>
+<span class="nc" id="L37">    fromBytes(rowData);</span>
+<span class="nc" id="L38">  }</span>
+
+  public static RowV2 createNew(byte[] rowData) {
+<span class="nc" id="L41">    return new RowV2(rowData);</span>
+  }
+
+  public static RowV2 createEmpty() {
+<span class="nc" id="L45">    return new RowV2(false, 0, 0);</span>
+  }
+
+<span class="nc" id="L48">  private RowV2(boolean large, int numNotNullCols, int numNullCols) {</span>
+<span class="nc" id="L49">    this.large = large;</span>
+<span class="nc" id="L50">    this.numNotNullCols = numNotNullCols;</span>
+<span class="nc" id="L51">    this.numNullCols = numNullCols;</span>
+<span class="nc" id="L52">  }</span>
+
+  public byte[] getData(int i) {
+<span class="nc" id="L55">    int start = 0, end = 0;</span>
+<span class="nc bnc" id="L56" title="All 2 branches missed.">    if (this.large) {</span>
+<span class="nc bnc" id="L57" title="All 2 branches missed.">      if (i &gt; 0) {</span>
+<span class="nc" id="L58">        start = this.offsets32[i - 1];</span>
+      }
+<span class="nc" id="L60">      end = this.offsets32[i];</span>
+<span class="nc" id="L61">    } else {</span>
+<span class="nc bnc" id="L62" title="All 2 branches missed.">      if (i &gt; 0) {</span>
+<span class="nc" id="L63">        start = this.offsets[i - 1];</span>
+      }
+<span class="nc" id="L65">      end = this.offsets[i];</span>
+    }
+<span class="nc" id="L67">    return Arrays.copyOfRange(this.data, start, end);</span>
+  }
+
+  private void fromBytes(byte[] rowData) {
+<span class="nc" id="L71">    CodecDataInputLittleEndian cdi = new CodecDataInputLittleEndian(rowData);</span>
+<span class="nc bnc" id="L72" title="All 2 branches missed.">    if (cdi.readUnsignedByte() != CODEC_VER) {</span>
+<span class="nc" id="L73">      throw new InvalidCodecFormatException(&quot;invalid codec version&quot;);</span>
+    }
+<span class="nc bnc" id="L75" title="All 2 branches missed.">    this.large = (cdi.readUnsignedByte() &amp; 1) &gt; 0;</span>
+<span class="nc" id="L76">    this.numNotNullCols = cdi.readUnsignedShort();</span>
+<span class="nc" id="L77">    this.numNullCols = cdi.readUnsignedShort();</span>
+<span class="nc" id="L78">    int cursor = 6;</span>
+<span class="nc bnc" id="L79" title="All 2 branches missed.">    if (this.large) {</span>
+<span class="nc" id="L80">      int numCols = this.numNotNullCols + this.numNullCols;</span>
+<span class="nc" id="L81">      int colIDsLen = numCols * 4;</span>
+<span class="nc" id="L82">      this.colIDs32 = new int[numCols];</span>
+<span class="nc bnc" id="L83" title="All 2 branches missed.">      for (int i = 0; i &lt; numCols; i++) {</span>
+<span class="nc" id="L84">        this.colIDs32[i] = cdi.readInt();</span>
+      }
+<span class="nc" id="L86">      cursor += colIDsLen;</span>
+<span class="nc" id="L87">      numCols = this.numNotNullCols;</span>
+<span class="nc" id="L88">      int offsetsLen = numCols * 4;</span>
+<span class="nc" id="L89">      this.offsets32 = new int[numCols];</span>
+<span class="nc bnc" id="L90" title="All 2 branches missed.">      for (int i = 0; i &lt; numCols; i++) {</span>
+<span class="nc" id="L91">        this.offsets32[i] = cdi.readInt();</span>
+      }
+<span class="nc" id="L93">      cursor += offsetsLen;</span>
+<span class="nc" id="L94">    } else {</span>
+<span class="nc" id="L95">      int numCols = this.numNotNullCols + this.numNullCols;</span>
+<span class="nc" id="L96">      int colIDsLen = numCols;</span>
+<span class="nc" id="L97">      this.colIDs = new byte[numCols];</span>
+<span class="nc" id="L98">      cdi.readFully(this.colIDs, 0, numCols);</span>
+<span class="nc" id="L99">      cursor += colIDsLen;</span>
+<span class="nc" id="L100">      numCols = this.numNotNullCols;</span>
+<span class="nc" id="L101">      int offsetsLen = numCols * 2;</span>
+<span class="nc" id="L102">      this.offsets = new int[numCols];</span>
+<span class="nc bnc" id="L103" title="All 2 branches missed.">      for (int i = 0; i &lt; numCols; i++) {</span>
+<span class="nc" id="L104">        this.offsets[i] = cdi.readUnsignedShort();</span>
+      }
+<span class="nc" id="L106">      cursor += offsetsLen;</span>
+    }
+<span class="nc" id="L108">    this.data = Arrays.copyOfRange(rowData, cursor, rowData.length);</span>
+<span class="nc" id="L109">  }</span>
+
+  private void writeShortArray(CodecDataOutput cdo, int[] arr) {
+<span class="nc bnc" id="L112" title="All 2 branches missed.">    for (int value : arr) {</span>
+<span class="nc" id="L113">      cdo.writeShort(value);</span>
+    }
+<span class="nc" id="L115">  }</span>
+
+  private void writeIntArray(CodecDataOutput cdo, int[] arr) {
+<span class="nc bnc" id="L118" title="All 2 branches missed.">    for (int value : arr) {</span>
+<span class="nc" id="L119">      cdo.writeInt(value);</span>
+    }
+<span class="nc" id="L121">  }</span>
+
+  public byte[] toBytes() {
+<span class="nc" id="L124">    CodecDataOutputLittleEndian cdo = new CodecDataOutputLittleEndian();</span>
+<span class="nc" id="L125">    cdo.write(CODEC_VER);</span>
+<span class="nc bnc" id="L126" title="All 2 branches missed.">    cdo.write(this.large ? 1 : 0);</span>
+<span class="nc" id="L127">    cdo.writeShort(this.numNotNullCols);</span>
+<span class="nc" id="L128">    cdo.writeShort(this.numNullCols);</span>
+<span class="nc bnc" id="L129" title="All 2 branches missed.">    if (this.large) {</span>
+<span class="nc" id="L130">      writeIntArray(cdo, this.colIDs32);</span>
+<span class="nc" id="L131">      writeIntArray(cdo, this.offsets32);</span>
+<span class="nc" id="L132">    } else {</span>
+<span class="nc" id="L133">      cdo.write(this.colIDs);</span>
+<span class="nc" id="L134">      writeShortArray(cdo, this.offsets);</span>
+    }
+<span class="nc" id="L136">    cdo.write(this.data);</span>
+<span class="nc" id="L137">    return cdo.toBytes();</span>
+  }
+
+  private int binarySearch(int i, int j, long colID) {
+<span class="nc bnc" id="L141" title="All 2 branches missed.">    while (i &lt; j) {</span>
+<span class="nc" id="L142">      int h = (int) ((i + (long) j) &gt;&gt; 1);</span>
+      // i &lt;= h &lt; j
+      long v;
+<span class="nc bnc" id="L145" title="All 2 branches missed.">      if (this.large) {</span>
+<span class="nc" id="L146">        v = this.colIDs32[h];</span>
+<span class="nc" id="L147">      } else {</span>
+<span class="nc" id="L148">        v = this.colIDs[h];</span>
+      }
+<span class="nc bnc" id="L150" title="All 2 branches missed.">      if (v &lt; colID) {</span>
+<span class="nc" id="L151">        i = h + 1;</span>
+<span class="nc bnc" id="L152" title="All 2 branches missed.">      } else if (v &gt; colID) {</span>
+<span class="nc" id="L153">        j = h;</span>
+<span class="nc" id="L154">      } else {</span>
+<span class="nc" id="L155">        return h;</span>
+      }
+    }
+<span class="nc" id="L158">    return -1;</span>
+  }
+
+  public ColIDSearchResult findColID(long colID) {
+<span class="nc" id="L162">    int i = 0, j = this.numNotNullCols;</span>
+<span class="nc" id="L163">    ColIDSearchResult result = new ColIDSearchResult(-1, false, false);</span>
+<span class="nc" id="L164">    result.idx = binarySearch(i, j, colID);</span>
+<span class="nc bnc" id="L165" title="All 2 branches missed.">    if (result.idx != -1) {</span>
+<span class="nc" id="L166">      return result;</span>
+    }
+
+    // Search the column in null columns array.
+<span class="nc" id="L170">    i = this.numNotNullCols;</span>
+<span class="nc" id="L171">    j = this.numNotNullCols + this.numNullCols;</span>
+<span class="nc" id="L172">    int id = binarySearch(i, j, colID);</span>
+<span class="nc bnc" id="L173" title="All 2 branches missed.">    if (id != -1) {</span>
+      // colID found in null cols.
+<span class="nc" id="L175">      result.isNull = true;</span>
+<span class="nc" id="L176">    } else {</span>
+<span class="nc" id="L177">      result.notFound = true;</span>
+    }
+<span class="nc" id="L179">    return result;</span>
+  }
+
+  public void initColIDs() {
+<span class="nc" id="L183">    int numCols = this.numNotNullCols + this.numNullCols;</span>
+<span class="nc" id="L184">    this.colIDs = new byte[numCols];</span>
+<span class="nc" id="L185">  }</span>
+
+  public void initColIDs32() {
+<span class="nc" id="L188">    int numCols = this.numNotNullCols + this.numNullCols;</span>
+<span class="nc" id="L189">    this.colIDs32 = new int[numCols];</span>
+<span class="nc" id="L190">  }</span>
+
+  public void initOffsets() {
+<span class="nc" id="L193">    this.offsets = new int[this.numNotNullCols];</span>
+<span class="nc" id="L194">  }</span>
+
+  public void initOffsets32() {
+<span class="nc" id="L197">    this.offsets32 = new int[this.numNotNullCols];</span>
+<span class="nc" id="L198">  }</span>
+
+  public static class ColIDSearchResult {
+    int idx;
+    boolean isNull;
+    boolean notFound;
+
+<span class="nc" id="L205">    private ColIDSearchResult(int idx, boolean isNull, boolean notFound) {</span>
+<span class="nc" id="L206">      this.idx = idx;</span>
+<span class="nc" id="L207">      this.isNull = isNull;</span>
+<span class="nc" id="L208">      this.notFound = notFound;</span>
+<span class="nc" id="L209">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

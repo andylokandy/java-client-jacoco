@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ChannelFactory.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.util</a> &gt; <span class="el_source">ChannelFactory.java</span></div><h1>ChannelFactory.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.util;
+
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
+import java.net.URI;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import org.tikv.common.HostMapping;
+import org.tikv.common.pd.PDUtils;
+
+public class ChannelFactory implements AutoCloseable {
+  private final int maxFrameSize;
+  private final int idleTimeout;
+<span class="fc" id="L29">  private final ConcurrentHashMap&lt;String, ManagedChannel&gt; connPool = new ConcurrentHashMap&lt;&gt;();</span>
+
+<span class="fc" id="L31">  public ChannelFactory(int maxFrameSize, int idleTimeout) {</span>
+<span class="fc" id="L32">    this.maxFrameSize = maxFrameSize;</span>
+<span class="fc" id="L33">    this.idleTimeout = idleTimeout;</span>
+<span class="fc" id="L34">  }</span>
+
+  public ManagedChannel getChannel(String addressStr, HostMapping hostMapping) {
+<span class="fc" id="L37">    return connPool.computeIfAbsent(</span>
+        addressStr,
+        key -&gt; {
+          URI address;
+          URI mappedAddr;
+          try {
+<span class="fc" id="L43">            address = PDUtils.addrToUri(key);</span>
+<span class="nc" id="L44">          } catch (Exception e) {</span>
+<span class="nc" id="L45">            throw new IllegalArgumentException(&quot;failed to form address &quot; + key, e);</span>
+<span class="fc" id="L46">          }</span>
+          try {
+<span class="fc" id="L48">            mappedAddr = hostMapping.getMappedURI(address);</span>
+<span class="nc" id="L49">          } catch (Exception e) {</span>
+<span class="nc" id="L50">            throw new IllegalArgumentException(&quot;failed to get mapped address &quot; + address, e);</span>
+<span class="fc" id="L51">          }</span>
+          // Channel should be lazy without actual connection until first call
+          // So a coarse grain lock is ok here
+<span class="fc" id="L54">          return ManagedChannelBuilder.forAddress(mappedAddr.getHost(), mappedAddr.getPort())</span>
+<span class="fc" id="L55">              .maxInboundMessageSize(maxFrameSize)</span>
+<span class="fc" id="L56">              .usePlaintext()</span>
+<span class="fc" id="L57">              .idleTimeout(idleTimeout, TimeUnit.SECONDS)</span>
+<span class="fc" id="L58">              .build();</span>
+        });
+  }
+
+  public void close() {
+<span class="fc bfc" id="L63" title="All 2 branches covered.">    for (ManagedChannel ch : connPool.values()) {</span>
+<span class="fc" id="L64">      ch.shutdown();</span>
+<span class="fc" id="L65">    }</span>
+<span class="fc" id="L66">    connPool.clear();</span>
+<span class="fc" id="L67">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

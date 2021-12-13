@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DateType.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.types</a> &gt; <span class="el_source">DateType.java</span></div><h1>DateType.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.types;
+
+import java.sql.Date;
+import org.joda.time.DateTimeZone;
+import org.joda.time.Days;
+import org.joda.time.LocalDate;
+import org.tikv.common.codec.Codec.DateCodec;
+import org.tikv.common.codec.CodecDataInput;
+import org.tikv.common.codec.CodecDataOutput;
+import org.tikv.common.exception.ConvertNotSupportException;
+import org.tikv.common.exception.ConvertOverflowException;
+import org.tikv.common.meta.TiColumnInfo;
+
+public class DateType extends AbstractDateTimeType {
+<span class="nc" id="L32">  private static final LocalDate EPOCH = new LocalDate(0);</span>
+<span class="nc" id="L33">  public static final DateType DATE = new DateType(MySQLType.TypeDate);</span>
+<span class="nc" id="L34">  public static final MySQLType[] subTypes = new MySQLType[] {MySQLType.TypeDate};</span>
+
+  private DateType(MySQLType tp) {
+<span class="nc" id="L37">    super(tp);</span>
+<span class="nc" id="L38">  }</span>
+
+  DateType(TiColumnInfo.InternalTypeHolder holder) {
+<span class="nc" id="L41">    super(holder);</span>
+<span class="nc" id="L42">  }</span>
+
+  @Override
+  public DateTimeZone getTimezone() {
+<span class="nc" id="L46">    return Converter.getLocalTimezone();</span>
+  }
+
+  @Override
+  public Date getOriginDefaultValueNonNull(String value, long version) {
+<span class="nc" id="L51">    return Converter.convertToDate(value);</span>
+  }
+
+  @Override
+  protected Object doConvertToTiDBType(Object value)
+      throws ConvertNotSupportException, ConvertOverflowException {
+<span class="nc" id="L57">    return convertToMysqlDate(value);</span>
+  }
+
+  private Date convertToMysqlDate(Object value) throws ConvertNotSupportException {
+    Date result;
+<span class="nc bnc" id="L62" title="All 2 branches missed.">    if (value instanceof Long) {</span>
+<span class="nc" id="L63">      result = new Date((Long) value);</span>
+<span class="nc bnc" id="L64" title="All 2 branches missed.">    } else if (value instanceof String) {</span>
+<span class="nc" id="L65">      result = Date.valueOf((String) value);</span>
+<span class="nc bnc" id="L66" title="All 2 branches missed.">    } else if (value instanceof Date) {</span>
+<span class="nc" id="L67">      result = (Date) value;</span>
+<span class="nc bnc" id="L68" title="All 2 branches missed.">    } else if (value instanceof java.sql.Timestamp) {</span>
+<span class="nc" id="L69">      result = new Date(((java.sql.Timestamp) value).getTime());</span>
+    } else {
+<span class="nc" id="L71">      throw new ConvertNotSupportException(value.getClass().getName(), this.getClass().getName());</span>
+    }
+<span class="nc" id="L73">    return result;</span>
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  protected void encodeKey(CodecDataOutput cdo, Object value) {
+<span class="nc" id="L79">    Date dt = Converter.convertToDate(value);</span>
+<span class="nc" id="L80">    DateCodec.writeDateFully(cdo, dt, getTimezone());</span>
+<span class="nc" id="L81">  }</span>
+
+  /** {@inheritDoc} */
+  @Override
+  protected void encodeProto(CodecDataOutput cdo, Object value) {
+<span class="nc" id="L86">    Date dt = Converter.convertToDate(value);</span>
+<span class="nc" id="L87">    DateCodec.writeDateProto(cdo, dt, getTimezone());</span>
+<span class="nc" id="L88">  }</span>
+
+  @Override
+  public String getName() {
+<span class="nc" id="L92">    return &quot;DATE&quot;;</span>
+  }
+
+  public int getDays(LocalDate d) {
+    // count how many days from EPOCH
+<span class="nc" id="L97">    int days = Days.daysBetween(EPOCH, d).getDays();</span>
+    // if the timezone has negative offset, minus one day.
+<span class="nc bnc" id="L99" title="All 2 branches missed.">    if (getTimezone().getOffset(0) &lt; 0) {</span>
+<span class="nc" id="L100">      days -= 1;</span>
+    }
+<span class="nc" id="L102">    return days;</span>
+  }
+
+  /** {@inheritDoc} */
+  @Override
+  protected Long decodeNotNull(int flag, CodecDataInput cdi) {
+<span class="nc" id="L108">    LocalDate date = decodeDate(flag, cdi);</span>
+
+<span class="nc bnc" id="L110" title="All 2 branches missed.">    if (date == null) {</span>
+<span class="nc" id="L111">      return null;</span>
+    }
+
+<span class="nc" id="L114">    return (long) getDays(date);</span>
+  }
+
+  @Override
+  protected Date decodeNotNullForBatchWrite(int flag, CodecDataInput cdi) {
+<span class="nc" id="L119">    LocalDate date = decodeDate(flag, cdi);</span>
+
+<span class="nc bnc" id="L121" title="All 2 branches missed.">    if (date == null) {</span>
+<span class="nc" id="L122">      return null;</span>
+    }
+<span class="nc" id="L124">    return new Date(date.toDate().getTime());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

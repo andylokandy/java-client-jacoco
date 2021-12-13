@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PDErrorHandler.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.operation</a> &gt; <span class="el_source">PDErrorHandler.java</span></div><h1>PDErrorHandler.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.operation;
+
+import static org.tikv.common.pd.PDError.buildFromPdpbError;
+
+import io.grpc.StatusRuntimeException;
+import java.util.function.Function;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.PDClient;
+import org.tikv.common.exception.GrpcException;
+import org.tikv.common.exception.TiClientInternalException;
+import org.tikv.common.pd.PDError;
+import org.tikv.common.util.BackOffFunction;
+import org.tikv.common.util.BackOffer;
+import org.tikv.kvproto.Pdpb;
+
+public class PDErrorHandler&lt;RespT&gt; implements ErrorHandler&lt;RespT&gt; {
+<span class="fc" id="L35">  public static final Function&lt;Pdpb.GetRegionResponse, PDError&gt; getRegionResponseErrorExtractor =</span>
+<span class="fc" id="L36">      r -&gt;</span>
+<span class="pc bpc" id="L37" title="1 of 2 branches missed.">          r.getHeader().hasError()</span>
+<span class="nc" id="L38">              ? buildFromPdpbError(r.getHeader().getError())</span>
+<span class="pc bpc" id="L39" title="1 of 2 branches missed.">              : r.getRegion().getId() == 0 ? PDError.RegionPeerNotElected.DEFAULT_INSTANCE : null;</span>
+<span class="fc" id="L40">  private static final Logger logger = LoggerFactory.getLogger(PDErrorHandler.class);</span>
+  private final Function&lt;RespT, PDError&gt; getError;
+  private final PDClient client;
+
+<span class="fc" id="L44">  public PDErrorHandler(Function&lt;RespT, PDError&gt; errorExtractor, PDClient client) {</span>
+<span class="fc" id="L45">    this.getError = errorExtractor;</span>
+<span class="fc" id="L46">    this.client = client;</span>
+<span class="fc" id="L47">  }</span>
+
+  @Override
+  public boolean handleResponseError(BackOffer backOffer, RespT resp) {
+<span class="pc bpc" id="L51" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L52">      String msg = String.format(&quot;PD Request Failed with unknown reason&quot;);</span>
+<span class="nc" id="L53">      logger.warn(msg);</span>
+<span class="nc" id="L54">      return handleRequestError(backOffer, new GrpcException(msg));</span>
+    }
+<span class="fc" id="L56">    PDError error = getError.apply(resp);</span>
+<span class="pc bpc" id="L57" title="1 of 2 branches missed.">    if (error != null) {</span>
+<span class="nc bnc" id="L58" title="All 3 branches missed.">      switch (error.getErrorType()) {</span>
+        case PD_ERROR:
+<span class="nc" id="L60">          backOffer.doBackOff(</span>
+<span class="nc" id="L61">              BackOffFunction.BackOffFuncType.BoPDRPC, new GrpcException(error.toString()));</span>
+<span class="nc" id="L62">          client.updateLeaderOrforwardFollower();</span>
+<span class="nc" id="L63">          return true;</span>
+        case REGION_PEER_NOT_ELECTED:
+<span class="nc" id="L65">          logger.debug(error.getMessage());</span>
+<span class="nc" id="L66">          backOffer.doBackOff(</span>
+<span class="nc" id="L67">              BackOffFunction.BackOffFuncType.BoPDRPC, new GrpcException(error.toString()));</span>
+<span class="nc" id="L68">          return true;</span>
+        default:
+<span class="nc" id="L70">          throw new TiClientInternalException(&quot;Unknown error type encountered: &quot; + error);</span>
+      }
+    }
+<span class="fc" id="L73">    return false;</span>
+  }
+
+  @Override
+  public boolean handleRequestError(BackOffer backOffer, Exception e) {
+    // store id is not found
+<span class="pc bpc" id="L79" title="2 of 4 branches missed.">    if (e instanceof StatusRuntimeException &amp;&amp; e.getMessage().contains(&quot;invalid store ID&quot;)) {</span>
+<span class="nc" id="L80">      return false;</span>
+    }
+<span class="fc" id="L82">    backOffer.doBackOff(BackOffFunction.BackOffFuncType.BoPDRPC, e);</span>
+<span class="fc" id="L83">    client.updateLeaderOrforwardFollower();</span>
+<span class="fc" id="L84">    return true;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

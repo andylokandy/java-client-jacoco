@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>StoreHealthyChecker.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.region</a> &gt; <span class="el_source">StoreHealthyChecker.java</span></div><h1>StoreHealthyChecker.java</h1><pre class="source lang-java linenums">package org.tikv.common.region;
+
+import io.grpc.ManagedChannel;
+import io.grpc.health.v1.HealthCheckRequest;
+import io.grpc.health.v1.HealthCheckResponse;
+import io.grpc.health.v1.HealthGrpc;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.ReadOnlyPDClient;
+import org.tikv.common.util.ChannelFactory;
+import org.tikv.common.util.ConcreteBackOffer;
+import org.tikv.kvproto.Metapb;
+
+public class StoreHealthyChecker implements Runnable {
+<span class="fc" id="L20">  private static final Logger logger = LoggerFactory.getLogger(StoreHealthyChecker.class);</span>
+  private static final long MAX_CHECK_STORE_TOMBSTONE_TICK = 60;
+  private final BlockingQueue&lt;TiStore&gt; taskQueue;
+  private final ChannelFactory channelFactory;
+  private final ReadOnlyPDClient pdClient;
+  private final RegionCache cache;
+  private long checkTombstoneTick;
+  private final long timeout;
+
+  public StoreHealthyChecker(
+<span class="fc" id="L30">      ChannelFactory channelFactory, ReadOnlyPDClient pdClient, RegionCache cache, long timeout) {</span>
+<span class="fc" id="L31">    this.taskQueue = new LinkedBlockingQueue&lt;&gt;();</span>
+<span class="fc" id="L32">    this.channelFactory = channelFactory;</span>
+<span class="fc" id="L33">    this.pdClient = pdClient;</span>
+<span class="fc" id="L34">    this.cache = cache;</span>
+<span class="fc" id="L35">    this.checkTombstoneTick = 0;</span>
+<span class="fc" id="L36">    this.timeout = timeout;</span>
+<span class="fc" id="L37">  }</span>
+
+  public boolean scheduleStoreHealthCheck(TiStore store) {
+<span class="pc bpc" id="L40" title="1 of 2 branches missed.">    if (!this.taskQueue.add(store)) {</span>
+      // add queue false, mark it reachable so that it can be put again.
+<span class="nc" id="L42">      return false;</span>
+    }
+<span class="fc" id="L44">    return true;</span>
+  }
+
+  private List&lt;TiStore&gt; getValidStores() {
+<span class="fc" id="L48">    List&lt;TiStore&gt; unhealthStore = new LinkedList&lt;&gt;();</span>
+<span class="fc bfc" id="L49" title="All 2 branches covered.">    while (!this.taskQueue.isEmpty()) {</span>
+      try {
+<span class="fc" id="L51">        TiStore store = this.taskQueue.take();</span>
+<span class="fc bfc" id="L52" title="All 2 branches covered.">        if (!store.isValid()) {</span>
+<span class="fc" id="L53">          continue;</span>
+        }
+<span class="fc" id="L55">        unhealthStore.add(store);</span>
+<span class="nc" id="L56">      } catch (Exception e) {</span>
+<span class="nc" id="L57">        return unhealthStore;</span>
+<span class="fc" id="L58">      }</span>
+    }
+<span class="fc" id="L60">    return unhealthStore;</span>
+  }
+
+  private boolean checkStoreHealth(TiStore store) {
+<span class="fc" id="L64">    String addressStr = store.getStore().getAddress();</span>
+    try {
+<span class="fc" id="L66">      ManagedChannel channel = channelFactory.getChannel(addressStr, pdClient.getHostMapping());</span>
+<span class="fc" id="L67">      HealthGrpc.HealthBlockingStub stub =</span>
+<span class="fc" id="L68">          HealthGrpc.newBlockingStub(channel).withDeadlineAfter(timeout, TimeUnit.MILLISECONDS);</span>
+<span class="fc" id="L69">      HealthCheckRequest req = HealthCheckRequest.newBuilder().build();</span>
+<span class="fc" id="L70">      HealthCheckResponse resp = stub.check(req);</span>
+<span class="pc bpc" id="L71" title="1 of 2 branches missed.">      if (resp.getStatus() == HealthCheckResponse.ServingStatus.SERVING) {</span>
+<span class="fc" id="L72">        return true;</span>
+      } else {
+<span class="nc" id="L74">        return false;</span>
+      }
+<span class="fc" id="L76">    } catch (Exception e) {</span>
+<span class="fc" id="L77">      return false;</span>
+    }
+  }
+
+  private boolean checkStoreTombstone(TiStore store) {
+    try {
+<span class="nc" id="L83">      Metapb.Store newStore = pdClient.getStore(ConcreteBackOffer.newRawKVBackOff(), store.getId());</span>
+<span class="nc bnc" id="L84" title="All 4 branches missed.">      if (newStore != null &amp;&amp; newStore.getState() == Metapb.StoreState.Tombstone) {</span>
+<span class="nc" id="L85">        return true;</span>
+      }
+<span class="fc" id="L87">    } catch (Exception e) {</span>
+<span class="fc" id="L88">      return false;</span>
+<span class="nc" id="L89">    }</span>
+<span class="nc" id="L90">    return false;</span>
+  }
+
+  @Override
+  public void run() {
+<span class="fc" id="L95">    checkTombstoneTick += 1;</span>
+<span class="fc" id="L96">    boolean needCheckTombstoneStore = false;</span>
+<span class="fc bfc" id="L97" title="All 2 branches covered.">    if (checkTombstoneTick &gt;= MAX_CHECK_STORE_TOMBSTONE_TICK) {</span>
+<span class="fc" id="L98">      needCheckTombstoneStore = true;</span>
+<span class="fc" id="L99">      checkTombstoneTick = 0;</span>
+    }
+<span class="fc" id="L101">    List&lt;TiStore&gt; allStores = getValidStores();</span>
+<span class="fc" id="L102">    List&lt;TiStore&gt; unreachableStore = new LinkedList&lt;&gt;();</span>
+<span class="fc bfc" id="L103" title="All 2 branches covered.">    for (TiStore store : allStores) {</span>
+<span class="fc bfc" id="L104" title="All 2 branches covered.">      if (needCheckTombstoneStore) {</span>
+<span class="pc bpc" id="L105" title="1 of 2 branches missed.">        if (checkStoreTombstone(store)) {</span>
+<span class="nc" id="L106">          continue;</span>
+        }
+      }
+
+<span class="fc bfc" id="L110" title="All 2 branches covered.">      if (checkStoreHealth(store)) {</span>
+<span class="pc bpc" id="L111" title="1 of 2 branches missed.">        if (store.getProxyStore() != null) {</span>
+<span class="nc" id="L112">          TiStore newStore = store.withProxy(null);</span>
+<span class="nc" id="L113">          logger.warn(String.format(&quot;store [%s] recovers to be reachable&quot;, store.getAddress()));</span>
+<span class="nc bnc" id="L114" title="All 2 branches missed.">          if (cache.putStore(newStore.getId(), newStore)) {</span>
+<span class="nc" id="L115">            this.taskQueue.add(newStore);</span>
+<span class="nc" id="L116">            continue;</span>
+          }
+<span class="nc" id="L118">        } else {</span>
+<span class="pc bpc" id="L119" title="1 of 2 branches missed.">          if (!store.isReachable()) {</span>
+<span class="nc" id="L120">            logger.warn(String.format(&quot;store [%s] recovers to be reachable&quot;, store.getAddress()));</span>
+<span class="nc" id="L121">            store.markReachable();</span>
+          }
+        }
+<span class="fc bfc" id="L124" title="All 2 branches covered.">      } else if (store.isReachable()) {</span>
+<span class="fc" id="L125">        unreachableStore.add(store);</span>
+<span class="fc" id="L126">        continue;</span>
+      }
+<span class="fc" id="L128">      this.taskQueue.add(store);</span>
+<span class="fc" id="L129">    }</span>
+<span class="fc bfc" id="L130" title="All 2 branches covered.">    if (!unreachableStore.isEmpty()) {</span>
+      try {
+<span class="fc" id="L132">        Thread.sleep(timeout);</span>
+<span class="nc" id="L133">      } catch (Exception e) {</span>
+<span class="nc" id="L134">        this.taskQueue.addAll(unreachableStore);</span>
+<span class="nc" id="L135">        return;</span>
+<span class="fc" id="L136">      }</span>
+<span class="fc bfc" id="L137" title="All 2 branches covered.">      for (TiStore store : unreachableStore) {</span>
+<span class="pc bpc" id="L138" title="1 of 2 branches missed.">        if (!checkStoreHealth(store)) {</span>
+<span class="fc" id="L139">          logger.warn(String.format(&quot;store [%s] is not reachable&quot;, store.getAddress()));</span>
+<span class="fc" id="L140">          store.markUnreachable();</span>
+        }
+<span class="fc" id="L142">        this.taskQueue.add(store);</span>
+<span class="fc" id="L143">      }</span>
+    }
+<span class="fc" id="L145">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

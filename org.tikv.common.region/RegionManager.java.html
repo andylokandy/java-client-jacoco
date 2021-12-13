@@ -1,0 +1,294 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RegionManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.region</a> &gt; <span class="el_source">RegionManager.java</span></div><h1>RegionManager.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.region;
+
+import static org.tikv.common.codec.KeyUtils.formatBytesUTF8;
+
+import com.google.protobuf.ByteString;
+import io.prometheus.client.Histogram;
+import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.ReadOnlyPDClient;
+import org.tikv.common.TiConfiguration;
+import org.tikv.common.exception.GrpcException;
+import org.tikv.common.exception.InvalidStoreException;
+import org.tikv.common.exception.TiClientInternalException;
+import org.tikv.common.log.SlowLogSpan;
+import org.tikv.common.util.BackOffer;
+import org.tikv.common.util.ChannelFactory;
+import org.tikv.common.util.ConcreteBackOffer;
+import org.tikv.common.util.Pair;
+import org.tikv.kvproto.Metapb;
+import org.tikv.kvproto.Metapb.Peer;
+import org.tikv.kvproto.Metapb.StoreState;
+
+@SuppressWarnings(&quot;UnstableApiUsage&quot;)
+public class RegionManager {
+<span class="fc" id="L47">  private static final Logger logger = LoggerFactory.getLogger(RegionManager.class);</span>
+<span class="fc" id="L48">  public static final Histogram GET_REGION_BY_KEY_REQUEST_LATENCY =</span>
+<span class="fc" id="L49">      Histogram.build()</span>
+<span class="fc" id="L50">          .name(&quot;client_java_get_region_by_requests_latency&quot;)</span>
+<span class="fc" id="L51">          .help(&quot;getRegionByKey request latency.&quot;)</span>
+<span class="fc" id="L52">          .register();</span>
+
+  // TODO: the region cache logic need rewrite.
+  // https://github.com/pingcap/tispark/issues/1170
+  private final RegionCache cache;
+  private final ReadOnlyPDClient pdClient;
+  private final TiConfiguration conf;
+  private final ScheduledExecutorService executor;
+  private final StoreHealthyChecker storeChecker;
+
+  public RegionManager(
+<span class="fc" id="L63">      TiConfiguration conf, ReadOnlyPDClient pdClient, ChannelFactory channelFactory) {</span>
+<span class="fc" id="L64">    this.cache = new RegionCache();</span>
+<span class="fc" id="L65">    this.pdClient = pdClient;</span>
+<span class="fc" id="L66">    this.conf = conf;</span>
+<span class="fc" id="L67">    long period = conf.getHealthCheckPeriodDuration();</span>
+<span class="fc" id="L68">    StoreHealthyChecker storeChecker =</span>
+        new StoreHealthyChecker(
+<span class="fc" id="L70">            channelFactory, pdClient, this.cache, conf.getGrpcHealthCheckTimeout());</span>
+<span class="fc" id="L71">    this.storeChecker = storeChecker;</span>
+<span class="fc" id="L72">    this.executor = Executors.newScheduledThreadPool(1);</span>
+<span class="fc" id="L73">    this.executor.scheduleAtFixedRate(storeChecker, period, period, TimeUnit.MILLISECONDS);</span>
+<span class="fc" id="L74">  }</span>
+
+<span class="fc" id="L76">  public RegionManager(TiConfiguration conf, ReadOnlyPDClient pdClient) {</span>
+<span class="fc" id="L77">    this.cache = new RegionCache();</span>
+<span class="fc" id="L78">    this.pdClient = pdClient;</span>
+<span class="fc" id="L79">    this.conf = conf;</span>
+<span class="fc" id="L80">    this.storeChecker = null;</span>
+<span class="fc" id="L81">    this.executor = null;</span>
+<span class="fc" id="L82">  }</span>
+
+  public synchronized void close() {
+<span class="pc bpc" id="L85" title="1 of 2 branches missed.">    if (this.executor != null) {</span>
+<span class="fc" id="L86">      this.executor.shutdownNow();</span>
+    }
+<span class="fc" id="L88">  }</span>
+
+  public ReadOnlyPDClient getPDClient() {
+<span class="nc" id="L91">    return this.pdClient;</span>
+  }
+
+  public TiRegion getRegionByKey(ByteString key) {
+<span class="fc" id="L95">    return getRegionByKey(key, defaultBackOff());</span>
+  }
+
+  public TiRegion getRegionByKey(ByteString key, BackOffer backOffer) {
+<span class="fc" id="L99">    Histogram.Timer requestTimer = GET_REGION_BY_KEY_REQUEST_LATENCY.startTimer();</span>
+<span class="fc" id="L100">    SlowLogSpan slowLogSpan = backOffer.getSlowLog().start(&quot;getRegionByKey&quot;);</span>
+<span class="fc" id="L101">    TiRegion region = cache.getRegionByKey(key, backOffer);</span>
+    try {
+<span class="fc bfc" id="L103" title="All 2 branches covered.">      if (region == null) {</span>
+<span class="fc" id="L104">        logger.debug(&quot;Key not found in keyToRegionIdCache:&quot; + formatBytesUTF8(key));</span>
+<span class="fc" id="L105">        Pair&lt;Metapb.Region, Metapb.Peer&gt; regionAndLeader = pdClient.getRegionByKey(backOffer, key);</span>
+<span class="fc" id="L106">        region =</span>
+<span class="fc" id="L107">            cache.putRegion(createRegion(regionAndLeader.first, regionAndLeader.second, backOffer));</span>
+      }
+    } finally {
+<span class="fc" id="L110">      requestTimer.observeDuration();</span>
+<span class="fc" id="L111">      slowLogSpan.end();</span>
+    }
+
+<span class="fc" id="L114">    return region;</span>
+  }
+
+  @Deprecated
+  // Do not use GetRegionByID when retrying request.
+  //
+  //   A,B |_______|_____|
+  //   A   |_____________|
+  // Consider region A, B. After merge of (A, B) -&gt; A, region ID B does not exist.
+  // This request is unrecoverable.
+  public TiRegion getRegionById(long regionId) {
+<span class="nc" id="L125">    BackOffer backOffer = defaultBackOff();</span>
+<span class="nc" id="L126">    TiRegion region = cache.getRegionById(regionId);</span>
+<span class="nc bnc" id="L127" title="All 2 branches missed.">    if (region == null) {</span>
+<span class="nc" id="L128">      Pair&lt;Metapb.Region, Metapb.Peer&gt; regionAndLeader =</span>
+<span class="nc" id="L129">          pdClient.getRegionByID(backOffer, regionId);</span>
+<span class="nc" id="L130">      region = createRegion(regionAndLeader.first, regionAndLeader.second, backOffer);</span>
+<span class="nc" id="L131">      return cache.putRegion(region);</span>
+    }
+<span class="nc" id="L133">    return region;</span>
+  }
+
+  public Pair&lt;TiRegion, TiStore&gt; getRegionStorePairByKey(ByteString key, BackOffer backOffer) {
+<span class="nc" id="L137">    return getRegionStorePairByKey(key, TiStoreType.TiKV, backOffer);</span>
+  }
+
+  public Pair&lt;TiRegion, TiStore&gt; getRegionStorePairByKey(ByteString key) {
+<span class="fc" id="L141">    return getRegionStorePairByKey(key, TiStoreType.TiKV);</span>
+  }
+
+  public Pair&lt;TiRegion, TiStore&gt; getRegionStorePairByKey(ByteString key, TiStoreType storeType) {
+<span class="fc" id="L145">    return getRegionStorePairByKey(key, storeType, defaultBackOff());</span>
+  }
+
+  public Pair&lt;TiRegion, TiStore&gt; getRegionStorePairByKey(
+      ByteString key, TiStoreType storeType, BackOffer backOffer) {
+<span class="fc" id="L150">    TiRegion region = getRegionByKey(key, backOffer);</span>
+<span class="pc bpc" id="L151" title="1 of 2 branches missed.">    if (!region.isValid()) {</span>
+<span class="nc" id="L152">      throw new TiClientInternalException(&quot;Region invalid: &quot; + region.toString());</span>
+    }
+
+<span class="fc" id="L155">    TiStore store = null;</span>
+<span class="pc bpc" id="L156" title="1 of 2 branches missed.">    if (storeType == TiStoreType.TiKV) {</span>
+<span class="fc" id="L157">      Peer peer = region.getCurrentReplica();</span>
+<span class="fc" id="L158">      store = getStoreById(peer.getStoreId(), backOffer);</span>
+<span class="fc" id="L159">    } else {</span>
+      outerLoop:
+<span class="nc bnc" id="L161" title="All 2 branches missed.">      for (Peer peer : region.getLearnerList()) {</span>
+<span class="nc" id="L162">        TiStore s = getStoreById(peer.getStoreId(), backOffer);</span>
+<span class="nc bnc" id="L163" title="All 2 branches missed.">        for (Metapb.StoreLabel label : s.getStore().getLabelsList()) {</span>
+<span class="nc bnc" id="L164" title="All 2 branches missed.">          if (label.getKey().equals(storeType.getLabelKey())</span>
+<span class="nc bnc" id="L165" title="All 2 branches missed.">              &amp;&amp; label.getValue().equals(storeType.getLabelValue())) {</span>
+<span class="nc" id="L166">            store = s;</span>
+<span class="nc" id="L167">            break outerLoop;</span>
+          }
+<span class="nc" id="L169">        }</span>
+<span class="nc" id="L170">      }</span>
+<span class="nc bnc" id="L171" title="All 2 branches missed.">      if (store == null) {</span>
+        // clear the region cache, so we may get the learner peer next time
+<span class="nc" id="L173">        cache.invalidateRegion(region);</span>
+      }
+    }
+
+<span class="fc" id="L177">    return Pair.create(region, store);</span>
+  }
+
+  public TiRegion createRegion(Metapb.Region region, BackOffer backOffer) {
+<span class="nc" id="L181">    List&lt;Metapb.Peer&gt; peers = region.getPeersList();</span>
+<span class="nc" id="L182">    List&lt;TiStore&gt; stores = getRegionStore(peers, backOffer);</span>
+<span class="nc" id="L183">    return new TiRegion(conf, region, null, peers, stores);</span>
+  }
+
+  private TiRegion createRegion(Metapb.Region region, Metapb.Peer leader, BackOffer backOffer) {
+<span class="fc" id="L187">    List&lt;Metapb.Peer&gt; peers = region.getPeersList();</span>
+<span class="fc" id="L188">    List&lt;TiStore&gt; stores = getRegionStore(peers, backOffer);</span>
+<span class="fc" id="L189">    return new TiRegion(conf, region, leader, peers, stores);</span>
+  }
+
+  private List&lt;TiStore&gt; getRegionStore(List&lt;Metapb.Peer&gt; peers, BackOffer backOffer) {
+<span class="fc" id="L193">    return peers</span>
+<span class="fc" id="L194">        .stream()</span>
+<span class="fc" id="L195">        .map(p -&gt; getStoreById(p.getStoreId(), backOffer))</span>
+<span class="fc" id="L196">        .collect(Collectors.toList());</span>
+  }
+
+  private TiStore getStoreByIdWithBackOff(long id, BackOffer backOffer) {
+    try {
+<span class="fc" id="L201">      TiStore store = cache.getStoreById(id);</span>
+<span class="fc bfc" id="L202" title="All 2 branches covered.">      if (store == null) {</span>
+<span class="fc" id="L203">        store = new TiStore(pdClient.getStore(backOffer, id));</span>
+      } else {
+<span class="fc" id="L205">        return store;</span>
+      }
+      // if we did not get store info from pd, remove store from cache
+<span class="pc bpc" id="L208" title="1 of 2 branches missed.">      if (store.getStore() == null) {</span>
+<span class="nc" id="L209">        logger.warn(String.format(&quot;failed to get store %d from pd&quot;, id));</span>
+<span class="nc" id="L210">        return null;</span>
+      }
+      // if the store is already tombstone, remove store from cache
+<span class="fc bfc" id="L213" title="All 2 branches covered.">      if (store.getStore().getState().equals(StoreState.Tombstone)) {</span>
+<span class="fc" id="L214">        logger.warn(String.format(&quot;store %d is tombstone&quot;, id));</span>
+<span class="fc" id="L215">        return null;</span>
+      }
+<span class="pc bpc" id="L217" title="1 of 4 branches missed.">      if (cache.putStore(id, store) &amp;&amp; storeChecker != null) {</span>
+<span class="fc" id="L218">        storeChecker.scheduleStoreHealthCheck(store);</span>
+      }
+<span class="fc" id="L220">      return store;</span>
+<span class="fc" id="L221">    } catch (Exception e) {</span>
+<span class="fc" id="L222">      throw new GrpcException(e);</span>
+    }
+  }
+
+  public TiStore getStoreById(long id) {
+<span class="fc" id="L227">    return getStoreById(id, defaultBackOff());</span>
+  }
+
+  public TiStore getStoreById(long id, BackOffer backOffer) {
+<span class="fc" id="L231">    TiStore store = getStoreByIdWithBackOff(id, backOffer);</span>
+<span class="fc bfc" id="L232" title="All 2 branches covered.">    if (store == null) {</span>
+<span class="fc" id="L233">      logger.warn(String.format(&quot;failed to fetch store %d, the store may be missing&quot;, id));</span>
+<span class="fc" id="L234">      cache.clearAll();</span>
+<span class="fc" id="L235">      throw new InvalidStoreException(id);</span>
+    }
+<span class="fc" id="L237">    return store;</span>
+  }
+
+  public void onRegionStale(TiRegion region) {
+<span class="fc" id="L241">    cache.invalidateRegion(region);</span>
+<span class="fc" id="L242">  }</span>
+
+  public TiRegion updateLeader(TiRegion region, long storeId) {
+<span class="nc bnc" id="L245" title="All 2 branches missed.">    if (region.getLeader().getStoreId() == storeId) {</span>
+<span class="nc" id="L246">      return region;</span>
+    }
+<span class="nc" id="L248">    TiRegion newRegion = region.switchPeer(storeId);</span>
+<span class="nc bnc" id="L249" title="All 2 branches missed.">    if (cache.updateRegion(region, newRegion)) {</span>
+<span class="nc" id="L250">      return newRegion;</span>
+    }
+    // failed to switch leader, possibly region is outdated, we need to drop region cache from
+    // regionCache
+<span class="nc" id="L254">    logger.warn(&quot;Cannot find peer when updating leader (&quot; + region.getId() + &quot;,&quot; + storeId + &quot;)&quot;);</span>
+<span class="nc" id="L255">    return null;</span>
+  }
+
+  public synchronized void updateStore(TiStore oldStore, TiStore newStore) {
+<span class="pc bpc" id="L259" title="2 of 4 branches missed.">    if (cache.updateStore(oldStore, newStore) &amp;&amp; storeChecker != null) {</span>
+<span class="fc" id="L260">      storeChecker.scheduleStoreHealthCheck(newStore);</span>
+    }
+<span class="fc" id="L262">  }</span>
+
+  /** Clears all cache when some unexpected error occurs. */
+  public void clearRegionCache() {
+<span class="nc" id="L266">    cache.clearAll();</span>
+<span class="nc" id="L267">  }</span>
+
+  /**
+   * Clears all cache when a TiKV server does not respond
+   *
+   * @param region region
+   */
+  public synchronized void onRequestFail(TiRegion region) {
+<span class="nc" id="L275">    cache.invalidateRegion(region);</span>
+<span class="nc" id="L276">  }</span>
+
+  public void invalidateStore(long storeId) {
+<span class="fc" id="L279">    cache.invalidateStore(storeId);</span>
+<span class="fc" id="L280">  }</span>
+
+  public void invalidateRegion(TiRegion region) {
+<span class="nc" id="L283">    cache.invalidateRegion(region);</span>
+<span class="nc" id="L284">  }</span>
+
+  public void insertRegionToCache(TiRegion region) {
+<span class="nc" id="L287">    cache.insertRegionToCache(region);</span>
+<span class="nc" id="L288">  }</span>
+
+  private BackOffer defaultBackOff() {
+<span class="fc" id="L291">    return ConcreteBackOffer.newCustomBackOff(conf.getRawKVDefaultBackoffInMS());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

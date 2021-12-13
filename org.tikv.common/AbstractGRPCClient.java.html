@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractGRPCClient.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common</a> &gt; <span class="el_source">AbstractGRPCClient.java</span></div><h1>AbstractGRPCClient.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common;
+
+import static io.grpc.stub.ClientCalls.asyncBidiStreamingCall;
+import static io.grpc.stub.ClientCalls.blockingServerStreamingCall;
+
+import io.grpc.ManagedChannel;
+import io.grpc.MethodDescriptor;
+import io.grpc.health.v1.HealthCheckRequest;
+import io.grpc.health.v1.HealthCheckResponse;
+import io.grpc.health.v1.HealthGrpc;
+import io.grpc.stub.AbstractFutureStub;
+import io.grpc.stub.AbstractStub;
+import io.grpc.stub.ClientCalls;
+import io.grpc.stub.StreamObserver;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.operation.ErrorHandler;
+import org.tikv.common.policy.RetryMaxMs.Builder;
+import org.tikv.common.policy.RetryPolicy;
+import org.tikv.common.streaming.StreamingResponse;
+import org.tikv.common.util.BackOffer;
+import org.tikv.common.util.ChannelFactory;
+
+public abstract class AbstractGRPCClient&lt;
+        BlockingStubT extends AbstractStub&lt;BlockingStubT&gt;,
+        FutureStubT extends AbstractFutureStub&lt;FutureStubT&gt;&gt;
+    implements AutoCloseable {
+<span class="fc" id="L45">  protected final Logger logger = LoggerFactory.getLogger(this.getClass());</span>
+  protected final ChannelFactory channelFactory;
+  protected TiConfiguration conf;
+  protected long timeout;
+  protected BlockingStubT blockingStub;
+  protected FutureStubT asyncStub;
+
+<span class="fc" id="L52">  protected AbstractGRPCClient(TiConfiguration conf, ChannelFactory channelFactory) {</span>
+<span class="fc" id="L53">    this.conf = conf;</span>
+<span class="fc" id="L54">    this.timeout = conf.getTimeout();</span>
+<span class="fc" id="L55">    this.channelFactory = channelFactory;</span>
+<span class="fc" id="L56">  }</span>
+
+  protected AbstractGRPCClient(
+      TiConfiguration conf,
+      ChannelFactory channelFactory,
+      BlockingStubT blockingStub,
+<span class="fc" id="L62">      FutureStubT asyncStub) {</span>
+<span class="fc" id="L63">    this.conf = conf;</span>
+<span class="fc" id="L64">    this.timeout = conf.getTimeout();</span>
+<span class="fc" id="L65">    this.channelFactory = channelFactory;</span>
+<span class="fc" id="L66">    this.blockingStub = blockingStub;</span>
+<span class="fc" id="L67">    this.asyncStub = asyncStub;</span>
+<span class="fc" id="L68">  }</span>
+
+  public TiConfiguration getConf() {
+<span class="fc" id="L71">    return conf;</span>
+  }
+
+  // TODO: Seems a little bit messy for lambda part
+  public &lt;ReqT, RespT&gt; RespT callWithRetry(
+      BackOffer backOffer,
+      MethodDescriptor&lt;ReqT, RespT&gt; method,
+      Supplier&lt;ReqT&gt; requestFactory,
+      ErrorHandler&lt;RespT&gt; handler) {
+<span class="pc bpc" id="L80" title="1 of 2 branches missed.">    if (logger.isTraceEnabled()) {</span>
+<span class="nc" id="L81">      logger.trace(String.format(&quot;Calling %s...&quot;, method.getFullMethodName()));</span>
+    }
+<span class="fc" id="L83">    RetryPolicy.Builder&lt;RespT&gt; builder = new Builder&lt;&gt;(backOffer);</span>
+<span class="fc" id="L84">    RespT resp =</span>
+        builder
+<span class="fc" id="L86">            .create(handler)</span>
+<span class="fc" id="L87">            .callWithRetry(</span>
+                () -&gt; {
+<span class="fc" id="L89">                  BlockingStubT stub = getBlockingStub();</span>
+<span class="fc" id="L90">                  return ClientCalls.blockingUnaryCall(</span>
+<span class="fc" id="L91">                      stub.getChannel(), method, stub.getCallOptions(), requestFactory.get());</span>
+                },
+<span class="fc" id="L93">                method.getFullMethodName(),</span>
+                backOffer);
+
+<span class="pc bpc" id="L96" title="1 of 2 branches missed.">    if (logger.isTraceEnabled()) {</span>
+<span class="nc" id="L97">      logger.trace(String.format(&quot;leaving %s...&quot;, method.getFullMethodName()));</span>
+    }
+<span class="fc" id="L99">    return resp;</span>
+  }
+
+  protected &lt;ReqT, RespT&gt; void callAsyncWithRetry(
+      BackOffer backOffer,
+      MethodDescriptor&lt;ReqT, RespT&gt; method,
+      Supplier&lt;ReqT&gt; requestFactory,
+      StreamObserver&lt;RespT&gt; responseObserver,
+      ErrorHandler&lt;RespT&gt; handler) {
+<span class="nc" id="L108">    logger.debug(String.format(&quot;Calling %s...&quot;, method.getFullMethodName()));</span>
+
+<span class="nc" id="L110">    RetryPolicy.Builder&lt;RespT&gt; builder = new Builder&lt;&gt;(backOffer);</span>
+<span class="nc" id="L111">    builder</span>
+<span class="nc" id="L112">        .create(handler)</span>
+<span class="nc" id="L113">        .callWithRetry(</span>
+            () -&gt; {
+<span class="nc" id="L115">              FutureStubT stub = getAsyncStub();</span>
+<span class="nc" id="L116">              ClientCalls.asyncUnaryCall(</span>
+<span class="nc" id="L117">                  stub.getChannel().newCall(method, stub.getCallOptions()),</span>
+<span class="nc" id="L118">                  requestFactory.get(),</span>
+                  responseObserver);
+<span class="nc" id="L120">              return null;</span>
+            },
+<span class="nc" id="L122">            method.getFullMethodName(),</span>
+            backOffer);
+<span class="nc" id="L124">    logger.debug(String.format(&quot;leaving %s...&quot;, method.getFullMethodName()));</span>
+<span class="nc" id="L125">  }</span>
+
+  &lt;ReqT, RespT&gt; StreamObserver&lt;ReqT&gt; callBidiStreamingWithRetry(
+      BackOffer backOffer,
+      MethodDescriptor&lt;ReqT, RespT&gt; method,
+      StreamObserver&lt;RespT&gt; responseObserver,
+      ErrorHandler&lt;StreamObserver&lt;ReqT&gt;&gt; handler) {
+<span class="nc" id="L132">    logger.debug(String.format(&quot;Calling %s...&quot;, method.getFullMethodName()));</span>
+
+<span class="nc" id="L134">    RetryPolicy.Builder&lt;StreamObserver&lt;ReqT&gt;&gt; builder = new Builder&lt;&gt;(backOffer);</span>
+<span class="nc" id="L135">    StreamObserver&lt;ReqT&gt; observer =</span>
+        builder
+<span class="nc" id="L137">            .create(handler)</span>
+<span class="nc" id="L138">            .callWithRetry(</span>
+                () -&gt; {
+<span class="nc" id="L140">                  FutureStubT stub = getAsyncStub();</span>
+<span class="nc" id="L141">                  return asyncBidiStreamingCall(</span>
+<span class="nc" id="L142">                      stub.getChannel().newCall(method, stub.getCallOptions()), responseObserver);</span>
+                },
+<span class="nc" id="L144">                method.getFullMethodName(),</span>
+                backOffer);
+<span class="nc" id="L146">    logger.debug(String.format(&quot;leaving %s...&quot;, method.getFullMethodName()));</span>
+<span class="nc" id="L147">    return observer;</span>
+  }
+
+  public &lt;ReqT, RespT&gt; StreamingResponse callServerStreamingWithRetry(
+      BackOffer backOffer,
+      MethodDescriptor&lt;ReqT, RespT&gt; method,
+      Supplier&lt;ReqT&gt; requestFactory,
+      ErrorHandler&lt;StreamingResponse&gt; handler) {
+<span class="nc" id="L155">    logger.debug(String.format(&quot;Calling %s...&quot;, method.getFullMethodName()));</span>
+
+<span class="nc" id="L157">    RetryPolicy.Builder&lt;StreamingResponse&gt; builder = new Builder&lt;&gt;(backOffer);</span>
+<span class="nc" id="L158">    StreamingResponse response =</span>
+        builder
+<span class="nc" id="L160">            .create(handler)</span>
+<span class="nc" id="L161">            .callWithRetry(</span>
+                () -&gt; {
+<span class="nc" id="L163">                  BlockingStubT stub = getBlockingStub();</span>
+<span class="nc" id="L164">                  return new StreamingResponse(</span>
+<span class="nc" id="L165">                      blockingServerStreamingCall(</span>
+<span class="nc" id="L166">                          stub.getChannel(), method, stub.getCallOptions(), requestFactory.get()));</span>
+                },
+<span class="nc" id="L168">                method.getFullMethodName(),</span>
+                backOffer);
+<span class="nc" id="L170">    logger.debug(String.format(&quot;leaving %s...&quot;, method.getFullMethodName()));</span>
+<span class="nc" id="L171">    return response;</span>
+  }
+
+  public void setTimeout(long timeout) {
+<span class="fc" id="L175">    this.timeout = timeout;</span>
+<span class="fc" id="L176">  }</span>
+
+  public long getTimeout() {
+<span class="fc" id="L179">    return this.timeout;</span>
+  }
+
+  protected abstract BlockingStubT getBlockingStub();
+
+  protected abstract FutureStubT getAsyncStub();
+
+  protected boolean checkHealth(String addressStr, HostMapping hostMapping) {
+<span class="fc" id="L187">    ManagedChannel channel = channelFactory.getChannel(addressStr, hostMapping);</span>
+<span class="fc" id="L188">    HealthGrpc.HealthBlockingStub stub =</span>
+<span class="fc" id="L189">        HealthGrpc.newBlockingStub(channel).withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS);</span>
+<span class="fc" id="L190">    HealthCheckRequest req = HealthCheckRequest.newBuilder().build();</span>
+    try {
+<span class="fc" id="L192">      HealthCheckResponse resp = stub.check(req);</span>
+<span class="pc bpc" id="L193" title="1 of 2 branches missed.">      if (resp.getStatus() != HealthCheckResponse.ServingStatus.SERVING) {</span>
+<span class="nc" id="L194">        return false;</span>
+      }
+<span class="fc" id="L196">    } catch (Exception e) {</span>
+<span class="fc" id="L197">      return false;</span>
+<span class="fc" id="L198">    }</span>
+<span class="fc" id="L199">    return true;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

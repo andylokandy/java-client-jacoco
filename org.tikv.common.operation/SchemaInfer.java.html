@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SchemaInfer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.operation</a> &gt; <span class="el_source">SchemaInfer.java</span></div><h1>SchemaInfer.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.operation;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
+import org.tikv.common.expression.ByItem;
+import org.tikv.common.expression.Expression;
+import org.tikv.common.meta.TiDAGRequest;
+import org.tikv.common.types.DataType;
+
+/**
+ * SchemaInfer extract row's type after query is executed. It is pretty rough version. Optimization
+ * is on the way. The problem we have right now is that TiDB promote Sum to Decimal which is not
+ * compatible with column's type. The solution we come up with right now is use record column's type
+ * ad finalFieldType and build another list recording TiExpr's type as fieldType for row reading.
+ * Once we finish row reading, we first check each element in fieldType and finalFieldType share the
+ * same type or not. If yes, no need for casting. If no, casting is needed here.
+ */
+public class SchemaInfer {
+  private final List&lt;DataType&gt; types;
+
+<span class="nc" id="L37">  private SchemaInfer(TiDAGRequest dagRequest, boolean readHandle) {</span>
+<span class="nc" id="L38">    types = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L39">    dagRequest.init(readHandle);</span>
+<span class="nc" id="L40">    extractFieldTypes(dagRequest, readHandle);</span>
+<span class="nc" id="L41">  }</span>
+
+  public static SchemaInfer create(TiDAGRequest dagRequest) {
+<span class="nc" id="L44">    return create(dagRequest, false);</span>
+  }
+
+  public static SchemaInfer create(TiDAGRequest dagRequest, boolean readHandle) {
+<span class="nc" id="L48">    return new SchemaInfer(dagRequest.copy(), readHandle);</span>
+  }
+
+  /**
+   * TODO: order by extract field types from tiSelectRequest for reading data to row.
+   *
+   * @param dagRequest is SelectRequest
+   */
+  private void extractFieldTypes(TiDAGRequest dagRequest, boolean readHandle) {
+<span class="nc bnc" id="L57" title="All 2 branches missed.">    if (readHandle) {</span>
+      // or extract data from index read
+<span class="nc" id="L59">      types.addAll(dagRequest.getIndexDataTypes());</span>
+<span class="nc bnc" id="L60" title="All 2 branches missed.">    } else if (dagRequest.hasPushDownAggregate()) {</span>
+<span class="nc" id="L61">      types.addAll(</span>
+          dagRequest
+<span class="nc" id="L63">              .getPushDownAggregates()</span>
+<span class="nc" id="L64">              .stream()</span>
+<span class="nc" id="L65">              .map(Expression::getDataType)</span>
+<span class="nc" id="L66">              .collect(Collectors.toList()));</span>
+      // In DAG mode, if there is any group by statement in a request, all the columns specified
+      // in group by expression will be returned, so when we decode a result row, we need to pay
+      // extra attention to decoding.
+<span class="nc bnc" id="L70" title="All 2 branches missed.">      if (dagRequest.hasPushDownGroupBy()) {</span>
+<span class="nc bnc" id="L71" title="All 2 branches missed.">        for (ByItem item : dagRequest.getPushDownGroupBys()) {</span>
+<span class="nc" id="L72">          types.add(item.getExpr().getDataType());</span>
+<span class="nc" id="L73">        }</span>
+      }
+    } else {
+      // Extract all column type information from TiExpr
+<span class="nc" id="L77">      dagRequest.getFields().forEach(expr -&gt; types.add(expr.getDataType()));</span>
+    }
+<span class="nc" id="L79">  }</span>
+
+  public DataType getType(int index) {
+<span class="nc" id="L82">    return types.get(index);</span>
+  }
+
+  public List&lt;DataType&gt; getTypes() {
+<span class="nc" id="L86">    return types;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

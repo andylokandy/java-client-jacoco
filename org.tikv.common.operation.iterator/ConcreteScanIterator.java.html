@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ConcreteScanIterator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.operation.iterator</a> &gt; <span class="el_source">ConcreteScanIterator.java</span></div><h1>ConcreteScanIterator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2018 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.operation.iterator;
+
+import static java.util.Objects.requireNonNull;
+
+import com.google.protobuf.ByteString;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.TiConfiguration;
+import org.tikv.common.exception.GrpcException;
+import org.tikv.common.exception.KeyException;
+import org.tikv.common.key.Key;
+import org.tikv.common.region.RegionStoreClient;
+import org.tikv.common.region.RegionStoreClient.RegionStoreClientBuilder;
+import org.tikv.common.region.TiRegion;
+import org.tikv.common.region.TiStore;
+import org.tikv.common.util.BackOffer;
+import org.tikv.common.util.ConcreteBackOffer;
+import org.tikv.common.util.Pair;
+import org.tikv.kvproto.Kvrpcpb;
+
+public class ConcreteScanIterator extends ScanIterator {
+  private final long version;
+<span class="nc" id="L38">  private final Logger logger = LoggerFactory.getLogger(ConcreteScanIterator.class);</span>
+
+  public ConcreteScanIterator(
+      TiConfiguration conf,
+      RegionStoreClientBuilder builder,
+      ByteString startKey,
+      long version,
+      int limit) {
+    // Passing endKey as ByteString.EMPTY means that endKey is +INF by default,
+<span class="nc" id="L47">    this(conf, builder, startKey, ByteString.EMPTY, version, limit);</span>
+<span class="nc" id="L48">  }</span>
+
+  public ConcreteScanIterator(
+      TiConfiguration conf,
+      RegionStoreClientBuilder builder,
+      ByteString startKey,
+      ByteString endKey,
+      long version) {
+    // Passing endKey as ByteString.EMPTY means that endKey is +INF by default,
+<span class="nc" id="L57">    this(conf, builder, startKey, endKey, version, Integer.MAX_VALUE);</span>
+<span class="nc" id="L58">  }</span>
+
+  private ConcreteScanIterator(
+      TiConfiguration conf,
+      RegionStoreClientBuilder builder,
+      ByteString startKey,
+      ByteString endKey,
+      long version,
+      int limit) {
+<span class="nc" id="L67">    super(conf, builder, startKey, endKey, limit, false);</span>
+<span class="nc" id="L68">    this.version = version;</span>
+<span class="nc" id="L69">  }</span>
+
+  @Override
+  TiRegion loadCurrentRegionToCache() throws GrpcException {
+    TiRegion region;
+<span class="nc" id="L74">    try (RegionStoreClient client = builder.build(startKey)) {</span>
+<span class="nc" id="L75">      client.setTimeout(conf.getScanTimeout());</span>
+<span class="nc" id="L76">      region = client.getRegion();</span>
+<span class="nc" id="L77">      BackOffer backOffer = ConcreteBackOffer.newScannerNextMaxBackOff();</span>
+<span class="nc" id="L78">      currentCache = client.scan(backOffer, startKey, version);</span>
+<span class="nc" id="L79">      return region;</span>
+    }
+  }
+
+  private ByteString resolveCurrentLock(Kvrpcpb.KvPair current) {
+<span class="nc" id="L84">    logger.warn(String.format(&quot;resolve current key error %s&quot;, current.getError().toString()));</span>
+<span class="nc" id="L85">    Pair&lt;TiRegion, TiStore&gt; pair =</span>
+<span class="nc" id="L86">        builder.getRegionManager().getRegionStorePairByKey(current.getKey());</span>
+<span class="nc" id="L87">    TiRegion region = pair.first;</span>
+<span class="nc" id="L88">    TiStore store = pair.second;</span>
+<span class="nc" id="L89">    BackOffer backOffer = ConcreteBackOffer.newGetBackOff();</span>
+<span class="nc" id="L90">    try (RegionStoreClient client = builder.build(region, store)) {</span>
+<span class="nc" id="L91">      return client.get(backOffer, current.getKey(), version);</span>
+<span class="nc" id="L92">    } catch (Exception e) {</span>
+<span class="nc" id="L93">      throw new KeyException(current.getError());</span>
+    }
+  }
+
+  @Override
+  public boolean hasNext() {
+    Kvrpcpb.KvPair current;
+    // continue when cache is empty but not null
+    do {
+<span class="nc" id="L102">      current = getCurrent();</span>
+<span class="nc bnc" id="L103" title="All 4 branches missed.">      if (isCacheDrained() &amp;&amp; cacheLoadFails()) {</span>
+<span class="nc" id="L104">        endOfScan = true;</span>
+<span class="nc" id="L105">        return false;</span>
+      }
+<span class="nc bnc" id="L107" title="All 4 branches missed.">    } while (currentCache != null &amp;&amp; current == null);</span>
+    // for last batch to be processed, we have to check if
+<span class="nc bnc" id="L109" title="All 6 branches missed.">    return !processingLastBatch</span>
+        || current == null
+<span class="nc bnc" id="L111" title="All 2 branches missed.">        || (hasEndKey &amp;&amp; Key.toRawKey(current.getKey()).compareTo(endKey) &lt; 0);</span>
+  }
+
+  @Override
+  public Kvrpcpb.KvPair next() {
+<span class="nc" id="L116">    --limit;</span>
+<span class="nc" id="L117">    Kvrpcpb.KvPair current = currentCache.get(index++);</span>
+
+<span class="nc" id="L119">    requireNonNull(current, &quot;current kv pair cannot be null&quot;);</span>
+<span class="nc bnc" id="L120" title="All 2 branches missed.">    if (current.hasError()) {</span>
+<span class="nc" id="L121">      ByteString val = resolveCurrentLock(current);</span>
+<span class="nc" id="L122">      current = Kvrpcpb.KvPair.newBuilder().setKey(current.getKey()).setValue(val).build();</span>
+    }
+
+<span class="nc" id="L125">    return current;</span>
+  }
+
+  /**
+   * Cache is drained when - no data extracted - scan limit was not defined - have read the last
+   * index of cache - index not initialized
+   *
+   * @return whether cache is drained
+   */
+  private boolean isCacheDrained() {
+<span class="nc bnc" id="L135" title="All 8 branches missed.">    return currentCache == null || limit &lt;= 0 || index &gt;= currentCache.size() || index == -1;</span>
+  }
+
+  private Kvrpcpb.KvPair getCurrent() {
+<span class="nc bnc" id="L139" title="All 2 branches missed.">    if (isCacheDrained()) {</span>
+<span class="nc" id="L140">      return null;</span>
+    }
+<span class="nc" id="L142">    return currentCache.get(index);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

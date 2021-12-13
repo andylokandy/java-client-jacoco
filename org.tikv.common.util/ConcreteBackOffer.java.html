@@ -1,0 +1,235 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ConcreteBackOffer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.util</a> &gt; <span class="el_source">ConcreteBackOffer.java</span></div><h1>ConcreteBackOffer.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.util;
+
+import static org.tikv.common.ConfigUtils.TIKV_BO_REGION_MISS_BASE_IN_MS;
+
+import com.google.common.base.Preconditions;
+import io.prometheus.client.Histogram;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.TiConfiguration;
+import org.tikv.common.exception.GrpcException;
+import org.tikv.common.exception.TiKVException;
+import org.tikv.common.log.SlowLog;
+import org.tikv.common.log.SlowLogEmptyImpl;
+import org.tikv.common.log.SlowLogSpan;
+
+public class ConcreteBackOffer implements BackOffer {
+<span class="fc" id="L38">  private static final Logger logger = LoggerFactory.getLogger(ConcreteBackOffer.class);</span>
+  private final int maxSleep;
+  private final Map&lt;BackOffFunction.BackOffFuncType, BackOffFunction&gt; backOffFunctionMap;
+  private final List&lt;Exception&gt; errors;
+  private int totalSleep;
+  private final long deadline;
+  private final SlowLog slowLog;
+
+<span class="fc" id="L46">  public static final Histogram BACKOFF_DURATION =</span>
+<span class="fc" id="L47">      Histogram.build()</span>
+<span class="fc" id="L48">          .name(&quot;client_java_backoff_duration&quot;)</span>
+<span class="fc" id="L49">          .help(&quot;backoff duration.&quot;)</span>
+<span class="fc" id="L50">          .labelNames(&quot;type&quot;)</span>
+<span class="fc" id="L51">          .register();</span>
+
+<span class="fc" id="L53">  private ConcreteBackOffer(int maxSleep, long deadline, SlowLog slowLog) {</span>
+<span class="pc bpc" id="L54" title="1 of 4 branches missed.">    Preconditions.checkArgument(</span>
+        maxSleep == 0 || deadline == 0, &quot;Max sleep time should be 0 or Deadline should be 0.&quot;);
+<span class="pc bpc" id="L56" title="1 of 2 branches missed.">    Preconditions.checkArgument(maxSleep &gt;= 0, &quot;Max sleep time cannot be less than 0.&quot;);</span>
+<span class="pc bpc" id="L57" title="1 of 2 branches missed.">    Preconditions.checkArgument(deadline &gt;= 0, &quot;Deadline cannot be less than 0.&quot;);</span>
+<span class="fc" id="L58">    this.maxSleep = maxSleep;</span>
+<span class="fc" id="L59">    this.errors = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L60">    this.backOffFunctionMap = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L61">    this.deadline = deadline;</span>
+<span class="fc" id="L62">    this.slowLog = slowLog;</span>
+<span class="fc" id="L63">  }</span>
+
+<span class="fc" id="L65">  private ConcreteBackOffer(ConcreteBackOffer source) {</span>
+<span class="fc" id="L66">    this.maxSleep = source.maxSleep;</span>
+<span class="fc" id="L67">    this.totalSleep = source.totalSleep;</span>
+<span class="fc" id="L68">    this.errors = source.errors;</span>
+<span class="fc" id="L69">    this.backOffFunctionMap = source.backOffFunctionMap;</span>
+<span class="fc" id="L70">    this.deadline = source.deadline;</span>
+<span class="fc" id="L71">    this.slowLog = source.slowLog;</span>
+<span class="fc" id="L72">  }</span>
+
+  public static ConcreteBackOffer newDeadlineBackOff(int timeoutInMs, SlowLog slowLog) {
+<span class="fc" id="L75">    long deadline = System.currentTimeMillis() + timeoutInMs;</span>
+<span class="fc" id="L76">    return new ConcreteBackOffer(0, deadline, slowLog);</span>
+  }
+
+  public static ConcreteBackOffer newCustomBackOff(int maxSleep) {
+<span class="fc" id="L80">    return new ConcreteBackOffer(maxSleep, 0, SlowLogEmptyImpl.INSTANCE);</span>
+  }
+
+  public static ConcreteBackOffer newScannerNextMaxBackOff() {
+<span class="nc" id="L84">    return new ConcreteBackOffer(SCANNER_NEXT_MAX_BACKOFF, 0, SlowLogEmptyImpl.INSTANCE);</span>
+  }
+
+  public static ConcreteBackOffer newBatchGetMaxBackOff() {
+<span class="nc" id="L88">    return new ConcreteBackOffer(BATCH_GET_MAX_BACKOFF, 0, SlowLogEmptyImpl.INSTANCE);</span>
+  }
+
+  public static ConcreteBackOffer newCopNextMaxBackOff() {
+<span class="fc" id="L92">    return new ConcreteBackOffer(COP_NEXT_MAX_BACKOFF, 0, SlowLogEmptyImpl.INSTANCE);</span>
+  }
+
+  public static ConcreteBackOffer newGetBackOff() {
+<span class="fc" id="L96">    return new ConcreteBackOffer(GET_MAX_BACKOFF, 0, SlowLogEmptyImpl.INSTANCE);</span>
+  }
+
+  public static ConcreteBackOffer newRawKVBackOff() {
+<span class="fc" id="L100">    return new ConcreteBackOffer(RAWKV_MAX_BACKOFF, 0, SlowLogEmptyImpl.INSTANCE);</span>
+  }
+
+  public static ConcreteBackOffer newTsoBackOff() {
+<span class="fc" id="L104">    return new ConcreteBackOffer(TSO_MAX_BACKOFF, 0, SlowLogEmptyImpl.INSTANCE);</span>
+  }
+
+  public static ConcreteBackOffer create(BackOffer source) {
+<span class="fc" id="L108">    return new ConcreteBackOffer(((ConcreteBackOffer) source));</span>
+  }
+
+  /**
+   * Creates a back off func which implements exponential back off with optional jitters according
+   * to different back off strategies. See http://www.awsarchitectureblog.com/2015/03/backoff.html
+   */
+  private BackOffFunction createBackOffFunc(BackOffFunction.BackOffFuncType funcType) {
+<span class="fc" id="L116">    BackOffFunction backOffFunction = null;</span>
+<span class="pc bpc" id="L117" title="6 of 10 branches missed.">    switch (funcType) {</span>
+      case BoUpdateLeader:
+<span class="nc" id="L119">        backOffFunction = BackOffFunction.create(1, 10, BackOffStrategy.NoJitter);</span>
+<span class="nc" id="L120">        break;</span>
+      case BoTxnLockFast:
+<span class="nc" id="L122">        backOffFunction = BackOffFunction.create(100, 3000, BackOffStrategy.EqualJitter);</span>
+<span class="nc" id="L123">        break;</span>
+      case BoServerBusy:
+<span class="fc" id="L125">        backOffFunction = BackOffFunction.create(2000, 10000, BackOffStrategy.EqualJitter);</span>
+<span class="fc" id="L126">        break;</span>
+      case BoRegionMiss:
+<span class="fc" id="L128">        backOffFunction =</span>
+<span class="fc" id="L129">            BackOffFunction.create(</span>
+<span class="fc" id="L130">                TiConfiguration.getInt(TIKV_BO_REGION_MISS_BASE_IN_MS),</span>
+                500,
+                BackOffStrategy.NoJitter);
+<span class="fc" id="L133">        break;</span>
+      case BoTxnLock:
+<span class="nc" id="L135">        backOffFunction = BackOffFunction.create(200, 3000, BackOffStrategy.EqualJitter);</span>
+<span class="nc" id="L136">        break;</span>
+      case BoPDRPC:
+<span class="fc" id="L138">        backOffFunction = BackOffFunction.create(100, 600, BackOffStrategy.EqualJitter);</span>
+<span class="fc" id="L139">        break;</span>
+      case BoTiKVRPC:
+<span class="nc" id="L141">        backOffFunction = BackOffFunction.create(10, 400, BackOffStrategy.EqualJitter);</span>
+<span class="nc" id="L142">        break;</span>
+      case BoTxnNotFound:
+<span class="nc" id="L144">        backOffFunction = BackOffFunction.create(2, 500, BackOffStrategy.NoJitter);</span>
+<span class="nc" id="L145">        break;</span>
+      case BoCheckTimeout:
+<span class="fc" id="L147">        backOffFunction = BackOffFunction.create(0, 0, BackOffStrategy.NoJitter);</span>
+        break;
+    }
+<span class="fc" id="L150">    return backOffFunction;</span>
+  }
+
+  @Override
+  public void doBackOff(BackOffFunction.BackOffFuncType funcType, Exception err) {
+<span class="fc" id="L155">    doBackOffWithMaxSleep(funcType, -1, err);</span>
+<span class="fc" id="L156">  }</span>
+
+  @Override
+  public void checkTimeout() {
+<span class="fc bfc" id="L160" title="All 2 branches covered.">    if (!canRetryAfterSleep(BackOffFunction.BackOffFuncType.BoCheckTimeout)) {</span>
+<span class="nc" id="L161">      logThrowError(new TiKVException(&quot;Request Timeout&quot;));</span>
+    }
+<span class="fc" id="L163">  }</span>
+
+  @Override
+  public boolean canRetryAfterSleep(BackOffFunction.BackOffFuncType funcType) {
+<span class="fc" id="L167">    return canRetryAfterSleep(funcType, -1);</span>
+  }
+
+  public boolean canRetryAfterSleep(BackOffFunction.BackOffFuncType funcType, long maxSleepMs) {
+<span class="fc" id="L171">    SlowLogSpan slowLogSpan = getSlowLog().start(&quot;backoff &quot; + funcType.name());</span>
+<span class="fc" id="L172">    Histogram.Timer backOffTimer = BACKOFF_DURATION.labels(funcType.name()).startTimer();</span>
+<span class="fc" id="L173">    BackOffFunction backOffFunction =</span>
+<span class="fc" id="L174">        backOffFunctionMap.computeIfAbsent(funcType, this::createBackOffFunc);</span>
+
+    // Back off will not be done here
+<span class="fc" id="L177">    long sleep = backOffFunction.getSleepMs(maxSleepMs);</span>
+<span class="fc" id="L178">    totalSleep += sleep;</span>
+    // Check deadline
+<span class="fc bfc" id="L180" title="All 2 branches covered.">    if (deadline &gt; 0) {</span>
+<span class="fc" id="L181">      long currentMs = System.currentTimeMillis();</span>
+<span class="fc bfc" id="L182" title="All 2 branches covered.">      if (currentMs + sleep &gt;= deadline) {</span>
+<span class="fc" id="L183">        logger.warn(String.format(&quot;Deadline %d is exceeded, errors:&quot;, deadline));</span>
+<span class="fc" id="L184">        return false;</span>
+      }
+    }
+
+    try {
+<span class="fc" id="L189">      Thread.sleep(sleep);</span>
+<span class="fc" id="L190">    } catch (InterruptedException e) {</span>
+<span class="fc" id="L191">      throw new GrpcException(e);</span>
+    } finally {
+<span class="fc" id="L193">      slowLogSpan.end();</span>
+<span class="fc" id="L194">      backOffTimer.observeDuration();</span>
+    }
+<span class="fc bfc" id="L196" title="All 4 branches covered.">    if (maxSleep &gt; 0 &amp;&amp; totalSleep &gt;= maxSleep) {</span>
+<span class="fc" id="L197">      logger.warn(String.format(&quot;BackOffer.maxSleep %dms is exceeded, errors:&quot;, maxSleep));</span>
+<span class="fc" id="L198">      return false;</span>
+    }
+<span class="fc" id="L200">    return true;</span>
+  }
+
+  @Override
+  public void doBackOffWithMaxSleep(
+      BackOffFunction.BackOffFuncType funcType, long maxSleepMs, Exception err) {
+<span class="fc" id="L206">    logger.debug(</span>
+<span class="fc" id="L207">        String.format(</span>
+            &quot;%s, retry later(totalSleep %dms, maxSleep %dms)&quot;,
+<span class="fc" id="L209">            err.getMessage(), totalSleep, maxSleep));</span>
+<span class="fc" id="L210">    errors.add(err);</span>
+<span class="fc bfc" id="L211" title="All 2 branches covered.">    if (!canRetryAfterSleep(funcType, maxSleepMs)) {</span>
+<span class="nc" id="L212">      logThrowError(err);</span>
+    }
+<span class="fc" id="L214">  }</span>
+
+  private void logThrowError(Exception err) {
+<span class="fc" id="L217">    StringBuilder errMsg = new StringBuilder();</span>
+<span class="fc bfc" id="L218" title="All 2 branches covered.">    for (int i = 0; i &lt; errors.size(); i++) {</span>
+<span class="fc" id="L219">      Exception curErr = errors.get(i);</span>
+      // Print only last 3 errors for non-DEBUG log levels.
+<span class="pc bpc" id="L221" title="1 of 4 branches missed.">      if (logger.isDebugEnabled() || i &gt;= errors.size() - 3) {</span>
+<span class="fc" id="L222">        errMsg.append(&quot;\n&quot;).append(i).append(&quot;.&quot;).append(curErr.toString());</span>
+      }
+    }
+<span class="fc" id="L225">    logger.warn(errMsg.toString());</span>
+    // Use the last backoff type to generate an exception
+<span class="fc" id="L227">    throw new GrpcException(&quot;retry is exhausted.&quot;, err);</span>
+  }
+
+  @Override
+  public SlowLog getSlowLog() {
+<span class="fc" id="L232">    return slowLog;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

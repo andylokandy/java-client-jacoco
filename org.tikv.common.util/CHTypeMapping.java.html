@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CHTypeMapping.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.util</a> &gt; <span class="el_source">CHTypeMapping.java</span></div><h1>CHTypeMapping.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.util;
+
+import org.apache.commons.lang3.StringUtils;
+import org.tikv.common.columnar.datatypes.*;
+import org.tikv.common.columnar.datatypes.CHTypeNumber.*;
+
+<span class="nc" id="L22">public class CHTypeMapping {</span>
+  public static CHType parseType(String typeName) {
+<span class="nc bnc" id="L24" title="All 4 branches missed.">    if (typeName == null || typeName.isEmpty()) {</span>
+<span class="nc" id="L25">      throw new UnsupportedOperationException(&quot;Empty CH type!&quot;);</span>
+    }
+<span class="nc" id="L27">    typeName = typeName.trim();</span>
+<span class="nc bnc" id="L28" title="All 16 branches missed.">    switch (typeName) {</span>
+      case &quot;UInt8&quot;:
+<span class="nc" id="L30">        return new CHTypeUInt8();</span>
+      case &quot;UInt16&quot;:
+<span class="nc" id="L32">        return new CHTypeUInt16();</span>
+      case &quot;UInt32&quot;:
+<span class="nc" id="L34">        return new CHTypeUInt32();</span>
+      case &quot;UInt64&quot;:
+<span class="nc" id="L36">        return new CHTypeUInt64();</span>
+      case &quot;Int8&quot;:
+<span class="nc" id="L38">        return new CHTypeInt8();</span>
+      case &quot;Int16&quot;:
+<span class="nc" id="L40">        return new CHTypeInt16();</span>
+      case &quot;Int32&quot;:
+<span class="nc" id="L42">        return new CHTypeInt32();</span>
+      case &quot;Int64&quot;:
+<span class="nc" id="L44">        return new CHTypeInt64();</span>
+      case &quot;Float32&quot;:
+<span class="nc" id="L46">        return new CHTypeFloat32();</span>
+      case &quot;Float64&quot;:
+<span class="nc" id="L48">        return new CHTypeFloat64();</span>
+      case &quot;Date&quot;:
+<span class="nc" id="L50">        return new CHTypeDate();</span>
+      case &quot;DateTime&quot;:
+<span class="nc" id="L52">        return new CHTypeDateTime();</span>
+      case &quot;MyDateTime&quot;:
+<span class="nc" id="L54">        return new CHTypeMyDateTime();</span>
+      case &quot;MyDate&quot;:
+<span class="nc" id="L56">        return new CHTypeMyDate();</span>
+      case &quot;String&quot;:
+<span class="nc" id="L58">        return new CHTypeString();</span>
+    }
+<span class="nc bnc" id="L60" title="All 2 branches missed.">    if (typeName.startsWith(&quot;FixedString&quot;)) {</span>
+<span class="nc" id="L61">      String remain = StringUtils.removeStart(typeName, &quot;FixedString&quot;);</span>
+<span class="nc" id="L62">      remain = StringUtils.removeEnd(StringUtils.removeStart(remain, &quot;(&quot;), &quot;)&quot;);</span>
+      try {
+<span class="nc" id="L64">        int length = Integer.parseInt(remain);</span>
+<span class="nc" id="L65">        return new CHTypeFixedString(length);</span>
+<span class="nc" id="L66">      } catch (NumberFormatException e) {</span>
+<span class="nc" id="L67">        throw new UnsupportedOperationException(&quot;Illegal CH type: &quot; + typeName);</span>
+      }
+    }
+<span class="nc bnc" id="L70" title="All 2 branches missed.">    if (typeName.startsWith(&quot;MyDateTime&quot;)) {</span>
+<span class="nc" id="L71">      return new CHTypeMyDateTime();</span>
+    }
+<span class="nc bnc" id="L73" title="All 2 branches missed.">    if (typeName.startsWith(&quot;Decimal&quot;)) {</span>
+<span class="nc" id="L74">      String remain = StringUtils.removeStart(typeName, &quot;Decimal&quot;);</span>
+<span class="nc" id="L75">      remain = StringUtils.removeEnd(StringUtils.removeStart(remain, &quot;(&quot;), &quot;)&quot;);</span>
+      try {
+<span class="nc" id="L77">        String[] args = remain.split(&quot;,&quot;);</span>
+<span class="nc" id="L78">        int precision = Integer.parseInt(args[0]);</span>
+<span class="nc" id="L79">        int scale = Integer.parseInt(args[1]);</span>
+<span class="nc" id="L80">        return new CHTypeDecimal(precision, scale);</span>
+<span class="nc" id="L81">      } catch (Exception e) {</span>
+<span class="nc" id="L82">        throw new UnsupportedOperationException(&quot;Illegal CH type: &quot; + typeName);</span>
+      }
+    }
+<span class="nc bnc" id="L85" title="All 2 branches missed.">    if (typeName.startsWith(&quot;Nullable&quot;)) {</span>
+<span class="nc" id="L86">      String remain = StringUtils.removeStart(typeName, &quot;Nullable&quot;);</span>
+<span class="nc" id="L87">      remain = StringUtils.removeEnd(StringUtils.removeStart(remain, &quot;(&quot;), &quot;)&quot;);</span>
+<span class="nc" id="L88">      CHType type = parseType(remain);</span>
+<span class="nc" id="L89">      type.setNullable(true);</span>
+<span class="nc" id="L90">      return type;</span>
+    }
+<span class="nc" id="L92">    throw new UnsupportedOperationException(&quot;Unsupported CH type: &quot; + typeName);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

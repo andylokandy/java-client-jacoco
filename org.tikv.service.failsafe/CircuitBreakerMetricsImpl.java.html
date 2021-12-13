@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CircuitBreakerMetricsImpl.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.service.failsafe</a> &gt; <span class="el_source">CircuitBreakerMetricsImpl.java</span></div><h1>CircuitBreakerMetricsImpl.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2021 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.service.failsafe;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import org.apache.commons.lang3.concurrent.BasicThreadFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class CircuitBreakerMetricsImpl implements CircuitBreakerMetrics {
+<span class="fc" id="L31">  private static final Logger logger = LoggerFactory.getLogger(CircuitBreakerMetricsImpl.class);</span>
+
+  private final int windowInMS;
+  private final List&lt;MetricsListener&gt; listeners;
+  private final AtomicReference&lt;SingleWindowMetrics&gt; currentMetrics;
+
+  private final ScheduledExecutorService scheduler;
+  private static final int SCHEDULER_INITIAL_DELAY = 1000;
+  private static final int SCHEDULER_PERIOD = 1000;
+
+<span class="fc" id="L41">  public CircuitBreakerMetricsImpl(int windowInSeconds) {</span>
+<span class="fc" id="L42">    this.windowInMS = windowInSeconds * 1000;</span>
+<span class="fc" id="L43">    this.listeners = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L44">    this.currentMetrics = new AtomicReference&lt;&gt;(new SingleWindowMetrics());</span>
+
+<span class="fc" id="L46">    scheduler =</span>
+        new ScheduledThreadPoolExecutor(
+            1,
+            new BasicThreadFactory.Builder()
+<span class="fc" id="L50">                .namingPattern(&quot;circuit-breaker-metrics-%d&quot;)</span>
+<span class="fc" id="L51">                .daemon(true)</span>
+<span class="fc" id="L52">                .build());</span>
+
+<span class="fc" id="L54">    scheduler.scheduleAtFixedRate(</span>
+        this::onReachCircuitWindow,
+        SCHEDULER_INITIAL_DELAY,
+        SCHEDULER_PERIOD,
+        TimeUnit.MILLISECONDS);
+<span class="fc" id="L59">  }</span>
+
+  @Override
+  public void recordSuccess() {
+<span class="fc" id="L63">    currentMetrics.get().recordSuccess();</span>
+<span class="fc" id="L64">  }</span>
+
+  @Override
+  public void recordFailure() {
+<span class="fc" id="L68">    currentMetrics.get().recordFailure();</span>
+<span class="fc" id="L69">  }</span>
+
+  private void onReachCircuitWindow() {
+<span class="fc" id="L72">    SingleWindowMetrics singleWindowMetrics = currentMetrics.get();</span>
+<span class="fc bfc" id="L73" title="All 2 branches covered.">    if (System.currentTimeMillis() &lt; singleWindowMetrics.getStartMS() + windowInMS) {</span>
+<span class="fc" id="L74">      return;</span>
+    }
+<span class="pc bpc" id="L76" title="1 of 2 branches missed.">    if (!currentMetrics.compareAndSet(singleWindowMetrics, new SingleWindowMetrics())) {</span>
+<span class="nc" id="L77">      return;</span>
+    }
+<span class="fc" id="L79">    logger.debug(&quot;window timeout, reset SingleWindowMetrics&quot;);</span>
+<span class="fc" id="L80">    HealthCounts healthCounts = singleWindowMetrics.getHealthCounts();</span>
+<span class="fc bfc" id="L81" title="All 2 branches covered.">    for (MetricsListener metricsListener : listeners) {</span>
+<span class="fc" id="L82">      metricsListener.onNext(healthCounts);</span>
+<span class="fc" id="L83">    }</span>
+<span class="fc" id="L84">  }</span>
+
+  @Override
+  public void addListener(MetricsListener metricsListener) {
+<span class="fc" id="L88">    listeners.add(metricsListener);</span>
+<span class="fc" id="L89">  }</span>
+
+  @Override
+  public void close() throws IOException {
+<span class="fc" id="L93">    scheduler.shutdown();</span>
+<span class="fc" id="L94">  }</span>
+
+  /** Instead of using SingleWindowMetrics, it is better to use RollingWindowMetrics. */
+<span class="fc" id="L97">  static class SingleWindowMetrics {</span>
+<span class="fc" id="L98">    private final long startMS = System.currentTimeMillis();</span>
+<span class="fc" id="L99">    private final AtomicLong totalCount = new AtomicLong(0);</span>
+<span class="fc" id="L100">    private final AtomicLong errorCount = new AtomicLong(0);</span>
+
+    public void recordSuccess() {
+<span class="fc" id="L103">      totalCount.incrementAndGet();</span>
+<span class="fc" id="L104">    }</span>
+
+    public void recordFailure() {
+<span class="fc" id="L107">      totalCount.incrementAndGet();</span>
+
+<span class="fc" id="L109">      errorCount.incrementAndGet();</span>
+<span class="fc" id="L110">    }</span>
+
+    public HealthCounts getHealthCounts() {
+<span class="fc" id="L113">      return new HealthCounts(totalCount.get(), errorCount.get());</span>
+    }
+
+    public long getStartMS() {
+<span class="fc" id="L117">      return startMS;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

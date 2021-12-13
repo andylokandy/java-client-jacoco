@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CHTypeNumber.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.columnar.datatypes</a> &gt; <span class="el_source">CHTypeNumber.java</span></div><h1>CHTypeNumber.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.columnar.datatypes;
+
+import static org.tikv.common.types.DecimalType.BIG_INT_DECIMAL;
+
+import org.tikv.common.types.DataType;
+import org.tikv.common.types.IntegerType;
+
+<span class="nc" id="L23">public abstract class CHTypeNumber extends CHType {</span>
+  @Override
+  public DataType toDataType() {
+<span class="nc" id="L26">    return IntegerType.BIGINT;</span>
+  }
+
+  public static class CHTypeUInt8 extends CHTypeNumber {
+<span class="nc" id="L30">    public CHTypeUInt8() {</span>
+<span class="nc" id="L31">      this.length = 1;</span>
+<span class="nc" id="L32">    }</span>
+
+    @Override
+    public String name() {
+<span class="nc" id="L36">      return &quot;UInt8&quot;;</span>
+    }
+  }
+
+  public static class CHTypeUInt16 extends CHTypeNumber {
+<span class="nc" id="L41">    public CHTypeUInt16() {</span>
+<span class="nc" id="L42">      this.length = 2;</span>
+<span class="nc" id="L43">    }</span>
+
+    @Override
+    public String name() {
+<span class="nc" id="L47">      return &quot;UInt16&quot;;</span>
+    }
+  }
+
+  public static class CHTypeUInt32 extends CHTypeNumber {
+<span class="nc" id="L52">    public CHTypeUInt32() {</span>
+<span class="nc" id="L53">      this.length = 4;</span>
+<span class="nc" id="L54">    }</span>
+
+    @Override
+    public String name() {
+<span class="nc" id="L58">      return &quot;UInt32&quot;;</span>
+    }
+  }
+
+  public static class CHTypeUInt64 extends CHTypeNumber {
+<span class="nc" id="L63">    public CHTypeUInt64() {</span>
+<span class="nc" id="L64">      this.length = 8;</span>
+<span class="nc" id="L65">    }</span>
+
+    @Override
+    public String name() {
+<span class="nc" id="L69">      return &quot;UInt64&quot;;</span>
+    }
+
+    @Override
+    public DataType toDataType() {
+<span class="nc" id="L74">      return BIG_INT_DECIMAL;</span>
+    }
+  }
+
+  public static class CHTypeInt8 extends CHTypeNumber {
+<span class="nc" id="L79">    public CHTypeInt8() {</span>
+<span class="nc" id="L80">      this.length = 1;</span>
+<span class="nc" id="L81">    }</span>
+
+    @Override
+    public String name() {
+<span class="nc" id="L85">      return &quot;Int8&quot;;</span>
+    }
+  }
+
+  public static class CHTypeInt16 extends CHTypeNumber {
+
+<span class="nc" id="L91">    public CHTypeInt16() {</span>
+<span class="nc" id="L92">      this.length = 2;</span>
+<span class="nc" id="L93">    }</span>
+
+    @Override
+    public String name() {
+<span class="nc" id="L97">      return &quot;Int16&quot;;</span>
+    }
+  }
+
+  public static class CHTypeInt32 extends CHTypeNumber {
+<span class="nc" id="L102">    public CHTypeInt32() {</span>
+<span class="nc" id="L103">      this.length = 4;</span>
+<span class="nc" id="L104">    }</span>
+
+    @Override
+    public String name() {
+<span class="nc" id="L108">      return &quot;Int32&quot;;</span>
+    }
+  }
+
+  public static class CHTypeInt64 extends CHTypeNumber {
+<span class="nc" id="L113">    public CHTypeInt64() {</span>
+<span class="nc" id="L114">      this.length = 8;</span>
+<span class="nc" id="L115">    }</span>
+
+    @Override
+    public String name() {
+<span class="nc" id="L119">      return &quot;Int64&quot;;</span>
+    }
+  }
+
+  public static class CHTypeFloat32 extends CHTypeNumber {
+<span class="nc" id="L124">    public CHTypeFloat32() {</span>
+<span class="nc" id="L125">      this.length = 4;</span>
+<span class="nc" id="L126">    }</span>
+
+    @Override
+    public String name() {
+<span class="nc" id="L130">      return &quot;Float32&quot;;</span>
+    }
+  }
+
+  public static class CHTypeFloat64 extends CHTypeNumber {
+<span class="nc" id="L135">    public CHTypeFloat64() {</span>
+<span class="nc" id="L136">      this.length = 8;</span>
+<span class="nc" id="L137">    }</span>
+
+    @Override
+    public String name() {
+<span class="nc" id="L141">      return &quot;Float64&quot;;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

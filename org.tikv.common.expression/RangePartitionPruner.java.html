@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RangePartitionPruner.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.expression</a> &gt; <span class="el_source">RangePartitionPruner.java</span></div><h1>RangePartitionPruner.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2019 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.expression;
+
+import static org.tikv.common.expression.PartitionPruner.extractLogicalOrComparisonExpr;
+
+import com.google.common.collect.RangeSet;
+import java.util.*;
+import org.tikv.common.exception.UnsupportedPartitionExprException;
+import org.tikv.common.exception.UnsupportedSyntaxException;
+import org.tikv.common.expression.visitor.PartAndFilterExprRewriter;
+import org.tikv.common.expression.visitor.PrunedPartitionBuilder;
+import org.tikv.common.key.TypedKey;
+import org.tikv.common.meta.TiPartitionDef;
+import org.tikv.common.meta.TiPartitionInfo;
+import org.tikv.common.meta.TiTableInfo;
+import org.tikv.common.parser.TiParser;
+import org.tikv.common.predicates.PredicateUtils;
+
+@SuppressWarnings(&quot;UnstableApiUsage&quot;)
+public class RangePartitionPruner {
+  private final TiPartitionInfo partInfo;
+<span class="nc" id="L36">  private final Set&lt;ColumnRef&gt; partExprColRefs = new HashSet&lt;&gt;();</span>
+  private Expression partExpr;
+  private List&lt;Expression&gt; partExprs;
+  private PrunedPartitionBuilder rangeBuilder;
+  private boolean foundUnsupportedPartExpr;
+
+<span class="nc" id="L42">  RangePartitionPruner(TiTableInfo tableInfo) {</span>
+<span class="nc" id="L43">    this.partInfo = tableInfo.getPartitionInfo();</span>
+    try {
+<span class="nc" id="L45">      this.partExprs = generateRangePartExprs(tableInfo);</span>
+<span class="nc" id="L46">      this.rangeBuilder = new PrunedPartitionBuilder(partExprColRefs);</span>
+<span class="nc" id="L47">    } catch (UnsupportedSyntaxException | UnsupportedPartitionExprException e) {</span>
+<span class="nc" id="L48">      foundUnsupportedPartExpr = true;</span>
+<span class="nc" id="L49">    }</span>
+<span class="nc" id="L50">  }</span>
+
+  private List&lt;TiPartitionDef&gt; pruneRangeNormalPart(Expression cnfExpr) {
+<span class="nc" id="L53">    Objects.requireNonNull(cnfExpr, &quot;cnf expression cannot be null at pruning stage&quot;);</span>
+
+    // we need rewrite filter expression if partition expression is a Year expression.
+    // This step is designed to deal with y &lt; '1995-10-10'(in filter condition and also a part of
+    // partition expression) where y is a date type.
+    // Rewriting only applies partition expression on the constant part, resulting year(y) &lt; 1995.
+<span class="nc" id="L59">    PartAndFilterExprRewriter expressionRewriter = new PartAndFilterExprRewriter(partExpr);</span>
+<span class="nc" id="L60">    cnfExpr = expressionRewriter.rewrite(cnfExpr);</span>
+    // if we find an unsupported partition function, we downgrade to scan all partitions.
+<span class="nc bnc" id="L62" title="All 2 branches missed.">    if (expressionRewriter.isUnsupportedPartFnFound()) {</span>
+<span class="nc" id="L63">      return partInfo.getDefs();</span>
+    }
+<span class="nc" id="L65">    RangeSet&lt;TypedKey&gt; filterRange = rangeBuilder.buildRange(cnfExpr);</span>
+
+<span class="nc" id="L67">    List&lt;TiPartitionDef&gt; pDefs = new ArrayList&lt;&gt;();</span>
+<span class="nc bnc" id="L68" title="All 2 branches missed.">    for (int i = 0; i &lt; partExprs.size(); i++) {</span>
+<span class="nc" id="L69">      Expression partExpr = partExprs.get(i);</span>
+      // when we build range, we still need rewrite partition expression.
+      // If we have a year(purchased) &lt; 1995 which cannot be normalized, we need
+      // to rewrite it into purchased &lt; 1995 to let RangeSetBuilder be happy.
+<span class="nc" id="L73">      RangeSet&lt;TypedKey&gt; partRange = rangeBuilder.buildRange(expressionRewriter.rewrite(partExpr));</span>
+<span class="nc" id="L74">      partRange.removeAll(filterRange.complement());</span>
+<span class="nc bnc" id="L75" title="All 2 branches missed.">      if (!partRange.isEmpty()) {</span>
+        // part range is empty indicates this partition can be pruned.
+<span class="nc" id="L77">        pDefs.add(partInfo.getDefs().get(i));</span>
+      }
+    }
+<span class="nc" id="L80">    return pDefs;</span>
+  }
+
+  // say we have a partitioned table with the following partition definitions with year(y) as
+  // partition expression:
+  // 1. p0 less than 1995
+  // 2. p1 less than 1996
+  // 3. p2 less than maxvalue
+  // Above infos, after this function, will become the following:
+  // 1. p0: year(y) &lt; 1995
+  // 2. p1: 1995 &lt;= year(y) and year(y) &lt; 1996
+  // 3. p2: 1996 &lt;= year(y) and true
+  // true will become {@Code Constant} 1.
+  private List&lt;Expression&gt; generateRangePartExprs(TiTableInfo tableInfo) {
+<span class="nc" id="L94">    TiPartitionInfo partInfo = tableInfo.getPartitionInfo();</span>
+<span class="nc" id="L95">    List&lt;Expression&gt; partExprs = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L96">    TiParser parser = new TiParser(tableInfo);</span>
+    // check year expression
+    // rewrite filter condition
+    // purchased &gt; '1995-10-10'
+    // year(purchased) &gt; year('1995-10-10')
+    // purchased &gt; 1995
+<span class="nc" id="L102">    String partExprStr = tableInfo.getPartitionInfo().getExpr();</span>
+
+<span class="nc" id="L104">    partExpr = parser.parseExpression(partExprStr);</span>
+    // when partExpr is null, it indicates partition expression
+    // is not supported for now
+<span class="nc bnc" id="L107" title="All 2 branches missed.">    if (partExpr == null) {</span>
+<span class="nc" id="L108">      throw new UnsupportedPartitionExprException(</span>
+<span class="nc" id="L109">          String.format(&quot;%s is not supported&quot;, partExprStr));</span>
+    } // when it is not range column case, only first element stores useful info.
+
+<span class="nc" id="L112">    partExprColRefs.addAll(PredicateUtils.extractColumnRefFromExpression(partExpr));</span>
+<span class="nc" id="L113">    PartitionPruner.generateRangeExprs(partInfo, partExprs, parser, partExprStr, 0);</span>
+
+<span class="nc" id="L115">    return partExprs;</span>
+  }
+
+  /**
+   * When table is a partition table and its type is range. We use this method to do the pruning.
+   * Range partition has two types: 1. range 2. range column. If it is the first case,
+   * pruneRangeNormalPart will be called. Otherwise pruneRangeColPart will be called. For now, we
+   * simply skip range column partition case.
+   *
+   * @param filters is where condition belong to a select statement.
+   * @return a pruned partition for scanning.
+   */
+  public List&lt;TiPartitionDef&gt; prune(List&lt;Expression&gt; filters) {
+<span class="nc" id="L128">    filters = extractLogicalOrComparisonExpr(filters);</span>
+<span class="nc" id="L129">    Expression cnfExpr = PredicateUtils.mergeCNFExpressions(filters);</span>
+<span class="nc bnc" id="L130" title="All 2 branches missed.">    if (!canBePruned(cnfExpr)) {</span>
+<span class="nc" id="L131">      return this.partInfo.getDefs();</span>
+    }
+
+<span class="nc" id="L134">    return pruneRangeNormalPart(cnfExpr);</span>
+  }
+
+  /**
+   * return false if table cannot be pruning or partition table is not enabled. Return true if
+   * partition pruning can be applied.
+   *
+   * @param filter is a where condition. It must be a cnf and does not contain not or isnull.
+   * @return true if partition pruning can apply on filter.
+   */
+  public boolean canBePruned(Expression filter) {
+<span class="nc bnc" id="L145" title="All 2 branches missed.">    if (foundUnsupportedPartExpr) {</span>
+<span class="nc" id="L146">      return false;</span>
+    }
+    // if query is select * from t, then filter will be null.
+<span class="nc bnc" id="L149" title="All 2 branches missed.">    return filter != null;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

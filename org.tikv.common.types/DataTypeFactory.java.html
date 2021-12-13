@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DataTypeFactory.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.types</a> &gt; <span class="el_source">DataTypeFactory.java</span></div><h1>DataTypeFactory.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.types;
+
+import com.google.common.collect.ImmutableMap;
+import java.lang.reflect.Constructor;
+import java.util.Arrays;
+import java.util.Map;
+import org.tikv.common.exception.TypeException;
+import org.tikv.common.meta.TiColumnInfo.InternalTypeHolder;
+
+<span class="nc" id="L27">public class DataTypeFactory {</span>
+  private static final Map&lt;MySQLType, Constructor&lt;? extends DataType&gt;&gt; dataTypeCreatorMap;
+  private static final Map&lt;MySQLType, DataType&gt; dataTypeInstanceMap;
+
+  static {
+    ImmutableMap.Builder&lt;MySQLType, Constructor&lt;? extends DataType&gt;&gt; builder =
+<span class="nc" id="L33">        ImmutableMap.builder();</span>
+<span class="nc" id="L34">    ImmutableMap.Builder&lt;MySQLType, DataType&gt; instBuilder = ImmutableMap.builder();</span>
+<span class="nc" id="L35">    extractTypeMap(BitType.subTypes, BitType.class, builder, instBuilder);</span>
+<span class="nc" id="L36">    extractTypeMap(StringType.subTypes, StringType.class, builder, instBuilder);</span>
+<span class="nc" id="L37">    extractTypeMap(DateTimeType.subTypes, DateTimeType.class, builder, instBuilder);</span>
+<span class="nc" id="L38">    extractTypeMap(DateType.subTypes, DateType.class, builder, instBuilder);</span>
+<span class="nc" id="L39">    extractTypeMap(DecimalType.subTypes, DecimalType.class, builder, instBuilder);</span>
+<span class="nc" id="L40">    extractTypeMap(IntegerType.subTypes, IntegerType.class, builder, instBuilder);</span>
+<span class="nc" id="L41">    extractTypeMap(BytesType.subTypes, BytesType.class, builder, instBuilder);</span>
+<span class="nc" id="L42">    extractTypeMap(RealType.subTypes, RealType.class, builder, instBuilder);</span>
+<span class="nc" id="L43">    extractTypeMap(TimestampType.subTypes, TimestampType.class, builder, instBuilder);</span>
+<span class="nc" id="L44">    extractTypeMap(EnumType.subTypes, EnumType.class, builder, instBuilder);</span>
+<span class="nc" id="L45">    extractTypeMap(SetType.subTypes, SetType.class, builder, instBuilder);</span>
+<span class="nc" id="L46">    extractTypeMap(JsonType.subTypes, JsonType.class, builder, instBuilder);</span>
+<span class="nc" id="L47">    extractTypeMap(TimeType.subTypes, TimeType.class, builder, instBuilder);</span>
+<span class="nc" id="L48">    extractTypeMap(UninitializedType.subTypes, UninitializedType.class, builder, instBuilder);</span>
+<span class="nc" id="L49">    dataTypeCreatorMap = builder.build();</span>
+<span class="nc" id="L50">    dataTypeInstanceMap = instBuilder.build();</span>
+<span class="nc" id="L51">  }</span>
+
+  private static void extractTypeMap(
+      MySQLType[] types,
+      Class&lt;? extends DataType&gt; cls,
+      ImmutableMap.Builder&lt;MySQLType, Constructor&lt;? extends DataType&gt;&gt; holderBuilder,
+      ImmutableMap.Builder&lt;MySQLType, DataType&gt; instBuilder) {
+<span class="nc bnc" id="L58" title="All 2 branches missed.">    for (MySQLType type : types) {</span>
+      try {
+<span class="nc" id="L60">        Constructor ctorByHolder = cls.getDeclaredConstructor(InternalTypeHolder.class);</span>
+<span class="nc" id="L61">        Constructor ctorByType = cls.getDeclaredConstructor(MySQLType.class);</span>
+<span class="nc" id="L62">        ctorByHolder.setAccessible(true);</span>
+<span class="nc" id="L63">        ctorByType.setAccessible(true);</span>
+<span class="nc" id="L64">        holderBuilder.put(type, ctorByHolder);</span>
+<span class="nc" id="L65">        instBuilder.put(type, (DataType) ctorByType.newInstance(type));</span>
+<span class="nc" id="L66">      } catch (Exception e) {</span>
+<span class="nc" id="L67">        throw new TypeException(</span>
+<span class="nc" id="L68">            String.format(&quot;Type %s does not have a proper constructor&quot;, cls.getName()), e);</span>
+<span class="nc" id="L69">      }</span>
+    }
+<span class="nc" id="L71">  }</span>
+
+  public static DataType of(MySQLType type) {
+<span class="nc" id="L74">    DataType dataType = dataTypeInstanceMap.get(type);</span>
+<span class="nc bnc" id="L75" title="All 2 branches missed.">    if (dataType == null) {</span>
+<span class="nc" id="L76">      throw new TypeException(&quot;Type not found for &quot; + type);</span>
+    }
+<span class="nc" id="L78">    return dataType;</span>
+  }
+
+  // Convert non-binary to string type
+  private static MySQLType convertType(MySQLType type, InternalTypeHolder holder) {
+<span class="nc bnc" id="L83" title="All 2 branches missed.">    if (Arrays.asList(BytesType.subTypes).contains(type)</span>
+<span class="nc bnc" id="L84" title="All 2 branches missed.">        &amp;&amp; !Charset.CharsetBin.equals(holder.getCharset())) {</span>
+<span class="nc" id="L85">      return MySQLType.TypeVarchar;</span>
+    }
+<span class="nc bnc" id="L87" title="All 2 branches missed.">    if (Arrays.asList(StringType.subTypes).contains(type)</span>
+<span class="nc bnc" id="L88" title="All 2 branches missed.">        &amp;&amp; Charset.CharsetBin.equals(holder.getCharset())) {</span>
+<span class="nc" id="L89">      return MySQLType.TypeBlob;</span>
+    }
+<span class="nc" id="L91">    return type;</span>
+  }
+
+  public static DataType of(InternalTypeHolder holder) {
+<span class="nc" id="L95">    MySQLType type = MySQLType.fromTypeCode(holder.getTp());</span>
+<span class="nc" id="L96">    type = convertType(type, holder);</span>
+<span class="nc" id="L97">    Constructor&lt;? extends DataType&gt; ctor = dataTypeCreatorMap.get(type);</span>
+<span class="nc bnc" id="L98" title="All 2 branches missed.">    if (ctor == null) {</span>
+<span class="nc" id="L99">      throw new NullPointerException(</span>
+<span class="nc" id="L100">          &quot;tp &quot; + holder.getTp() + &quot; passed in can not retrieved DataType info.&quot;);</span>
+    }
+    try {
+<span class="nc" id="L103">      return ctor.newInstance(holder);</span>
+<span class="nc" id="L104">    } catch (Exception e) {</span>
+<span class="nc" id="L105">      throw new TypeException(&quot;Cannot create type from &quot; + holder.getTp(), e);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

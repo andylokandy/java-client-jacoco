@@ -1,0 +1,925 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RawKVClient.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.raw</a> &gt; <span class="el_source">RawKVClient.java</span></div><h1>RawKVClient.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2018 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.raw;
+
+import static org.tikv.common.util.ClientUtils.*;
+
+import com.google.protobuf.ByteString;
+import io.prometheus.client.Counter;
+import io.prometheus.client.Histogram;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.TiConfiguration;
+import org.tikv.common.TiSession;
+import org.tikv.common.codec.KeyUtils;
+import org.tikv.common.exception.TiKVException;
+import org.tikv.common.key.Key;
+import org.tikv.common.log.SlowLog;
+import org.tikv.common.log.SlowLogEmptyImpl;
+import org.tikv.common.log.SlowLogImpl;
+import org.tikv.common.operation.iterator.RawScanIterator;
+import org.tikv.common.region.RegionStoreClient;
+import org.tikv.common.region.RegionStoreClient.RegionStoreClientBuilder;
+import org.tikv.common.region.TiRegion;
+import org.tikv.common.util.*;
+import org.tikv.kvproto.Kvrpcpb.KvPair;
+
+public class RawKVClient implements RawKVClientBase {
+  private final RegionStoreClientBuilder clientBuilder;
+  private final TiConfiguration conf;
+  private final ExecutorService batchGetThreadPool;
+  private final ExecutorService batchPutThreadPool;
+  private final ExecutorService batchDeleteThreadPool;
+  private final ExecutorService batchScanThreadPool;
+  private final ExecutorService deleteRangeThreadPool;
+<span class="fc" id="L51">  private static final Logger logger = LoggerFactory.getLogger(RawKVClient.class);</span>
+
+  public static final Histogram RAW_REQUEST_LATENCY =
+<span class="fc" id="L54">      Histogram.build()</span>
+<span class="fc" id="L55">          .name(&quot;client_java_raw_requests_latency&quot;)</span>
+<span class="fc" id="L56">          .help(&quot;client raw request latency.&quot;)</span>
+<span class="fc" id="L57">          .labelNames(&quot;type&quot;)</span>
+<span class="fc" id="L58">          .register();</span>
+
+  public static final Counter RAW_REQUEST_SUCCESS =
+<span class="fc" id="L61">      Counter.build()</span>
+<span class="fc" id="L62">          .name(&quot;client_java_raw_requests_success&quot;)</span>
+<span class="fc" id="L63">          .help(&quot;client raw request success.&quot;)</span>
+<span class="fc" id="L64">          .labelNames(&quot;type&quot;)</span>
+<span class="fc" id="L65">          .register();</span>
+
+  public static final Counter RAW_REQUEST_FAILURE =
+<span class="fc" id="L68">      Counter.build()</span>
+<span class="fc" id="L69">          .name(&quot;client_java_raw_requests_failure&quot;)</span>
+<span class="fc" id="L70">          .help(&quot;client raw request failure.&quot;)</span>
+<span class="fc" id="L71">          .labelNames(&quot;type&quot;)</span>
+<span class="fc" id="L72">          .register();</span>
+
+<span class="fc" id="L74">  private static final TiKVException ERR_MAX_SCAN_LIMIT_EXCEEDED =</span>
+      new TiKVException(&quot;limit should be less than MAX_RAW_SCAN_LIMIT&quot;);
+
+<span class="fc" id="L77">  public RawKVClient(TiSession session, RegionStoreClientBuilder clientBuilder) {</span>
+<span class="fc" id="L78">    Objects.requireNonNull(session, &quot;session is null&quot;);</span>
+<span class="fc" id="L79">    Objects.requireNonNull(clientBuilder, &quot;clientBuilder is null&quot;);</span>
+<span class="fc" id="L80">    this.conf = session.getConf();</span>
+<span class="fc" id="L81">    this.clientBuilder = clientBuilder;</span>
+<span class="fc" id="L82">    this.batchGetThreadPool = session.getThreadPoolForBatchGet();</span>
+<span class="fc" id="L83">    this.batchPutThreadPool = session.getThreadPoolForBatchPut();</span>
+<span class="fc" id="L84">    this.batchDeleteThreadPool = session.getThreadPoolForBatchDelete();</span>
+<span class="fc" id="L85">    this.batchScanThreadPool = session.getThreadPoolForBatchScan();</span>
+<span class="fc" id="L86">    this.deleteRangeThreadPool = session.getThreadPoolForDeleteRange();</span>
+<span class="fc" id="L87">  }</span>
+
+  @Override
+<span class="fc" id="L90">  public void close() {}</span>
+
+  @Override
+  public void put(ByteString key, ByteString value) {
+<span class="fc" id="L94">    put(key, value, 0);</span>
+<span class="fc" id="L95">  }</span>
+
+  @Override
+  public void put(ByteString key, ByteString value, long ttl) {
+<span class="fc" id="L99">    put(key, value, ttl, false);</span>
+<span class="fc" id="L100">  }</span>
+
+  @Override
+  public void putAtomic(ByteString key, ByteString value, long ttl) {
+<span class="nc" id="L104">    put(key, value, ttl, true);</span>
+<span class="nc" id="L105">  }</span>
+
+  private void put(ByteString key, ByteString value, long ttl, boolean atomic) {
+<span class="fc" id="L108">    String label = &quot;client_raw_put&quot;;</span>
+<span class="fc" id="L109">    Histogram.Timer requestTimer = RAW_REQUEST_LATENCY.labels(label).startTimer();</span>
+<span class="fc" id="L110">    SlowLog slowLog =</span>
+        new SlowLogImpl(
+<span class="fc" id="L112">            conf.getRawKVWriteSlowLogInMS(),</span>
+<span class="fc" id="L113">            new HashMap&lt;String, String&gt;(2) {</span>
+              {
+<span class="fc" id="L115">                put(&quot;func&quot;, &quot;put&quot;);</span>
+<span class="fc" id="L116">                put(&quot;key&quot;, KeyUtils.formatBytesUTF8(key));</span>
+<span class="fc" id="L117">              }</span>
+            });
+<span class="fc" id="L119">    ConcreteBackOffer backOffer =</span>
+<span class="fc" id="L120">        ConcreteBackOffer.newDeadlineBackOff(conf.getRawKVWriteTimeoutInMS(), slowLog);</span>
+    try {
+      while (true) {
+<span class="fc" id="L123">        try (RegionStoreClient client = clientBuilder.build(key, backOffer)) {</span>
+<span class="fc" id="L124">          slowLog.addProperty(&quot;region&quot;, client.getRegion().toString());</span>
+<span class="fc" id="L125">          client.rawPut(backOffer, key, value, ttl, atomic);</span>
+<span class="fc" id="L126">          RAW_REQUEST_SUCCESS.labels(label).inc();</span>
+<span class="fc" id="L127">          return;</span>
+<span class="nc" id="L128">        } catch (final TiKVException e) {</span>
+<span class="nc" id="L129">          backOffer.doBackOff(BackOffFunction.BackOffFuncType.BoRegionMiss, e);</span>
+<span class="nc" id="L130">          logger.warn(&quot;Retry for put error&quot;, e);</span>
+<span class="nc" id="L131">        }</span>
+      }
+<span class="nc" id="L133">    } catch (Exception e) {</span>
+<span class="nc" id="L134">      RAW_REQUEST_FAILURE.labels(label).inc();</span>
+<span class="nc" id="L135">      slowLog.setError(e);</span>
+<span class="nc" id="L136">      throw e;</span>
+    } finally {
+<span class="fc" id="L138">      requestTimer.observeDuration();</span>
+<span class="fc" id="L139">      slowLog.log();</span>
+    }
+  }
+
+  @Override
+  public ByteString putIfAbsent(ByteString key, ByteString value) {
+<span class="fc" id="L145">    return putIfAbsent(key, value, 0L);</span>
+  }
+
+  @Override
+  public ByteString putIfAbsent(ByteString key, ByteString value, long ttl) {
+<span class="fc" id="L150">    String label = &quot;client_raw_put_if_absent&quot;;</span>
+<span class="fc" id="L151">    Histogram.Timer requestTimer = RAW_REQUEST_LATENCY.labels(label).startTimer();</span>
+<span class="fc" id="L152">    SlowLog slowLog =</span>
+        new SlowLogImpl(
+<span class="fc" id="L154">            conf.getRawKVWriteSlowLogInMS(),</span>
+<span class="fc" id="L155">            new HashMap&lt;String, String&gt;(2) {</span>
+              {
+<span class="fc" id="L157">                put(&quot;func&quot;, &quot;putIfAbsent&quot;);</span>
+<span class="fc" id="L158">                put(&quot;key&quot;, KeyUtils.formatBytesUTF8(key));</span>
+<span class="fc" id="L159">              }</span>
+            });
+<span class="fc" id="L161">    ConcreteBackOffer backOffer =</span>
+<span class="fc" id="L162">        ConcreteBackOffer.newDeadlineBackOff(conf.getRawKVWriteTimeoutInMS(), slowLog);</span>
+    try {
+      while (true) {
+<span class="fc" id="L165">        try (RegionStoreClient client = clientBuilder.build(key, backOffer)) {</span>
+<span class="fc" id="L166">          slowLog.addProperty(&quot;region&quot;, client.getRegion().toString());</span>
+<span class="fc" id="L167">          ByteString result = client.rawPutIfAbsent(backOffer, key, value, ttl);</span>
+<span class="fc" id="L168">          RAW_REQUEST_SUCCESS.labels(label).inc();</span>
+<span class="fc" id="L169">          return result;</span>
+<span class="nc" id="L170">        } catch (final TiKVException e) {</span>
+<span class="nc" id="L171">          backOffer.doBackOff(BackOffFunction.BackOffFuncType.BoRegionMiss, e);</span>
+<span class="nc" id="L172">          logger.warn(&quot;Retry for putIfAbsent error&quot;, e);</span>
+<span class="nc" id="L173">        }</span>
+      }
+<span class="nc" id="L175">    } catch (Exception e) {</span>
+<span class="nc" id="L176">      RAW_REQUEST_FAILURE.labels(label).inc();</span>
+<span class="nc" id="L177">      slowLog.setError(e);</span>
+<span class="nc" id="L178">      throw e;</span>
+    } finally {
+<span class="fc" id="L180">      requestTimer.observeDuration();</span>
+<span class="fc" id="L181">      slowLog.log();</span>
+    }
+  }
+
+  @Override
+  public void batchPut(Map&lt;ByteString, ByteString&gt; kvPairs) {
+<span class="fc" id="L187">    batchPut(kvPairs, 0);</span>
+<span class="fc" id="L188">  }</span>
+
+  @Override
+  public void batchPut(Map&lt;ByteString, ByteString&gt; kvPairs, long ttl) {
+<span class="fc" id="L192">    batchPut(kvPairs, ttl, false);</span>
+<span class="fc" id="L193">  }</span>
+
+  @Override
+  public void batchPutAtomic(Map&lt;ByteString, ByteString&gt; kvPairs) {
+<span class="nc" id="L197">    batchPutAtomic(kvPairs, 0);</span>
+<span class="nc" id="L198">  }</span>
+
+  @Override
+  public void batchPutAtomic(Map&lt;ByteString, ByteString&gt; kvPairs, long ttl) {
+<span class="nc" id="L202">    batchPut(kvPairs, ttl, true);</span>
+<span class="nc" id="L203">  }</span>
+
+  private void batchPut(Map&lt;ByteString, ByteString&gt; kvPairs, long ttl, boolean atomic) {
+<span class="fc" id="L206">    String label = &quot;client_raw_batch_put&quot;;</span>
+<span class="fc" id="L207">    Histogram.Timer requestTimer = RAW_REQUEST_LATENCY.labels(label).startTimer();</span>
+<span class="fc" id="L208">    SlowLog slowLog =</span>
+        new SlowLogImpl(
+<span class="fc" id="L210">            conf.getRawKVBatchWriteSlowLogInMS(),</span>
+<span class="fc" id="L211">            new HashMap&lt;String, String&gt;(2) {</span>
+              {
+<span class="fc" id="L213">                put(&quot;func&quot;, &quot;batchPut&quot;);</span>
+<span class="fc" id="L214">                put(&quot;keySize&quot;, String.valueOf(kvPairs.size()));</span>
+<span class="fc" id="L215">              }</span>
+            });
+<span class="fc" id="L217">    ConcreteBackOffer backOffer =</span>
+<span class="fc" id="L218">        ConcreteBackOffer.newDeadlineBackOff(conf.getRawKVBatchWriteTimeoutInMS(), slowLog);</span>
+    try {
+<span class="fc" id="L220">      long deadline = System.currentTimeMillis() + conf.getRawKVBatchWriteTimeoutInMS();</span>
+<span class="fc" id="L221">      doSendBatchPut(backOffer, kvPairs, ttl, atomic, deadline);</span>
+<span class="fc" id="L222">      RAW_REQUEST_SUCCESS.labels(label).inc();</span>
+<span class="nc" id="L223">    } catch (Exception e) {</span>
+<span class="nc" id="L224">      RAW_REQUEST_FAILURE.labels(label).inc();</span>
+<span class="nc" id="L225">      slowLog.setError(e);</span>
+<span class="nc" id="L226">      throw e;</span>
+    } finally {
+<span class="fc" id="L228">      requestTimer.observeDuration();</span>
+<span class="fc" id="L229">      slowLog.log();</span>
+    }
+<span class="fc" id="L231">  }</span>
+
+  @Override
+  public ByteString get(ByteString key) {
+<span class="fc" id="L235">    String label = &quot;client_raw_get&quot;;</span>
+<span class="fc" id="L236">    Histogram.Timer requestTimer = RAW_REQUEST_LATENCY.labels(label).startTimer();</span>
+<span class="fc" id="L237">    SlowLog slowLog =</span>
+        new SlowLogImpl(
+<span class="fc" id="L239">            conf.getRawKVReadSlowLogInMS(),</span>
+<span class="fc" id="L240">            new HashMap&lt;String, String&gt;(2) {</span>
+              {
+<span class="fc" id="L242">                put(&quot;func&quot;, &quot;get&quot;);</span>
+<span class="fc" id="L243">                put(&quot;key&quot;, KeyUtils.formatBytesUTF8(key));</span>
+<span class="fc" id="L244">              }</span>
+            });
+
+<span class="fc" id="L247">    ConcreteBackOffer backOffer =</span>
+<span class="fc" id="L248">        ConcreteBackOffer.newDeadlineBackOff(conf.getRawKVReadTimeoutInMS(), slowLog);</span>
+    try {
+      while (true) {
+<span class="fc" id="L251">        try (RegionStoreClient client = clientBuilder.build(key, backOffer)) {</span>
+<span class="fc" id="L252">          slowLog.addProperty(&quot;region&quot;, client.getRegion().toString());</span>
+<span class="fc" id="L253">          ByteString result = client.rawGet(backOffer, key);</span>
+<span class="fc" id="L254">          RAW_REQUEST_SUCCESS.labels(label).inc();</span>
+<span class="fc" id="L255">          return result;</span>
+<span class="nc" id="L256">        } catch (final TiKVException e) {</span>
+<span class="nc" id="L257">          backOffer.doBackOff(BackOffFunction.BackOffFuncType.BoRegionMiss, e);</span>
+<span class="nc" id="L258">          logger.warn(&quot;Retry for get error&quot;, e);</span>
+<span class="nc" id="L259">        }</span>
+      }
+<span class="nc" id="L261">    } catch (Exception e) {</span>
+<span class="nc" id="L262">      RAW_REQUEST_FAILURE.labels(label).inc();</span>
+<span class="nc" id="L263">      slowLog.setError(e);</span>
+<span class="nc" id="L264">      throw e;</span>
+    } finally {
+<span class="fc" id="L266">      requestTimer.observeDuration();</span>
+<span class="fc" id="L267">      slowLog.log();</span>
+    }
+  }
+
+  @Override
+  public List&lt;KvPair&gt; batchGet(List&lt;ByteString&gt; keys) {
+<span class="fc" id="L273">    String label = &quot;client_raw_batch_get&quot;;</span>
+<span class="fc" id="L274">    Histogram.Timer requestTimer = RAW_REQUEST_LATENCY.labels(label).startTimer();</span>
+<span class="fc" id="L275">    SlowLog slowLog =</span>
+        new SlowLogImpl(
+<span class="fc" id="L277">            conf.getRawKVBatchReadSlowLogInMS(),</span>
+<span class="fc" id="L278">            new HashMap&lt;String, String&gt;(2) {</span>
+              {
+<span class="fc" id="L280">                put(&quot;func&quot;, &quot;batchGet&quot;);</span>
+<span class="fc" id="L281">                put(&quot;keySize&quot;, String.valueOf(keys.size()));</span>
+<span class="fc" id="L282">              }</span>
+            });
+<span class="fc" id="L284">    ConcreteBackOffer backOffer =</span>
+<span class="fc" id="L285">        ConcreteBackOffer.newDeadlineBackOff(conf.getRawKVBatchReadTimeoutInMS(), slowLog);</span>
+    try {
+<span class="fc" id="L287">      long deadline = System.currentTimeMillis() + conf.getRawKVBatchReadTimeoutInMS();</span>
+<span class="fc" id="L288">      List&lt;KvPair&gt; result = doSendBatchGet(backOffer, keys, deadline);</span>
+<span class="fc" id="L289">      RAW_REQUEST_SUCCESS.labels(label).inc();</span>
+<span class="fc" id="L290">      return result;</span>
+<span class="fc" id="L291">    } catch (Exception e) {</span>
+<span class="fc" id="L292">      RAW_REQUEST_FAILURE.labels(label).inc();</span>
+<span class="fc" id="L293">      slowLog.setError(e);</span>
+<span class="fc" id="L294">      throw e;</span>
+    } finally {
+<span class="fc" id="L296">      requestTimer.observeDuration();</span>
+<span class="fc" id="L297">      slowLog.log();</span>
+    }
+  }
+
+  @Override
+  public void batchDelete(List&lt;ByteString&gt; keys) {
+<span class="nc" id="L303">    batchDelete(keys, false);</span>
+<span class="nc" id="L304">  }</span>
+
+  @Override
+  public void batchDeleteAtomic(List&lt;ByteString&gt; keys) {
+<span class="nc" id="L308">    batchDelete(keys, true);</span>
+<span class="nc" id="L309">  }</span>
+
+  private void batchDelete(List&lt;ByteString&gt; keys, boolean atomic) {
+<span class="nc" id="L312">    String label = &quot;client_raw_batch_delete&quot;;</span>
+<span class="nc" id="L313">    Histogram.Timer requestTimer = RAW_REQUEST_LATENCY.labels(label).startTimer();</span>
+<span class="nc" id="L314">    SlowLog slowLog =</span>
+        new SlowLogImpl(
+<span class="nc" id="L316">            conf.getRawKVBatchWriteSlowLogInMS(),</span>
+<span class="nc" id="L317">            new HashMap&lt;String, String&gt;(2) {</span>
+              {
+<span class="nc" id="L319">                put(&quot;func&quot;, &quot;batchDelete&quot;);</span>
+<span class="nc" id="L320">                put(&quot;keySize&quot;, String.valueOf(keys.size()));</span>
+<span class="nc" id="L321">              }</span>
+            });
+<span class="nc" id="L323">    ConcreteBackOffer backOffer =</span>
+<span class="nc" id="L324">        ConcreteBackOffer.newDeadlineBackOff(conf.getRawKVBatchWriteTimeoutInMS(), slowLog);</span>
+    try {
+<span class="nc" id="L326">      long deadline = System.currentTimeMillis() + conf.getRawKVBatchWriteTimeoutInMS();</span>
+<span class="nc" id="L327">      doSendBatchDelete(backOffer, keys, atomic, deadline);</span>
+<span class="nc" id="L328">      RAW_REQUEST_SUCCESS.labels(label).inc();</span>
+<span class="nc" id="L329">      return;</span>
+<span class="nc" id="L330">    } catch (Exception e) {</span>
+<span class="nc" id="L331">      RAW_REQUEST_FAILURE.labels(label).inc();</span>
+<span class="nc" id="L332">      slowLog.setError(e);</span>
+<span class="nc" id="L333">      throw e;</span>
+    } finally {
+<span class="nc" id="L335">      requestTimer.observeDuration();</span>
+<span class="nc" id="L336">      slowLog.log();</span>
+    }
+  }
+
+  @Override
+  public Long getKeyTTL(ByteString key) {
+<span class="nc" id="L342">    String label = &quot;client_raw_get_key_ttl&quot;;</span>
+<span class="nc" id="L343">    Histogram.Timer requestTimer = RAW_REQUEST_LATENCY.labels(label).startTimer();</span>
+<span class="nc" id="L344">    SlowLog slowLog =</span>
+        new SlowLogImpl(
+<span class="nc" id="L346">            conf.getRawKVReadSlowLogInMS(),</span>
+<span class="nc" id="L347">            new HashMap&lt;String, String&gt;(2) {</span>
+              {
+<span class="nc" id="L349">                put(&quot;func&quot;, &quot;getKeyTTL&quot;);</span>
+<span class="nc" id="L350">                put(&quot;key&quot;, KeyUtils.formatBytesUTF8(key));</span>
+<span class="nc" id="L351">              }</span>
+            });
+<span class="nc" id="L353">    ConcreteBackOffer backOffer =</span>
+<span class="nc" id="L354">        ConcreteBackOffer.newDeadlineBackOff(conf.getRawKVReadTimeoutInMS(), slowLog);</span>
+    try {
+      while (true) {
+<span class="nc" id="L357">        try (RegionStoreClient client = clientBuilder.build(key, backOffer)) {</span>
+<span class="nc" id="L358">          slowLog.addProperty(&quot;region&quot;, client.getRegion().toString());</span>
+<span class="nc" id="L359">          Long result = client.rawGetKeyTTL(backOffer, key);</span>
+<span class="nc" id="L360">          RAW_REQUEST_SUCCESS.labels(label).inc();</span>
+<span class="nc" id="L361">          return result;</span>
+<span class="nc" id="L362">        } catch (final TiKVException e) {</span>
+<span class="nc" id="L363">          backOffer.doBackOff(BackOffFunction.BackOffFuncType.BoRegionMiss, e);</span>
+<span class="nc" id="L364">          logger.warn(&quot;Retry for getKeyTTL error&quot;, e);</span>
+<span class="nc" id="L365">        }</span>
+      }
+<span class="nc" id="L367">    } catch (Exception e) {</span>
+<span class="nc" id="L368">      RAW_REQUEST_FAILURE.labels(label).inc();</span>
+<span class="nc" id="L369">      slowLog.setError(e);</span>
+<span class="nc" id="L370">      throw e;</span>
+    } finally {
+<span class="nc" id="L372">      requestTimer.observeDuration();</span>
+<span class="nc" id="L373">      slowLog.log();</span>
+    }
+  }
+
+  @Override
+  public List&lt;List&lt;KvPair&gt;&gt; batchScan(List&lt;ScanOption&gt; ranges) {
+<span class="fc" id="L379">    String label = &quot;client_raw_batch_scan&quot;;</span>
+<span class="fc" id="L380">    Histogram.Timer requestTimer = RAW_REQUEST_LATENCY.labels(label).startTimer();</span>
+<span class="fc" id="L381">    long deadline = System.currentTimeMillis() + conf.getRawKVScanTimeoutInMS();</span>
+<span class="fc" id="L382">    List&lt;Future&lt;Pair&lt;Integer, List&lt;KvPair&gt;&gt;&gt;&gt; futureList = new ArrayList&lt;&gt;();</span>
+    try {
+<span class="pc bpc" id="L384" title="1 of 2 branches missed.">      if (ranges.isEmpty()) {</span>
+<span class="nc" id="L385">        return new ArrayList&lt;&gt;();</span>
+      }
+<span class="fc" id="L387">      ExecutorCompletionService&lt;Pair&lt;Integer, List&lt;KvPair&gt;&gt;&gt; completionService =</span>
+          new ExecutorCompletionService&lt;&gt;(batchScanThreadPool);
+<span class="fc" id="L389">      int num = 0;</span>
+<span class="fc bfc" id="L390" title="All 2 branches covered.">      for (ScanOption scanOption : ranges) {</span>
+<span class="fc" id="L391">        int i = num;</span>
+<span class="fc" id="L392">        futureList.add(completionService.submit(() -&gt; Pair.create(i, scan(scanOption))));</span>
+<span class="fc" id="L393">        ++num;</span>
+<span class="fc" id="L394">      }</span>
+<span class="fc" id="L395">      List&lt;List&lt;KvPair&gt;&gt; scanResults = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L396" title="All 2 branches covered.">      for (int i = 0; i &lt; num; i++) {</span>
+<span class="fc" id="L397">        scanResults.add(new ArrayList&lt;&gt;());</span>
+      }
+<span class="fc bfc" id="L399" title="All 2 branches covered.">      for (int i = 0; i &lt; num; i++) {</span>
+        try {
+<span class="fc" id="L401">          Future&lt;Pair&lt;Integer, List&lt;KvPair&gt;&gt;&gt; future =</span>
+<span class="fc" id="L402">              completionService.poll(deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS);</span>
+<span class="pc bpc" id="L403" title="1 of 2 branches missed.">          if (future == null) {</span>
+<span class="nc" id="L404">            throw new TiKVException(&quot;TimeOut Exceeded for current operation.&quot;);</span>
+          }
+<span class="fc" id="L406">          Pair&lt;Integer, List&lt;KvPair&gt;&gt; scanResult = future.get();</span>
+<span class="fc" id="L407">          scanResults.set(scanResult.first, scanResult.second);</span>
+<span class="nc" id="L408">        } catch (InterruptedException e) {</span>
+<span class="nc" id="L409">          Thread.currentThread().interrupt();</span>
+<span class="nc" id="L410">          throw new TiKVException(&quot;Current thread interrupted.&quot;, e);</span>
+<span class="nc" id="L411">        } catch (ExecutionException e) {</span>
+<span class="nc" id="L412">          throw new TiKVException(&quot;Execution exception met.&quot;, e);</span>
+<span class="fc" id="L413">        }</span>
+      }
+<span class="fc" id="L415">      RAW_REQUEST_SUCCESS.labels(label).inc();</span>
+<span class="fc" id="L416">      return scanResults;</span>
+<span class="nc" id="L417">    } catch (Exception e) {</span>
+<span class="nc" id="L418">      RAW_REQUEST_FAILURE.labels(label).inc();</span>
+<span class="nc bnc" id="L419" title="All 2 branches missed.">      for (Future&lt;Pair&lt;Integer, List&lt;KvPair&gt;&gt;&gt; future : futureList) {</span>
+<span class="nc" id="L420">        future.cancel(true);</span>
+<span class="nc" id="L421">      }</span>
+<span class="nc" id="L422">      throw e;</span>
+    } finally {
+<span class="fc" id="L424">      requestTimer.observeDuration();</span>
+    }
+  }
+
+  @Override
+  public List&lt;KvPair&gt; scan(ByteString startKey, ByteString endKey, int limit) {
+<span class="fc" id="L430">    return scan(startKey, endKey, limit, false);</span>
+  }
+
+  @Override
+  public List&lt;KvPair&gt; scan(ByteString startKey, ByteString endKey, int limit, boolean keyOnly) {
+<span class="fc" id="L435">    String label = &quot;client_raw_scan&quot;;</span>
+<span class="fc" id="L436">    Histogram.Timer requestTimer = RAW_REQUEST_LATENCY.labels(label).startTimer();</span>
+<span class="fc" id="L437">    SlowLog slowLog =</span>
+        new SlowLogImpl(
+<span class="fc" id="L439">            conf.getRawKVScanSlowLogInMS(),</span>
+<span class="fc" id="L440">            new HashMap&lt;String, String&gt;(5) {</span>
+              {
+<span class="fc" id="L442">                put(&quot;func&quot;, &quot;scan&quot;);</span>
+<span class="fc" id="L443">                put(&quot;startKey&quot;, KeyUtils.formatBytesUTF8(startKey));</span>
+<span class="fc" id="L444">                put(&quot;endKey&quot;, KeyUtils.formatBytesUTF8(endKey));</span>
+<span class="fc" id="L445">                put(&quot;limit&quot;, String.valueOf(limit));</span>
+<span class="fc" id="L446">                put(&quot;keyOnly&quot;, String.valueOf(keyOnly));</span>
+<span class="fc" id="L447">              }</span>
+            });
+<span class="fc" id="L449">    ConcreteBackOffer backOffer =</span>
+<span class="fc" id="L450">        ConcreteBackOffer.newDeadlineBackOff(conf.getRawKVScanTimeoutInMS(), slowLog);</span>
+    try {
+<span class="fc" id="L452">      Iterator&lt;KvPair&gt; iterator =</span>
+<span class="fc" id="L453">          rawScanIterator(conf, clientBuilder, startKey, endKey, limit, keyOnly, backOffer);</span>
+<span class="fc" id="L454">      List&lt;KvPair&gt; result = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L455">      iterator.forEachRemaining(result::add);</span>
+<span class="fc" id="L456">      RAW_REQUEST_SUCCESS.labels(label).inc();</span>
+<span class="fc" id="L457">      return result;</span>
+<span class="nc" id="L458">    } catch (Exception e) {</span>
+<span class="nc" id="L459">      RAW_REQUEST_FAILURE.labels(label).inc();</span>
+<span class="nc" id="L460">      slowLog.setError(e);</span>
+<span class="nc" id="L461">      throw e;</span>
+    } finally {
+<span class="fc" id="L463">      requestTimer.observeDuration();</span>
+<span class="fc" id="L464">      slowLog.log();</span>
+    }
+  }
+
+  @Override
+  public List&lt;KvPair&gt; scan(ByteString startKey, int limit) {
+<span class="nc" id="L470">    return scan(startKey, limit, false);</span>
+  }
+
+  @Override
+  public List&lt;KvPair&gt; scan(ByteString startKey, int limit, boolean keyOnly) {
+<span class="nc" id="L475">    return scan(startKey, ByteString.EMPTY, limit, keyOnly);</span>
+  }
+
+  @Override
+  public List&lt;KvPair&gt; scan(ByteString startKey, ByteString endKey) {
+<span class="fc" id="L480">    return scan(startKey, endKey, false);</span>
+  }
+
+  @Override
+  public List&lt;KvPair&gt; scan(ByteString startKey, ByteString endKey, boolean keyOnly) {
+<span class="fc" id="L485">    String label = &quot;client_raw_scan_without_limit&quot;;</span>
+<span class="fc" id="L486">    Histogram.Timer requestTimer = RAW_REQUEST_LATENCY.labels(label).startTimer();</span>
+<span class="fc" id="L487">    SlowLog slowLog =</span>
+        new SlowLogImpl(
+<span class="fc" id="L489">            conf.getRawKVScanSlowLogInMS(),</span>
+<span class="fc" id="L490">            new HashMap&lt;String, String&gt;(4) {</span>
+              {
+<span class="fc" id="L492">                put(&quot;func&quot;, &quot;scan&quot;);</span>
+<span class="fc" id="L493">                put(&quot;startKey&quot;, KeyUtils.formatBytesUTF8(startKey));</span>
+<span class="fc" id="L494">                put(&quot;endKey&quot;, KeyUtils.formatBytesUTF8(endKey));</span>
+<span class="fc" id="L495">                put(&quot;keyOnly&quot;, String.valueOf(keyOnly));</span>
+<span class="fc" id="L496">              }</span>
+            });
+<span class="fc" id="L498">    ConcreteBackOffer backOffer =</span>
+<span class="fc" id="L499">        ConcreteBackOffer.newDeadlineBackOff(conf.getRawKVScanTimeoutInMS(), slowLog);</span>
+    try {
+<span class="fc" id="L501">      ByteString newStartKey = startKey;</span>
+<span class="fc" id="L502">      List&lt;KvPair&gt; result = new ArrayList&lt;&gt;();</span>
+      while (true) {
+<span class="fc" id="L504">        Iterator&lt;KvPair&gt; iterator =</span>
+<span class="fc" id="L505">            rawScanIterator(</span>
+                conf,
+                clientBuilder,
+                newStartKey,
+                endKey,
+<span class="fc" id="L510">                conf.getScanBatchSize(),</span>
+                keyOnly,
+                backOffer);
+<span class="fc bfc" id="L513" title="All 2 branches covered.">        if (!iterator.hasNext()) {</span>
+<span class="fc" id="L514">          break;</span>
+        }
+<span class="fc" id="L516">        iterator.forEachRemaining(result::add);</span>
+<span class="fc" id="L517">        newStartKey = Key.toRawKey(result.get(result.size() - 1).getKey()).next().toByteString();</span>
+<span class="fc" id="L518">      }</span>
+<span class="fc" id="L519">      RAW_REQUEST_SUCCESS.labels(label).inc();</span>
+<span class="fc" id="L520">      return result;</span>
+<span class="nc" id="L521">    } catch (Exception e) {</span>
+<span class="nc" id="L522">      RAW_REQUEST_FAILURE.labels(label).inc();</span>
+<span class="nc" id="L523">      slowLog.setError(e);</span>
+<span class="nc" id="L524">      throw e;</span>
+    } finally {
+<span class="fc" id="L526">      requestTimer.observeDuration();</span>
+<span class="fc" id="L527">      slowLog.log();</span>
+    }
+  }
+
+  private List&lt;KvPair&gt; scan(ScanOption scanOption) {
+<span class="fc" id="L532">    ByteString startKey = scanOption.getStartKey();</span>
+<span class="fc" id="L533">    ByteString endKey = scanOption.getEndKey();</span>
+<span class="fc" id="L534">    int limit = scanOption.getLimit();</span>
+<span class="fc" id="L535">    boolean keyOnly = scanOption.isKeyOnly();</span>
+<span class="fc" id="L536">    return scan(startKey, endKey, limit, keyOnly);</span>
+  }
+
+  @Override
+  public List&lt;KvPair&gt; scanPrefix(ByteString prefixKey, int limit, boolean keyOnly) {
+<span class="nc" id="L541">    return scan(prefixKey, Key.toRawKey(prefixKey).nextPrefix().toByteString(), limit, keyOnly);</span>
+  }
+
+  @Override
+  public List&lt;KvPair&gt; scanPrefix(ByteString prefixKey) {
+<span class="nc" id="L546">    return scan(prefixKey, Key.toRawKey(prefixKey).nextPrefix().toByteString());</span>
+  }
+
+  @Override
+  public List&lt;KvPair&gt; scanPrefix(ByteString prefixKey, boolean keyOnly) {
+<span class="nc" id="L551">    return scan(prefixKey, Key.toRawKey(prefixKey).nextPrefix().toByteString(), keyOnly);</span>
+  }
+
+  @Override
+  public void delete(ByteString key) {
+<span class="fc" id="L556">    delete(key, false);</span>
+<span class="fc" id="L557">  }</span>
+
+  @Override
+  public void deleteAtomic(ByteString key) {
+<span class="nc" id="L561">    delete(key, true);</span>
+<span class="nc" id="L562">  }</span>
+
+  private void delete(ByteString key, boolean atomic) {
+<span class="fc" id="L565">    String label = &quot;client_raw_delete&quot;;</span>
+<span class="fc" id="L566">    Histogram.Timer requestTimer = RAW_REQUEST_LATENCY.labels(label).startTimer();</span>
+<span class="fc" id="L567">    SlowLog slowLog =</span>
+        new SlowLogImpl(
+<span class="fc" id="L569">            conf.getRawKVWriteSlowLogInMS(),</span>
+<span class="fc" id="L570">            new HashMap&lt;String, String&gt;(3) {</span>
+              {
+<span class="fc" id="L572">                put(&quot;func&quot;, &quot;delete&quot;);</span>
+<span class="fc" id="L573">                put(&quot;key&quot;, KeyUtils.formatBytesUTF8(key));</span>
+<span class="fc" id="L574">                put(&quot;atomic&quot;, String.valueOf(atomic));</span>
+<span class="fc" id="L575">              }</span>
+            });
+<span class="fc" id="L577">    ConcreteBackOffer backOffer =</span>
+<span class="fc" id="L578">        ConcreteBackOffer.newDeadlineBackOff(conf.getRawKVWriteTimeoutInMS(), slowLog);</span>
+    try {
+      while (true) {
+<span class="fc" id="L581">        try (RegionStoreClient client = clientBuilder.build(key, backOffer)) {</span>
+<span class="fc" id="L582">          slowLog.addProperty(&quot;region&quot;, client.getRegion().toString());</span>
+<span class="fc" id="L583">          client.rawDelete(backOffer, key, atomic);</span>
+<span class="fc" id="L584">          RAW_REQUEST_SUCCESS.labels(label).inc();</span>
+<span class="fc" id="L585">          return;</span>
+<span class="nc" id="L586">        } catch (final TiKVException e) {</span>
+<span class="nc" id="L587">          backOffer.doBackOff(BackOffFunction.BackOffFuncType.BoRegionMiss, e);</span>
+<span class="nc" id="L588">          logger.warn(&quot;Retry for delete error&quot;, e);</span>
+<span class="nc" id="L589">        }</span>
+      }
+<span class="nc" id="L591">    } catch (Exception e) {</span>
+<span class="nc" id="L592">      RAW_REQUEST_FAILURE.labels(label).inc();</span>
+<span class="nc" id="L593">      slowLog.setError(e);</span>
+<span class="nc" id="L594">      throw e;</span>
+    } finally {
+<span class="fc" id="L596">      requestTimer.observeDuration();</span>
+<span class="fc" id="L597">      slowLog.log();</span>
+    }
+  }
+
+  @Override
+  public synchronized void deleteRange(ByteString startKey, ByteString endKey) {
+<span class="fc" id="L603">    String label = &quot;client_raw_delete_range&quot;;</span>
+<span class="fc" id="L604">    Histogram.Timer requestTimer = RAW_REQUEST_LATENCY.labels(label).startTimer();</span>
+<span class="fc" id="L605">    ConcreteBackOffer backOffer =</span>
+<span class="fc" id="L606">        ConcreteBackOffer.newDeadlineBackOff(</span>
+<span class="fc" id="L607">            conf.getRawKVCleanTimeoutInMS(), SlowLogEmptyImpl.INSTANCE);</span>
+    try {
+<span class="fc" id="L609">      long deadline = System.currentTimeMillis() + conf.getRawKVCleanTimeoutInMS();</span>
+<span class="fc" id="L610">      doSendDeleteRange(backOffer, startKey, endKey, deadline);</span>
+<span class="fc" id="L611">      RAW_REQUEST_SUCCESS.labels(label).inc();</span>
+<span class="nc" id="L612">    } catch (Exception e) {</span>
+<span class="nc" id="L613">      RAW_REQUEST_FAILURE.labels(label).inc();</span>
+<span class="nc" id="L614">      throw e;</span>
+    } finally {
+<span class="fc" id="L616">      requestTimer.observeDuration();</span>
+    }
+<span class="fc" id="L618">  }</span>
+
+  @Override
+  public synchronized void deletePrefix(ByteString key) {
+<span class="nc" id="L622">    ByteString endKey = Key.toRawKey(key).nextPrefix().toByteString();</span>
+<span class="nc" id="L623">    deleteRange(key, endKey);</span>
+<span class="nc" id="L624">  }</span>
+
+  private void doSendBatchPut(
+      BackOffer backOffer,
+      Map&lt;ByteString, ByteString&gt; kvPairs,
+      long ttl,
+      boolean atomic,
+      long deadline) {
+<span class="fc" id="L632">    ExecutorCompletionService&lt;List&lt;Batch&gt;&gt; completionService =</span>
+        new ExecutorCompletionService&lt;&gt;(batchPutThreadPool);
+
+<span class="fc" id="L635">    List&lt;Future&lt;List&lt;Batch&gt;&gt;&gt; futureList = new ArrayList&lt;&gt;();</span>
+
+<span class="fc" id="L637">    Map&lt;TiRegion, List&lt;ByteString&gt;&gt; groupKeys =</span>
+<span class="fc" id="L638">        groupKeysByRegion(clientBuilder.getRegionManager(), kvPairs.keySet(), backOffer);</span>
+<span class="fc" id="L639">    List&lt;Batch&gt; batches = new ArrayList&lt;&gt;();</span>
+
+<span class="fc bfc" id="L641" title="All 2 branches covered.">    for (Map.Entry&lt;TiRegion, List&lt;ByteString&gt;&gt; entry : groupKeys.entrySet()) {</span>
+<span class="fc" id="L642">      appendBatches(</span>
+          backOffer,
+          batches,
+<span class="fc" id="L645">          entry.getKey(),</span>
+<span class="fc" id="L646">          entry.getValue(),</span>
+<span class="fc" id="L647">          entry.getValue().stream().map(kvPairs::get).collect(Collectors.toList()),</span>
+          RAW_BATCH_PUT_SIZE,
+          MAX_RAW_BATCH_LIMIT);
+<span class="fc" id="L650">    }</span>
+<span class="fc" id="L651">    Queue&lt;List&lt;Batch&gt;&gt; taskQueue = new LinkedList&lt;&gt;();</span>
+<span class="fc" id="L652">    taskQueue.offer(batches);</span>
+
+<span class="fc bfc" id="L654" title="All 2 branches covered.">    while (!taskQueue.isEmpty()) {</span>
+<span class="fc" id="L655">      List&lt;Batch&gt; task = taskQueue.poll();</span>
+<span class="fc bfc" id="L656" title="All 2 branches covered.">      for (Batch batch : task) {</span>
+<span class="fc" id="L657">        futureList.add(</span>
+<span class="fc" id="L658">            completionService.submit(</span>
+<span class="fc" id="L659">                () -&gt; doSendBatchPutInBatchesWithRetry(batch.getBackOffer(), batch, ttl, atomic)));</span>
+<span class="fc" id="L660">      }</span>
+
+      try {
+<span class="fc" id="L663">        getTasks(completionService, taskQueue, task, deadline - System.currentTimeMillis());</span>
+<span class="nc" id="L664">      } catch (Exception e) {</span>
+<span class="nc bnc" id="L665" title="All 2 branches missed.">        for (Future&lt;List&lt;Batch&gt;&gt; future : futureList) {</span>
+<span class="nc" id="L666">          future.cancel(true);</span>
+<span class="nc" id="L667">        }</span>
+<span class="nc" id="L668">        throw e;</span>
+<span class="fc" id="L669">      }</span>
+<span class="fc" id="L670">    }</span>
+<span class="fc" id="L671">  }</span>
+
+  private List&lt;Batch&gt; doSendBatchPutInBatchesWithRetry(
+      BackOffer backOffer, Batch batch, long ttl, boolean atomic) {
+<span class="fc" id="L675">    try (RegionStoreClient client = clientBuilder.build(batch.getRegion(), backOffer)) {</span>
+<span class="fc" id="L676">      client.setTimeout(conf.getRawKVBatchWriteTimeoutInMS());</span>
+<span class="fc" id="L677">      client.rawBatchPut(backOffer, batch, ttl, atomic);</span>
+<span class="fc" id="L678">      return new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L679">    } catch (final TiKVException e) {</span>
+      // TODO: any elegant way to re-split the ranges if fails?
+<span class="nc" id="L681">      backOffer.doBackOff(BackOffFunction.BackOffFuncType.BoRegionMiss, e);</span>
+<span class="nc" id="L682">      logger.warn(&quot;ReSplitting ranges for BatchPutRequest&quot;, e);</span>
+      // retry
+<span class="nc" id="L684">      return doSendBatchPutWithRefetchRegion(backOffer, batch);</span>
+    }
+  }
+
+  private List&lt;Batch&gt; doSendBatchPutWithRefetchRegion(BackOffer backOffer, Batch batch) {
+<span class="nc" id="L689">    Map&lt;TiRegion, List&lt;ByteString&gt;&gt; groupKeys =</span>
+<span class="nc" id="L690">        groupKeysByRegion(clientBuilder.getRegionManager(), batch.getKeys(), backOffer);</span>
+<span class="nc" id="L691">    List&lt;Batch&gt; retryBatches = new ArrayList&lt;&gt;();</span>
+
+<span class="nc bnc" id="L693" title="All 2 branches missed.">    for (Map.Entry&lt;TiRegion, List&lt;ByteString&gt;&gt; entry : groupKeys.entrySet()) {</span>
+<span class="nc" id="L694">      appendBatches(</span>
+          backOffer,
+          retryBatches,
+<span class="nc" id="L697">          entry.getKey(),</span>
+<span class="nc" id="L698">          entry.getValue(),</span>
+<span class="nc" id="L699">          entry.getValue().stream().map(batch.getMap()::get).collect(Collectors.toList()),</span>
+          RAW_BATCH_PUT_SIZE,
+          MAX_RAW_BATCH_LIMIT);
+<span class="nc" id="L702">    }</span>
+
+<span class="nc" id="L704">    return retryBatches;</span>
+  }
+
+  private List&lt;KvPair&gt; doSendBatchGet(BackOffer backOffer, List&lt;ByteString&gt; keys, long deadline) {
+<span class="fc" id="L708">    ExecutorCompletionService&lt;Pair&lt;List&lt;Batch&gt;, List&lt;KvPair&gt;&gt;&gt; completionService =</span>
+        new ExecutorCompletionService&lt;&gt;(batchGetThreadPool);
+
+<span class="fc" id="L711">    List&lt;Future&lt;Pair&lt;List&lt;Batch&gt;, List&lt;KvPair&gt;&gt;&gt;&gt; futureList = new ArrayList&lt;&gt;();</span>
+
+<span class="fc" id="L713">    List&lt;Batch&gt; batches =</span>
+<span class="fc" id="L714">        getBatches(backOffer, keys, RAW_BATCH_GET_SIZE, MAX_RAW_BATCH_LIMIT, this.clientBuilder);</span>
+
+<span class="fc" id="L716">    Queue&lt;List&lt;Batch&gt;&gt; taskQueue = new LinkedList&lt;&gt;();</span>
+<span class="fc" id="L717">    List&lt;KvPair&gt; result = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L718">    taskQueue.offer(batches);</span>
+
+<span class="fc bfc" id="L720" title="All 2 branches covered.">    while (!taskQueue.isEmpty()) {</span>
+<span class="fc" id="L721">      List&lt;Batch&gt; task = taskQueue.poll();</span>
+<span class="fc bfc" id="L722" title="All 2 branches covered.">      for (Batch batch : task) {</span>
+<span class="fc" id="L723">        futureList.add(</span>
+<span class="fc" id="L724">            completionService.submit(</span>
+<span class="fc" id="L725">                () -&gt; doSendBatchGetInBatchesWithRetry(batch.getBackOffer(), batch)));</span>
+<span class="fc" id="L726">      }</span>
+      try {
+<span class="fc" id="L728">        result.addAll(</span>
+<span class="fc" id="L729">            getTasksWithOutput(</span>
+<span class="fc" id="L730">                completionService, taskQueue, task, deadline - System.currentTimeMillis()));</span>
+<span class="nc" id="L731">      } catch (Exception e) {</span>
+<span class="nc bnc" id="L732" title="All 2 branches missed.">        for (Future&lt;Pair&lt;List&lt;Batch&gt;, List&lt;KvPair&gt;&gt;&gt; future : futureList) {</span>
+<span class="nc" id="L733">          future.cancel(true);</span>
+<span class="nc" id="L734">        }</span>
+<span class="nc" id="L735">        throw e;</span>
+<span class="fc" id="L736">      }</span>
+<span class="fc" id="L737">    }</span>
+
+<span class="fc" id="L739">    return result;</span>
+  }
+
+  private Pair&lt;List&lt;Batch&gt;, List&lt;KvPair&gt;&gt; doSendBatchGetInBatchesWithRetry(
+      BackOffer backOffer, Batch batch) {
+
+<span class="fc" id="L745">    try (RegionStoreClient client = clientBuilder.build(batch.getRegion(), backOffer)) {</span>
+<span class="fc" id="L746">      List&lt;KvPair&gt; partialResult = client.rawBatchGet(backOffer, batch.getKeys());</span>
+<span class="fc" id="L747">      return Pair.create(new ArrayList&lt;&gt;(), partialResult);</span>
+<span class="nc" id="L748">    } catch (final TiKVException e) {</span>
+<span class="nc" id="L749">      backOffer.doBackOff(BackOffFunction.BackOffFuncType.BoRegionMiss, e);</span>
+<span class="nc" id="L750">      clientBuilder.getRegionManager().invalidateRegion(batch.getRegion());</span>
+<span class="nc" id="L751">      logger.warn(&quot;ReSplitting ranges for BatchGetRequest&quot;, e);</span>
+
+      // retry
+<span class="nc" id="L754">      return Pair.create(doSendBatchGetWithRefetchRegion(backOffer, batch), new ArrayList&lt;&gt;());</span>
+    }
+  }
+
+  private List&lt;Batch&gt; doSendBatchGetWithRefetchRegion(BackOffer backOffer, Batch batch) {
+<span class="nc" id="L759">    return getBatches(</span>
+<span class="nc" id="L760">        backOffer, batch.getKeys(), RAW_BATCH_GET_SIZE, MAX_RAW_BATCH_LIMIT, clientBuilder);</span>
+  }
+
+  private void doSendBatchDelete(
+      BackOffer backOffer, List&lt;ByteString&gt; keys, boolean atomic, long deadline) {
+<span class="nc" id="L765">    ExecutorCompletionService&lt;List&lt;Batch&gt;&gt; completionService =</span>
+        new ExecutorCompletionService&lt;&gt;(batchDeleteThreadPool);
+
+<span class="nc" id="L768">    List&lt;Future&lt;List&lt;Batch&gt;&gt;&gt; futureList = new ArrayList&lt;&gt;();</span>
+
+<span class="nc" id="L770">    List&lt;Batch&gt; batches =</span>
+<span class="nc" id="L771">        getBatches(backOffer, keys, RAW_BATCH_DELETE_SIZE, MAX_RAW_BATCH_LIMIT, this.clientBuilder);</span>
+
+<span class="nc" id="L773">    Queue&lt;List&lt;Batch&gt;&gt; taskQueue = new LinkedList&lt;&gt;();</span>
+<span class="nc" id="L774">    taskQueue.offer(batches);</span>
+
+<span class="nc bnc" id="L776" title="All 2 branches missed.">    while (!taskQueue.isEmpty()) {</span>
+<span class="nc" id="L777">      List&lt;Batch&gt; task = taskQueue.poll();</span>
+<span class="nc bnc" id="L778" title="All 2 branches missed.">      for (Batch batch : task) {</span>
+<span class="nc" id="L779">        futureList.add(</span>
+<span class="nc" id="L780">            completionService.submit(</span>
+<span class="nc" id="L781">                () -&gt; doSendBatchDeleteInBatchesWithRetry(batch.getBackOffer(), batch, atomic)));</span>
+<span class="nc" id="L782">      }</span>
+      try {
+<span class="nc" id="L784">        getTasks(completionService, taskQueue, task, deadline - System.currentTimeMillis());</span>
+<span class="nc" id="L785">      } catch (Exception e) {</span>
+<span class="nc bnc" id="L786" title="All 2 branches missed.">        for (Future&lt;List&lt;Batch&gt;&gt; future : futureList) {</span>
+<span class="nc" id="L787">          future.cancel(true);</span>
+<span class="nc" id="L788">        }</span>
+<span class="nc" id="L789">        throw e;</span>
+<span class="nc" id="L790">      }</span>
+<span class="nc" id="L791">    }</span>
+<span class="nc" id="L792">  }</span>
+
+  private List&lt;Batch&gt; doSendBatchDeleteInBatchesWithRetry(
+      BackOffer backOffer, Batch batch, boolean atomic) {
+<span class="nc" id="L796">    try (RegionStoreClient client = clientBuilder.build(batch.getRegion(), backOffer)) {</span>
+<span class="nc" id="L797">      client.rawBatchDelete(backOffer, batch.getKeys(), atomic);</span>
+<span class="nc" id="L798">      return new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L799">    } catch (final TiKVException e) {</span>
+<span class="nc" id="L800">      backOffer.doBackOff(BackOffFunction.BackOffFuncType.BoRegionMiss, e);</span>
+<span class="nc" id="L801">      clientBuilder.getRegionManager().invalidateRegion(batch.getRegion());</span>
+<span class="nc" id="L802">      logger.warn(&quot;ReSplitting ranges for BatchGetRequest&quot;, e);</span>
+
+      // retry
+<span class="nc" id="L805">      return doSendBatchDeleteWithRefetchRegion(backOffer, batch);</span>
+    }
+  }
+
+  private List&lt;Batch&gt; doSendBatchDeleteWithRefetchRegion(BackOffer backOffer, Batch batch) {
+<span class="nc" id="L810">    return getBatches(</span>
+<span class="nc" id="L811">        backOffer, batch.getKeys(), RAW_BATCH_DELETE_SIZE, MAX_RAW_BATCH_LIMIT, clientBuilder);</span>
+  }
+
+  private ByteString calcKeyByCondition(boolean condition, ByteString key1, ByteString key2) {
+<span class="pc bpc" id="L815" title="1 of 2 branches missed.">    if (condition) {</span>
+<span class="fc" id="L816">      return key1;</span>
+    }
+<span class="nc" id="L818">    return key2;</span>
+  }
+
+  private void doSendDeleteRange(
+      BackOffer backOffer, ByteString startKey, ByteString endKey, long deadline) {
+<span class="fc" id="L823">    ExecutorCompletionService&lt;List&lt;DeleteRange&gt;&gt; completionService =</span>
+        new ExecutorCompletionService&lt;&gt;(deleteRangeThreadPool);
+
+<span class="fc" id="L826">    List&lt;Future&lt;List&lt;DeleteRange&gt;&gt;&gt; futureList = new ArrayList&lt;&gt;();</span>
+
+<span class="fc" id="L828">    List&lt;TiRegion&gt; regions = fetchRegionsFromRange(backOffer, startKey, endKey);</span>
+<span class="fc" id="L829">    List&lt;DeleteRange&gt; ranges = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L830" title="All 2 branches covered.">    for (int i = 0; i &lt; regions.size(); i++) {</span>
+<span class="fc" id="L831">      TiRegion region = regions.get(i);</span>
+<span class="pc bpc" id="L832" title="1 of 2 branches missed.">      ByteString start = calcKeyByCondition(i == 0, startKey, region.getStartKey());</span>
+<span class="pc bpc" id="L833" title="1 of 2 branches missed.">      ByteString end = calcKeyByCondition(i == regions.size() - 1, endKey, region.getEndKey());</span>
+<span class="fc" id="L834">      ranges.add(new DeleteRange(backOffer, region, start, end));</span>
+    }
+<span class="fc" id="L836">    Queue&lt;List&lt;DeleteRange&gt;&gt; taskQueue = new LinkedList&lt;&gt;();</span>
+<span class="fc" id="L837">    taskQueue.offer(ranges);</span>
+<span class="fc bfc" id="L838" title="All 2 branches covered.">    while (!taskQueue.isEmpty()) {</span>
+<span class="fc" id="L839">      List&lt;DeleteRange&gt; task = taskQueue.poll();</span>
+<span class="fc bfc" id="L840" title="All 2 branches covered.">      for (DeleteRange range : task) {</span>
+<span class="fc" id="L841">        futureList.add(</span>
+<span class="fc" id="L842">            completionService.submit(</span>
+<span class="fc" id="L843">                () -&gt; doSendDeleteRangeWithRetry(range.getBackOffer(), range)));</span>
+<span class="fc" id="L844">      }</span>
+      try {
+<span class="fc" id="L846">        getTasks(completionService, taskQueue, task, deadline - System.currentTimeMillis());</span>
+<span class="nc" id="L847">      } catch (Exception e) {</span>
+<span class="nc bnc" id="L848" title="All 2 branches missed.">        for (Future&lt;List&lt;DeleteRange&gt;&gt; future : futureList) {</span>
+<span class="nc" id="L849">          future.cancel(true);</span>
+<span class="nc" id="L850">        }</span>
+<span class="nc" id="L851">        throw e;</span>
+<span class="fc" id="L852">      }</span>
+<span class="fc" id="L853">    }</span>
+<span class="fc" id="L854">  }</span>
+
+  private List&lt;DeleteRange&gt; doSendDeleteRangeWithRetry(BackOffer backOffer, DeleteRange range) {
+<span class="fc" id="L857">    try (RegionStoreClient client = clientBuilder.build(range.getRegion(), backOffer)) {</span>
+<span class="fc" id="L858">      client.setTimeout(conf.getScanTimeout());</span>
+<span class="fc" id="L859">      client.rawDeleteRange(backOffer, range.getStartKey(), range.getEndKey());</span>
+<span class="fc" id="L860">      return new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L861">    } catch (final TiKVException e) {</span>
+<span class="nc" id="L862">      backOffer.doBackOff(BackOffFunction.BackOffFuncType.BoRegionMiss, e);</span>
+<span class="nc" id="L863">      clientBuilder.getRegionManager().invalidateRegion(range.getRegion());</span>
+<span class="nc" id="L864">      logger.warn(&quot;ReSplitting ranges for BatchDeleteRangeRequest&quot;, e);</span>
+
+      // retry
+<span class="nc" id="L867">      return doSendDeleteRangeWithRefetchRegion(backOffer, range);</span>
+    }
+  }
+
+  private List&lt;DeleteRange&gt; doSendDeleteRangeWithRefetchRegion(
+      BackOffer backOffer, DeleteRange range) {
+<span class="nc" id="L873">    List&lt;TiRegion&gt; regions =</span>
+<span class="nc" id="L874">        fetchRegionsFromRange(backOffer, range.getStartKey(), range.getEndKey());</span>
+<span class="nc" id="L875">    List&lt;DeleteRange&gt; retryRanges = new ArrayList&lt;&gt;();</span>
+<span class="nc bnc" id="L876" title="All 2 branches missed.">    for (int i = 0; i &lt; regions.size(); i++) {</span>
+<span class="nc" id="L877">      TiRegion region = regions.get(i);</span>
+<span class="nc bnc" id="L878" title="All 2 branches missed.">      ByteString start = calcKeyByCondition(i == 0, range.getStartKey(), region.getStartKey());</span>
+<span class="nc" id="L879">      ByteString end =</span>
+<span class="nc bnc" id="L880" title="All 2 branches missed.">          calcKeyByCondition(i == regions.size() - 1, range.getEndKey(), region.getEndKey());</span>
+<span class="nc" id="L881">      retryRanges.add(new DeleteRange(backOffer, region, start, end));</span>
+    }
+<span class="nc" id="L883">    return retryRanges;</span>
+  }
+
+  private static Map&lt;ByteString, ByteString&gt; mapKeysToValues(
+      List&lt;ByteString&gt; keys, List&lt;ByteString&gt; values) {
+<span class="nc" id="L888">    Map&lt;ByteString, ByteString&gt; map = new HashMap&lt;&gt;();</span>
+<span class="nc bnc" id="L889" title="All 2 branches missed.">    for (int i = 0; i &lt; keys.size(); i++) {</span>
+<span class="nc" id="L890">      map.put(keys.get(i), values.get(i));</span>
+    }
+<span class="nc" id="L892">    return map;</span>
+  }
+
+  private List&lt;TiRegion&gt; fetchRegionsFromRange(
+      BackOffer backOffer, ByteString startKey, ByteString endKey) {
+<span class="fc" id="L897">    List&lt;TiRegion&gt; regions = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L898" title="All 2 branches covered.">    while (startKey.isEmpty()</span>
+<span class="pc bpc" id="L899" title="1 of 2 branches missed.">        || endKey.isEmpty()</span>
+<span class="pc bpc" id="L900" title="1 of 2 branches missed.">        || Key.toRawKey(startKey).compareTo(Key.toRawKey(endKey)) &lt; 0) {</span>
+<span class="fc" id="L901">      TiRegion currentRegion = clientBuilder.getRegionManager().getRegionByKey(startKey, backOffer);</span>
+<span class="fc" id="L902">      regions.add(currentRegion);</span>
+<span class="fc" id="L903">      startKey = currentRegion.getEndKey();</span>
+<span class="pc bpc" id="L904" title="1 of 2 branches missed.">      if (currentRegion.getEndKey().isEmpty()) {</span>
+<span class="fc" id="L905">        break;</span>
+      }
+<span class="nc" id="L907">    }</span>
+<span class="fc" id="L908">    return regions;</span>
+  }
+
+  private Iterator&lt;KvPair&gt; rawScanIterator(
+      TiConfiguration conf,
+      RegionStoreClientBuilder builder,
+      ByteString startKey,
+      ByteString endKey,
+      int limit,
+      boolean keyOnly,
+      BackOffer backOffer) {
+<span class="pc bpc" id="L919" title="1 of 2 branches missed.">    if (limit &gt; MAX_RAW_SCAN_LIMIT) {</span>
+<span class="nc" id="L920">      throw ERR_MAX_SCAN_LIMIT_EXCEEDED;</span>
+    }
+<span class="fc" id="L922">    return new RawScanIterator(conf, builder, startKey, endKey, limit, keyOnly, backOffer);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

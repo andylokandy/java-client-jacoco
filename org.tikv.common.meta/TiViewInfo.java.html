@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TiViewInfo.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.meta</a> &gt; <span class="el_source">TiViewInfo.java</span></div><h1>TiViewInfo.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.meta;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
+
+public class TiViewInfo implements Serializable {
+  // ViewAlgorithm is VIEW's SQL ALGORITHM characteristic.
+  // See https://dev.mysql.com/doc/refman/5.7/en/view-algorithms.html
+  private final long viewAlgorithm;
+  private final org.tikv.common.meta.TiUserIdentity userIdentity;
+  // ViewSecurity is VIEW's SQL SECURITY characteristic.
+  // See https://dev.mysql.com/doc/refman/5.7/en/create-view.html
+  private final long viewSecurity;
+  private final String viewSelect;
+  // ViewCheckOption is VIEW's WITH CHECK OPTION clause part.
+  // See https://dev.mysql.com/doc/refman/5.7/en/view-check-option.html
+  private final long viewCheckOpt;
+  private final List&lt;String&gt; viewCols;
+
+  @JsonCreator
+<span class="nc" id="L40">  public TiViewInfo(</span>
+      @JsonProperty(&quot;view_algorithm&quot;) long viewAlgorithm,
+      @JsonProperty(&quot;view_definer&quot;) org.tikv.common.meta.TiUserIdentity userIdentity,
+      @JsonProperty(&quot;view_security&quot;) long viewSecurity,
+      @JsonProperty(&quot;view_select&quot;) String viewSelect,
+      @JsonProperty(&quot;view_checkoption&quot;) long viewCheckOpt,
+      @JsonProperty(&quot;view_cols&quot;) List&lt;org.tikv.common.meta.CIStr&gt; viewCols) {
+<span class="nc" id="L47">    this.viewAlgorithm = viewAlgorithm;</span>
+<span class="nc" id="L48">    this.userIdentity = userIdentity;</span>
+<span class="nc" id="L49">    this.viewSecurity = viewSecurity;</span>
+<span class="nc" id="L50">    this.viewSelect = viewSelect;</span>
+<span class="nc" id="L51">    this.viewCheckOpt = viewCheckOpt;</span>
+<span class="nc bnc" id="L52" title="All 2 branches missed.">    if (viewCols != null) {</span>
+<span class="nc" id="L53">      this.viewCols =</span>
+<span class="nc" id="L54">          viewCols.stream().map(org.tikv.common.meta.CIStr::getO).collect(Collectors.toList());</span>
+<span class="nc" id="L55">    } else {</span>
+<span class="nc" id="L56">      this.viewCols = new ArrayList&lt;&gt;();</span>
+    }
+<span class="nc" id="L58">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

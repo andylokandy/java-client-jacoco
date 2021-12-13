@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RangeSetBuilder.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.expression.visitor</a> &gt; <span class="el_source">RangeSetBuilder.java</span></div><h1>RangeSetBuilder.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2019 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.expression.visitor;
+
+import com.google.common.collect.Range;
+import com.google.common.collect.RangeSet;
+import com.google.common.collect.TreeRangeSet;
+import java.util.Objects;
+import org.tikv.common.exception.TiExpressionException;
+import org.tikv.common.expression.ComparisonBinaryExpression;
+import org.tikv.common.expression.ComparisonBinaryExpression.NormalizedPredicate;
+import org.tikv.common.expression.Expression;
+import org.tikv.common.expression.LogicalBinaryExpression;
+
+/**
+ * A builder can build a range set of type {@code C}. It also extends {@code DefaultVisitor} and
+ * override and {@code LogicalBinaryExpression}'s visit. For {@code ComparisonBinaryExpression}, we
+ * cannot just override it because {@code IndexRangeSetBuilder} and {@code LogicalBinaryExpression}
+ * has different behavior. A method {@code visitComparisonBinaryExpr} is added with extra boolean
+ * variable to control the behavior.
+ */
+@SuppressWarnings(&quot;UnstableApiUsage&quot;)
+<span class="nc" id="L36">public class RangeSetBuilder&lt;C extends Comparable&gt; extends DefaultVisitor&lt;RangeSet&lt;C&gt;, Void&gt; {</span>
+
+  static void throwOnError(Expression node) {
+<span class="nc" id="L39">    final String errorFormat = &quot;Unsupported conversion to Range: %s&quot;;</span>
+<span class="nc" id="L40">    throw new TiExpressionException(String.format(errorFormat, node));</span>
+  }
+
+  /**
+   * visits {@code ComparisonBinaryExpression} expression and constructs a range set.
+   *
+   * @param node represents a {@code ComparisonBinaryExpression}.
+   * @param context represents a context during visiting process. It is not being used in this
+   *     method.
+   * @param literal represents a comparable value.
+   * @param loose If prefix length is specified, then filter is loose, so is the range.
+   * @return a range set.
+   */
+  RangeSet&lt;C&gt; visitComparisonBinaryExpr(
+      ComparisonBinaryExpression node, Void context, C literal, boolean loose) {
+<span class="nc" id="L55">    NormalizedPredicate predicate = node.normalize();</span>
+<span class="nc" id="L56">    RangeSet&lt;C&gt; ranges = TreeRangeSet.create();</span>
+<span class="nc bnc" id="L57" title="All 2 branches missed.">    if (loose) {</span>
+<span class="nc bnc" id="L58" title="All 5 branches missed.">      switch (predicate.getType()) {</span>
+        case GREATER_THAN:
+        case GREATER_EQUAL:
+<span class="nc" id="L61">          ranges.add(Range.atLeast(literal));</span>
+<span class="nc" id="L62">          break;</span>
+        case LESS_THAN:
+        case LESS_EQUAL:
+<span class="nc" id="L65">          ranges.add(Range.atMost(literal));</span>
+<span class="nc" id="L66">          break;</span>
+        case EQUAL:
+<span class="nc" id="L68">          ranges.add(Range.singleton(literal));</span>
+<span class="nc" id="L69">          break;</span>
+        case NOT_EQUAL:
+          // Should return full range because prefix index predicate for NOT_EQUAL
+          // will be split into an NOT_EQUAL filter and a full range scan
+<span class="nc" id="L73">          ranges.add(Range.all());</span>
+<span class="nc" id="L74">          break;</span>
+        default:
+<span class="nc" id="L76">          throwOnError(node);</span>
+      }
+    } else {
+<span class="nc bnc" id="L79" title="All 7 branches missed.">      switch (predicate.getType()) {</span>
+        case GREATER_THAN:
+<span class="nc" id="L81">          ranges.add(Range.greaterThan(literal));</span>
+<span class="nc" id="L82">          break;</span>
+        case GREATER_EQUAL:
+<span class="nc" id="L84">          ranges.add(Range.atLeast(literal));</span>
+<span class="nc" id="L85">          break;</span>
+        case LESS_THAN:
+<span class="nc" id="L87">          ranges.add(Range.lessThan(literal));</span>
+<span class="nc" id="L88">          break;</span>
+        case LESS_EQUAL:
+<span class="nc" id="L90">          ranges.add(Range.atMost(literal));</span>
+<span class="nc" id="L91">          break;</span>
+        case EQUAL:
+<span class="nc" id="L93">          ranges.add(Range.singleton(literal));</span>
+<span class="nc" id="L94">          break;</span>
+        case NOT_EQUAL:
+<span class="nc" id="L96">          ranges.add(Range.lessThan(literal));</span>
+<span class="nc" id="L97">          ranges.add(Range.greaterThan(literal));</span>
+<span class="nc" id="L98">          break;</span>
+        default:
+<span class="nc" id="L100">          throwOnError(node);</span>
+      }
+    }
+
+<span class="nc" id="L104">    return ranges;</span>
+  }
+
+  @Override
+  protected RangeSet&lt;C&gt; visit(LogicalBinaryExpression node, Void context) {
+<span class="nc" id="L109">    RangeSet&lt;C&gt; leftRanges = node.getLeft().accept(this, context);</span>
+<span class="nc" id="L110">    RangeSet&lt;C&gt; rightRanges = node.getRight().accept(this, context);</span>
+<span class="nc bnc" id="L111" title="All 4 branches missed.">    switch (node.getCompType()) {</span>
+      case AND:
+<span class="nc" id="L113">        rightRanges.removeAll(leftRanges.complement());</span>
+<span class="nc" id="L114">        break;</span>
+      case OR:
+<span class="nc" id="L116">        rightRanges.addAll(leftRanges);</span>
+<span class="nc" id="L117">        break;</span>
+      case XOR:
+        // AND
+        // We need make a copy of rightRanges rather than assign the pointer
+        // to intersection since we need modify intersection later.
+<span class="nc" id="L122">        RangeSet&lt;C&gt; intersection = TreeRangeSet.create(rightRanges);</span>
+<span class="nc" id="L123">        intersection.removeAll(leftRanges.complement());</span>
+        // full set
+<span class="nc" id="L125">        rightRanges.addAll(leftRanges);</span>
+<span class="nc" id="L126">        rightRanges.removeAll(intersection);</span>
+<span class="nc" id="L127">        break;</span>
+      default:
+<span class="nc" id="L129">        throwOnError(node);</span>
+    }
+<span class="nc" id="L131">    return rightRanges;</span>
+  }
+
+  public RangeSet&lt;C&gt; buildRange(Expression predicate) {
+<span class="nc" id="L135">    Objects.requireNonNull(predicate, &quot;predicate is null&quot;);</span>
+<span class="nc" id="L136">    return predicate.accept(this, null);</span>
+  }
+
+  protected RangeSet&lt;C&gt; process(Expression node, Void context) {
+<span class="nc" id="L140">    throwOnError(node);</span>
+<span class="nc" id="L141">    return null;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

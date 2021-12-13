@@ -1,0 +1,255 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RegionErrorHandler.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.operation</a> &gt; <span class="el_source">RegionErrorHandler.java</span></div><h1>RegionErrorHandler.java</h1><pre class="source lang-java linenums">package org.tikv.common.operation;
+
+import com.google.protobuf.ByteString;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Function;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.codec.KeyUtils;
+import org.tikv.common.exception.GrpcException;
+import org.tikv.common.exception.TiKVException;
+import org.tikv.common.region.RegionErrorReceiver;
+import org.tikv.common.region.RegionManager;
+import org.tikv.common.region.TiRegion;
+import org.tikv.common.util.BackOffFunction;
+import org.tikv.common.util.BackOffer;
+import org.tikv.kvproto.Errorpb;
+import org.tikv.kvproto.Metapb;
+
+public class RegionErrorHandler&lt;RespT&gt; implements ErrorHandler&lt;RespT&gt; {
+<span class="fc" id="L23">  private static final Logger logger = LoggerFactory.getLogger(RegionErrorHandler.class);</span>
+  // if a store does not have leader currently, store id is set to 0
+  private static final int NO_LEADER_STORE_ID = 0;
+  private final Function&lt;RespT, Errorpb.Error&gt; getRegionError;
+  private final RegionManager regionManager;
+  private final RegionErrorReceiver recv;
+
+  public RegionErrorHandler(
+      RegionManager regionManager,
+      RegionErrorReceiver recv,
+<span class="fc" id="L33">      Function&lt;RespT, Errorpb.Error&gt; getRegionError) {</span>
+<span class="fc" id="L34">    this.recv = recv;</span>
+<span class="fc" id="L35">    this.regionManager = regionManager;</span>
+<span class="fc" id="L36">    this.getRegionError = getRegionError;</span>
+<span class="fc" id="L37">  }</span>
+
+  @Override
+  public boolean handleResponseError(BackOffer backOffer, RespT resp) {
+<span class="pc bpc" id="L41" title="1 of 2 branches missed.">    if (resp == null) {</span>
+<span class="nc" id="L42">      String msg = String.format(&quot;Request Failed with unknown reason for [%s]&quot;, recv.getRegion());</span>
+<span class="nc" id="L43">      return handleRequestError(backOffer, new GrpcException(msg));</span>
+    }
+    // Region error handling logic
+<span class="fc" id="L46">    Errorpb.Error error = getRegionError(resp);</span>
+<span class="fc bfc" id="L47" title="All 2 branches covered.">    if (error != null) {</span>
+<span class="fc" id="L48">      return handleRegionError(backOffer, error);</span>
+    }
+<span class="fc" id="L50">    return false;</span>
+  }
+
+  public boolean handleRegionError(BackOffer backOffer, Errorpb.Error error) {
+<span class="pc bpc" id="L54" title="1 of 2 branches missed.">    if (error.hasNotLeader()) {</span>
+      // this error is reported from raftstore:
+      // peer of current request is not leader, the following might be its causes:
+      // 1. cache is outdated, region has changed its leader, can be solved by re-fetching from PD
+      // 2. leader of current region is missing, need to wait and then fetch region info from PD
+<span class="nc" id="L59">      long newStoreId = error.getNotLeader().getLeader().getStoreId();</span>
+      boolean retry;
+
+      // update Leader here
+<span class="nc" id="L63">      logger.warn(</span>
+<span class="nc" id="L64">          String.format(</span>
+              &quot;NotLeader Error with region id %d and store id %d, new store id %d&quot;,
+<span class="nc" id="L66">              recv.getRegion().getId(), recv.getRegion().getLeader().getStoreId(), newStoreId));</span>
+
+      BackOffFunction.BackOffFuncType backOffFuncType;
+      // if there's current no leader, we do not trigger update pd cache logic
+      // since issuing store = NO_LEADER_STORE_ID requests to pd will definitely fail.
+<span class="nc bnc" id="L71" title="All 2 branches missed.">      if (newStoreId != NO_LEADER_STORE_ID) {</span>
+        // If update leader fails, we need to fetch new region info from pd,
+        // and re-split key range for new region. Setting retry to false will
+        // stop retry and enter handleCopResponse logic, which would use RegionMiss
+        // backOff strategy to wait, fetch new region and re-split key range.
+        // onNotLeader is only needed when updateLeader succeeds, thus switch
+        // to a new store address.
+<span class="nc" id="L78">        TiRegion newRegion = this.regionManager.updateLeader(recv.getRegion(), newStoreId);</span>
+<span class="nc bnc" id="L79" title="All 4 branches missed.">        retry = newRegion != null &amp;&amp; recv.onNotLeader(newRegion);</span>
+
+<span class="nc" id="L81">        backOffFuncType = BackOffFunction.BackOffFuncType.BoUpdateLeader;</span>
+<span class="nc" id="L82">      } else {</span>
+<span class="nc" id="L83">        logger.info(</span>
+<span class="nc" id="L84">            String.format(</span>
+<span class="nc" id="L85">                &quot;Received zero store id, from region %d try next time&quot;, recv.getRegion().getId()));</span>
+
+<span class="nc" id="L87">        backOffFuncType = BackOffFunction.BackOffFuncType.BoRegionMiss;</span>
+<span class="nc" id="L88">        retry = false;</span>
+      }
+
+<span class="nc bnc" id="L91" title="All 2 branches missed.">      if (!retry) {</span>
+<span class="nc" id="L92">        this.regionManager.invalidateRegion(recv.getRegion());</span>
+      }
+
+<span class="nc" id="L95">      backOffer.doBackOff(backOffFuncType, new GrpcException(error.toString()));</span>
+
+<span class="nc" id="L97">      return retry;</span>
+<span class="pc bpc" id="L98" title="1 of 2 branches missed.">    } else if (error.hasStoreNotMatch()) {</span>
+      // this error is reported from raftstore:
+      // store_id requested at the moment is inconsistent with that expected
+      // Solution：re-fetch from PD
+<span class="nc" id="L102">      long storeId = recv.getRegion().getLeader().getStoreId();</span>
+<span class="nc" id="L103">      long actualStoreId = error.getStoreNotMatch().getActualStoreId();</span>
+<span class="nc" id="L104">      logger.warn(</span>
+<span class="nc" id="L105">          String.format(</span>
+              &quot;Store Not Match happened with region id %d, store id %d, actual store id %d&quot;,
+<span class="nc" id="L107">              recv.getRegion().getId(), storeId, actualStoreId));</span>
+
+<span class="nc" id="L109">      this.regionManager.invalidateRegion(recv.getRegion());</span>
+<span class="nc" id="L110">      this.regionManager.invalidateStore(storeId);</span>
+      // recv.onStoreNotMatch(this.regionManager.getStoreById(storeId));
+      // assume this is a low probability error, do not retry, just re-split the request by
+      // throwing it out.
+<span class="nc" id="L114">      return false;</span>
+<span class="fc bfc" id="L115" title="All 2 branches covered.">    } else if (error.hasEpochNotMatch()) {</span>
+<span class="fc" id="L116">      logger.warn(</span>
+<span class="fc" id="L117">          String.format(&quot;tikv reports `EpochNotMatch` retry later, region: %s&quot;, recv.getRegion()));</span>
+<span class="fc" id="L118">      return onRegionEpochNotMatch(backOffer, error.getEpochNotMatch().getCurrentRegionsList());</span>
+<span class="pc bpc" id="L119" title="1 of 2 branches missed.">    } else if (error.hasServerIsBusy()) {</span>
+      // this error is reported from kv:
+      // will occur when write pressure is high. Please try later.
+<span class="fc" id="L122">      logger.warn(</span>
+<span class="fc" id="L123">          String.format(</span>
+              &quot;Server is busy for region [%s], reason: %s&quot;,
+<span class="fc" id="L125">              recv.getRegion(), error.getServerIsBusy().getReason()));</span>
+<span class="pc" id="L126">      backOffer.doBackOff(</span>
+          BackOffFunction.BackOffFuncType.BoServerBusy,
+          new StatusRuntimeException(
+<span class="fc" id="L129">              Status.fromCode(Status.Code.UNAVAILABLE).withDescription(error.toString())));</span>
+<span class="nc" id="L130">      backOffer.doBackOff(</span>
+<span class="nc" id="L131">          BackOffFunction.BackOffFuncType.BoRegionMiss, new GrpcException(error.getMessage()));</span>
+<span class="nc" id="L132">      return true;</span>
+<span class="nc bnc" id="L133" title="All 2 branches missed.">    } else if (error.hasStaleCommand()) {</span>
+      // this error is reported from raftstore:
+      // command outdated, please try later
+<span class="nc" id="L136">      logger.warn(String.format(&quot;Stale command for region [%s]&quot;, recv.getRegion()));</span>
+<span class="nc" id="L137">      backOffer.doBackOff(</span>
+<span class="nc" id="L138">          BackOffFunction.BackOffFuncType.BoRegionMiss, new GrpcException(error.getMessage()));</span>
+<span class="nc" id="L139">      return true;</span>
+<span class="nc bnc" id="L140" title="All 2 branches missed.">    } else if (error.hasRaftEntryTooLarge()) {</span>
+<span class="nc" id="L141">      logger.warn(String.format(&quot;Raft too large for region [%s]&quot;, recv.getRegion()));</span>
+<span class="nc" id="L142">      throw new StatusRuntimeException(</span>
+<span class="nc" id="L143">          Status.fromCode(Status.Code.UNAVAILABLE).withDescription(error.toString()));</span>
+<span class="nc bnc" id="L144" title="All 2 branches missed.">    } else if (error.hasKeyNotInRegion()) {</span>
+      // this error is reported from raftstore:
+      // key requested is not in current region
+      // should not happen here.
+<span class="nc" id="L148">      ByteString invalidKey = error.getKeyNotInRegion().getKey();</span>
+<span class="nc" id="L149">      logger.error(</span>
+<span class="nc" id="L150">          String.format(</span>
+              &quot;Key not in region [%s] for key [%s], this error should not happen here.&quot;,
+<span class="nc" id="L152">              recv.getRegion(), KeyUtils.formatBytesUTF8(invalidKey)));</span>
+<span class="nc" id="L153">      regionManager.clearRegionCache();</span>
+<span class="nc" id="L154">      throw new StatusRuntimeException(Status.UNKNOWN.withDescription(error.toString()));</span>
+    }
+
+<span class="nc" id="L157">    logger.warn(String.format(&quot;Unknown error %s for region [%s]&quot;, error, recv.getRegion()));</span>
+    // For other errors, we only drop cache here.
+    // Upper level may split this task.
+<span class="nc" id="L160">    invalidateRegionStoreCache(recv.getRegion());</span>
+    // retry if raft proposal is dropped, it indicates the store is in the middle of transition
+<span class="nc bnc" id="L162" title="All 2 branches missed.">    if (error.getMessage().contains(&quot;Raft ProposalDropped&quot;)) {</span>
+<span class="nc" id="L163">      backOffer.doBackOff(</span>
+<span class="nc" id="L164">          BackOffFunction.BackOffFuncType.BoRegionMiss, new GrpcException(error.getMessage()));</span>
+<span class="nc" id="L165">      return true;</span>
+    }
+<span class="nc" id="L167">    return false;</span>
+  }
+
+  // ref: https://github.com/tikv/client-go/blob/tidb-5.2/internal/locate/region_request.go#L985
+  // OnRegionEpochNotMatch removes the old region and inserts new regions into the cache.
+  // It returns whether retries the request because it's possible the region epoch is ahead of
+  // TiKV's due to slow appling.
+  private boolean onRegionEpochNotMatch(BackOffer backOffer, List&lt;Metapb.Region&gt; currentRegions) {
+<span class="pc bpc" id="L175" title="1 of 2 branches missed.">    if (currentRegions.size() == 0) {</span>
+<span class="fc" id="L176">      this.regionManager.onRegionStale(recv.getRegion());</span>
+<span class="fc" id="L177">      return false;</span>
+    }
+
+    // Find whether the region epoch in `ctx` is ahead of TiKV's. If so, backoff.
+<span class="nc bnc" id="L181" title="All 2 branches missed.">    for (Metapb.Region meta : currentRegions) {</span>
+<span class="nc bnc" id="L182" title="All 2 branches missed.">      if (meta.getId() == recv.getRegion().getId()</span>
+<span class="nc bnc" id="L183" title="All 2 branches missed.">          &amp;&amp; (meta.getRegionEpoch().getConfVer() &lt; recv.getRegion().getVerID().getConfVer()</span>
+<span class="nc bnc" id="L184" title="All 2 branches missed.">              || meta.getRegionEpoch().getVersion() &lt; recv.getRegion().getVerID().getVer())) {</span>
+<span class="nc" id="L185">        String errorMsg =</span>
+<span class="nc" id="L186">            String.format(</span>
+                &quot;region epoch is ahead of tikv, region: %s, currentRegions: %s&quot;,
+<span class="nc" id="L188">                recv.getRegion(), currentRegions);</span>
+<span class="nc" id="L189">        logger.info(errorMsg);</span>
+<span class="nc" id="L190">        backOffer.doBackOff(</span>
+            BackOffFunction.BackOffFuncType.BoRegionMiss, new TiKVException(errorMsg));
+<span class="nc" id="L192">        return true;</span>
+      }
+<span class="nc" id="L194">    }</span>
+
+<span class="nc" id="L196">    boolean needInvalidateOld = true;</span>
+<span class="nc" id="L197">    List&lt;TiRegion&gt; newRegions = new ArrayList&lt;&gt;(currentRegions.size());</span>
+    // If the region epoch is not ahead of TiKV's, replace region meta in region cache.
+<span class="nc bnc" id="L199" title="All 2 branches missed.">    for (Metapb.Region meta : currentRegions) {</span>
+<span class="nc" id="L200">      TiRegion region = regionManager.createRegion(meta, backOffer);</span>
+<span class="nc" id="L201">      newRegions.add(region);</span>
+<span class="nc bnc" id="L202" title="All 2 branches missed.">      if (recv.getRegion().getVerID() == region.getVerID()) {</span>
+<span class="nc" id="L203">        needInvalidateOld = false;</span>
+      }
+<span class="nc" id="L205">    }</span>
+
+<span class="nc bnc" id="L207" title="All 2 branches missed.">    if (needInvalidateOld) {</span>
+<span class="nc" id="L208">      this.regionManager.onRegionStale(recv.getRegion());</span>
+    }
+
+<span class="nc bnc" id="L211" title="All 2 branches missed.">    for (TiRegion region : newRegions) {</span>
+<span class="nc" id="L212">      regionManager.insertRegionToCache(region);</span>
+<span class="nc" id="L213">    }</span>
+
+<span class="nc" id="L215">    return false;</span>
+  }
+
+  @Override
+  public boolean handleRequestError(BackOffer backOffer, Exception e) {
+<span class="nc bnc" id="L220" title="All 2 branches missed.">    if (recv.onStoreUnreachable(backOffer)) {</span>
+<span class="nc bnc" id="L221" title="All 2 branches missed.">      if (!backOffer.canRetryAfterSleep(BackOffFunction.BackOffFuncType.BoTiKVRPC)) {</span>
+<span class="nc" id="L222">        regionManager.onRequestFail(recv.getRegion());</span>
+<span class="nc" id="L223">        throw new GrpcException(&quot;retry is exhausted.&quot;, e);</span>
+      }
+<span class="nc" id="L225">      return true;</span>
+    }
+
+<span class="nc" id="L228">    logger.warn(&quot;request failed because of: &quot; + e.getMessage());</span>
+<span class="nc bnc" id="L229" title="All 2 branches missed.">    if (!backOffer.canRetryAfterSleep(BackOffFunction.BackOffFuncType.BoTiKVRPC)) {</span>
+<span class="nc" id="L230">      regionManager.onRequestFail(recv.getRegion());</span>
+<span class="nc" id="L231">      throw new GrpcException(</span>
+<span class="nc" id="L232">          &quot;send tikv request error: &quot; + e.getMessage() + &quot;, try next peer later&quot;, e);</span>
+    }
+    // TiKV maybe down, so do not retry in `callWithRetry`
+    // should re-fetch the new leader from PD and send request to it
+<span class="nc" id="L236">    return false;</span>
+  }
+
+  public Errorpb.Error getRegionError(RespT resp) {
+<span class="pc bpc" id="L240" title="1 of 2 branches missed.">    if (getRegionError != null) {</span>
+<span class="fc" id="L241">      return getRegionError.apply(resp);</span>
+    }
+<span class="nc" id="L243">    return null;</span>
+  }
+
+  public TiRegion getRegion() {
+<span class="nc" id="L247">    return recv.getRegion();</span>
+  }
+
+  private void invalidateRegionStoreCache(TiRegion ctxRegion) {
+<span class="nc" id="L251">    regionManager.invalidateRegion(ctxRegion);</span>
+<span class="nc" id="L252">    regionManager.invalidateStore(ctxRegion.getLeader().getStoreId());</span>
+<span class="nc" id="L253">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

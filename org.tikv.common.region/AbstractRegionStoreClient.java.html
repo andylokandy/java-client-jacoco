@@ -1,0 +1,375 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractRegionStoreClient.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.region</a> &gt; <span class="el_source">AbstractRegionStoreClient.java</span></div><h1>AbstractRegionStoreClient.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2019 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.region;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.protobuf.ByteString;
+import io.grpc.ManagedChannel;
+import io.grpc.Metadata;
+import io.grpc.stub.MetadataUtils;
+import io.prometheus.client.Histogram;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.AbstractGRPCClient;
+import org.tikv.common.TiConfiguration;
+import org.tikv.common.exception.GrpcException;
+import org.tikv.common.log.SlowLogSpan;
+import org.tikv.common.util.BackOffer;
+import org.tikv.common.util.ChannelFactory;
+import org.tikv.kvproto.Kvrpcpb;
+import org.tikv.kvproto.Metapb;
+import org.tikv.kvproto.TikvGrpc;
+
+public abstract class AbstractRegionStoreClient
+    extends AbstractGRPCClient&lt;TikvGrpc.TikvBlockingStub, TikvGrpc.TikvFutureStub&gt;
+    implements RegionErrorReceiver {
+<span class="fc" id="L48">  private static final Logger logger = LoggerFactory.getLogger(AbstractRegionStoreClient.class);</span>
+
+  public static final Histogram SEEK_LEADER_STORE_DURATION =
+<span class="fc" id="L51">      Histogram.build()</span>
+<span class="fc" id="L52">          .name(&quot;client_java_seek_leader_store_duration&quot;)</span>
+<span class="fc" id="L53">          .help(&quot;seek leader store duration.&quot;)</span>
+<span class="fc" id="L54">          .register();</span>
+
+<span class="fc" id="L56">  public static final Histogram SEEK_PROXY_STORE_DURATION =</span>
+<span class="fc" id="L57">      Histogram.build()</span>
+<span class="fc" id="L58">          .name(&quot;client_java_seek_proxy_store_duration&quot;)</span>
+<span class="fc" id="L59">          .help(&quot;seek proxy store duration.&quot;)</span>
+<span class="fc" id="L60">          .register();</span>
+
+  protected final RegionManager regionManager;
+  protected TiRegion region;
+  protected TiStore store;
+
+  protected AbstractRegionStoreClient(
+      TiConfiguration conf,
+      TiRegion region,
+      TiStore store,
+      ChannelFactory channelFactory,
+      TikvGrpc.TikvBlockingStub blockingStub,
+      TikvGrpc.TikvFutureStub asyncStub,
+      RegionManager regionManager) {
+<span class="fc" id="L74">    super(conf, channelFactory, blockingStub, asyncStub);</span>
+<span class="fc" id="L75">    checkNotNull(region, &quot;Region is empty&quot;);</span>
+<span class="fc" id="L76">    checkNotNull(region.getLeader(), &quot;Leader Peer is null&quot;);</span>
+<span class="pc bpc" id="L77" title="1 of 2 branches missed.">    checkArgument(region.getLeader() != null, &quot;Leader Peer is null&quot;);</span>
+<span class="fc" id="L78">    this.region = region;</span>
+<span class="fc" id="L79">    this.regionManager = regionManager;</span>
+<span class="fc" id="L80">    this.store = store;</span>
+<span class="pc bpc" id="L81" title="1 of 2 branches missed.">    if (this.store.getProxyStore() != null) {</span>
+<span class="nc" id="L82">      this.timeout = conf.getForwardTimeout();</span>
+    }
+<span class="fc" id="L84">  }</span>
+
+  @Override
+  public TiRegion getRegion() {
+<span class="fc" id="L88">    return region;</span>
+  }
+
+  @Override
+  protected TikvGrpc.TikvBlockingStub getBlockingStub() {
+<span class="fc" id="L93">    return blockingStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS);</span>
+  }
+
+  @Override
+  protected TikvGrpc.TikvFutureStub getAsyncStub() {
+<span class="nc" id="L98">    return asyncStub.withDeadlineAfter(getTimeout(), TimeUnit.MILLISECONDS);</span>
+  }
+
+  @Override
+<span class="fc" id="L102">  public void close() throws GrpcException {}</span>
+
+  /**
+   * onNotLeader deals with NotLeaderError and returns whether re-splitting key range is needed
+   *
+   * @param newRegion the new region presented by NotLeader Error
+   * @return false when re-split is needed.
+   */
+  @Override
+  public boolean onNotLeader(TiRegion newRegion) {
+<span class="nc bnc" id="L112" title="All 2 branches missed.">    if (logger.isDebugEnabled()) {</span>
+<span class="nc" id="L113">      logger.debug(region + &quot;, new leader = &quot; + newRegion.getLeader().getStoreId());</span>
+    }
+    // When switch leader fails or the region changed its region epoch,
+    // it would be necessary to re-split task's key range for new region.
+<span class="nc bnc" id="L117" title="All 2 branches missed.">    if (!region.getRegionEpoch().equals(newRegion.getRegionEpoch())) {</span>
+<span class="nc" id="L118">      return false;</span>
+    }
+
+    // If we try one peer but find the leader has not changed, we do not need to try other peers.
+<span class="nc bnc" id="L122" title="All 2 branches missed.">    if (region.getLeader().getStoreId() == newRegion.getLeader().getStoreId()) {</span>
+<span class="nc" id="L123">      store = null;</span>
+    }
+<span class="nc" id="L125">    region = newRegion;</span>
+<span class="nc" id="L126">    store = regionManager.getStoreById(region.getLeader().getStoreId());</span>
+<span class="nc" id="L127">    updateClientStub();</span>
+<span class="nc" id="L128">    return true;</span>
+  }
+
+  @Override
+  public boolean onStoreUnreachable(BackOffer backOffer) {
+<span class="nc bnc" id="L133" title="All 2 branches missed.">    if (!store.isValid()) {</span>
+<span class="nc" id="L134">      logger.warn(String.format(&quot;store [%d] has been invalid&quot;, store.getId()));</span>
+<span class="nc" id="L135">      store = regionManager.getStoreById(store.getId(), backOffer);</span>
+<span class="nc" id="L136">      updateClientStub();</span>
+<span class="nc" id="L137">      return true;</span>
+    }
+
+    // seek an available leader store to send request
+<span class="nc" id="L141">    backOffer.checkTimeout();</span>
+<span class="nc" id="L142">    Boolean result = seekLeaderStore(backOffer);</span>
+<span class="nc bnc" id="L143" title="All 2 branches missed.">    if (result != null) {</span>
+<span class="nc" id="L144">      return result;</span>
+    }
+<span class="nc bnc" id="L146" title="All 2 branches missed.">    if (conf.getEnableGrpcForward()) {</span>
+      // seek an available proxy store to forward request
+<span class="nc" id="L148">      backOffer.checkTimeout();</span>
+<span class="nc" id="L149">      return seekProxyStore(backOffer);</span>
+    }
+<span class="nc" id="L151">    return false;</span>
+  }
+
+  protected Kvrpcpb.Context makeContext(TiStoreType storeType) {
+<span class="fc" id="L155">    return region.getReplicaContext(java.util.Collections.emptySet(), storeType);</span>
+  }
+
+  protected Kvrpcpb.Context makeContext(Set&lt;Long&gt; resolvedLocks, TiStoreType storeType) {
+<span class="fc" id="L159">    return region.getReplicaContext(resolvedLocks, storeType);</span>
+  }
+
+  private void updateClientStub() {
+<span class="nc" id="L163">    String addressStr = store.getStore().getAddress();</span>
+<span class="nc" id="L164">    long deadline = timeout;</span>
+<span class="nc bnc" id="L165" title="All 2 branches missed.">    if (store.getProxyStore() != null) {</span>
+<span class="nc" id="L166">      addressStr = store.getProxyStore().getAddress();</span>
+<span class="nc" id="L167">      deadline = conf.getForwardTimeout();</span>
+    }
+<span class="nc" id="L169">    ManagedChannel channel =</span>
+<span class="nc" id="L170">        channelFactory.getChannel(addressStr, regionManager.getPDClient().getHostMapping());</span>
+<span class="nc" id="L171">    blockingStub =</span>
+<span class="nc" id="L172">        TikvGrpc.newBlockingStub(channel).withDeadlineAfter(deadline, TimeUnit.MILLISECONDS);</span>
+<span class="nc" id="L173">    asyncStub = TikvGrpc.newFutureStub(channel).withDeadlineAfter(deadline, TimeUnit.MILLISECONDS);</span>
+<span class="nc bnc" id="L174" title="All 2 branches missed.">    if (store.getProxyStore() != null) {</span>
+<span class="nc" id="L175">      Metadata header = new Metadata();</span>
+<span class="nc" id="L176">      header.put(TiConfiguration.FORWARD_META_DATA_KEY, store.getStore().getAddress());</span>
+<span class="nc" id="L177">      blockingStub = MetadataUtils.attachHeaders(blockingStub, header);</span>
+<span class="nc" id="L178">      asyncStub = MetadataUtils.attachHeaders(asyncStub, header);</span>
+    }
+<span class="nc" id="L180">  }</span>
+
+  private Boolean seekLeaderStore(BackOffer backOffer) {
+<span class="nc" id="L183">    Histogram.Timer switchLeaderDurationTimer = SEEK_LEADER_STORE_DURATION.startTimer();</span>
+<span class="nc" id="L184">    SlowLogSpan slowLogSpan = backOffer.getSlowLog().start(&quot;seekLeaderStore&quot;);</span>
+    try {
+<span class="nc" id="L186">      List&lt;Metapb.Peer&gt; peers = region.getFollowerList();</span>
+<span class="nc bnc" id="L187" title="All 2 branches missed.">      if (peers.isEmpty()) {</span>
+        // no followers available, retry
+<span class="nc" id="L189">        logger.warn(String.format(&quot;no followers of region[%d] available, retry&quot;, region.getId()));</span>
+<span class="nc" id="L190">        regionManager.onRequestFail(region);</span>
+<span class="nc" id="L191">        return false;</span>
+      }
+
+<span class="nc" id="L194">      logger.info(String.format(&quot;try switch leader: region[%d]&quot;, region.getId()));</span>
+
+<span class="nc" id="L196">      Metapb.Peer peer = switchLeaderStore();</span>
+<span class="nc bnc" id="L197" title="All 2 branches missed.">      if (peer != null) {</span>
+        // we found a leader
+<span class="nc" id="L199">        TiStore currentLeaderStore = regionManager.getStoreById(peer.getStoreId());</span>
+<span class="nc bnc" id="L200" title="All 2 branches missed.">        if (currentLeaderStore.isReachable()) {</span>
+<span class="nc" id="L201">          logger.info(</span>
+<span class="nc" id="L202">              String.format(</span>
+                  &quot;update leader using switchLeader logic from store[%d] to store[%d]&quot;,
+<span class="nc" id="L204">                  region.getLeader().getStoreId(), peer.getStoreId()));</span>
+          // update region cache
+<span class="nc" id="L206">          TiRegion result = regionManager.updateLeader(region, peer.getStoreId());</span>
+<span class="nc bnc" id="L207" title="All 2 branches missed.">          if (result != null) {</span>
+<span class="nc" id="L208">            region = result;</span>
+            // switch to leader store
+<span class="nc" id="L210">            store = currentLeaderStore;</span>
+<span class="nc" id="L211">            updateClientStub();</span>
+          }
+<span class="nc" id="L213">          return false;</span>
+        }
+<span class="nc" id="L215">      } else {</span>
+        // no leader found, some response does not return normally, there may be network partition.
+<span class="nc" id="L217">        logger.warn(</span>
+<span class="nc" id="L218">            String.format(</span>
+                &quot;leader for region[%d] is not found, it is possible that network partition occurred&quot;,
+<span class="nc" id="L220">                region.getId()));</span>
+      }
+    } finally {
+<span class="nc" id="L223">      switchLeaderDurationTimer.observeDuration();</span>
+<span class="nc" id="L224">      slowLogSpan.end();</span>
+    }
+<span class="nc" id="L226">    return null;</span>
+  }
+
+  private boolean seekProxyStore(BackOffer backOffer) {
+<span class="nc" id="L230">    SlowLogSpan slowLogSpan = backOffer.getSlowLog().start(&quot;seekProxyStore&quot;);</span>
+<span class="nc" id="L231">    Histogram.Timer grpcForwardDurationTimer = SEEK_PROXY_STORE_DURATION.startTimer();</span>
+    try {
+<span class="nc" id="L233">      logger.info(String.format(&quot;try grpc forward: region[%d]&quot;, region.getId()));</span>
+      // when current leader cannot be reached
+<span class="nc" id="L235">      TiStore storeWithProxy = switchProxyStore();</span>
+<span class="nc bnc" id="L236" title="All 2 branches missed.">      if (storeWithProxy == null) {</span>
+        // no store available, retry
+<span class="nc" id="L238">        logger.warn(String.format(&quot;No store available, retry: region[%d]&quot;, region.getId()));</span>
+<span class="nc" id="L239">        return false;</span>
+      }
+      // use proxy store to forward requests
+<span class="nc" id="L242">      regionManager.updateStore(store, storeWithProxy);</span>
+<span class="nc" id="L243">      store = storeWithProxy;</span>
+<span class="nc" id="L244">      updateClientStub();</span>
+<span class="nc" id="L245">      return true;</span>
+    } finally {
+<span class="nc" id="L247">      grpcForwardDurationTimer.observeDuration();</span>
+<span class="nc" id="L248">      slowLogSpan.end();</span>
+    }
+  }
+
+  // first: leader peer, second: true if any responses returned with grpc error
+  private Metapb.Peer switchLeaderStore() {
+<span class="nc" id="L254">    List&lt;SwitchLeaderTask&gt; responses = new LinkedList&lt;&gt;();</span>
+<span class="nc bnc" id="L255" title="All 2 branches missed.">    for (Metapb.Peer peer : region.getFollowerList()) {</span>
+<span class="nc" id="L256">      ByteString key = region.getStartKey();</span>
+<span class="nc" id="L257">      TiStore peerStore = regionManager.getStoreById(peer.getStoreId());</span>
+<span class="nc" id="L258">      ManagedChannel channel =</span>
+<span class="nc" id="L259">          channelFactory.getChannel(</span>
+<span class="nc" id="L260">              peerStore.getAddress(), regionManager.getPDClient().getHostMapping());</span>
+<span class="nc" id="L261">      TikvGrpc.TikvFutureStub stub =</span>
+<span class="nc" id="L262">          TikvGrpc.newFutureStub(channel).withDeadlineAfter(timeout, TimeUnit.MILLISECONDS);</span>
+      Kvrpcpb.RawGetRequest rawGetRequest =
+<span class="nc" id="L264">          Kvrpcpb.RawGetRequest.newBuilder()</span>
+<span class="nc" id="L265">              .setContext(region.getReplicaContext(peer))</span>
+<span class="nc" id="L266">              .setKey(key)</span>
+<span class="nc" id="L267">              .build();</span>
+<span class="nc" id="L268">      ListenableFuture&lt;Kvrpcpb.RawGetResponse&gt; task = stub.rawGet(rawGetRequest);</span>
+<span class="nc" id="L269">      responses.add(new SwitchLeaderTask(task, peer));</span>
+<span class="nc" id="L270">    }</span>
+    while (true) {
+      try {
+<span class="nc" id="L273">        Thread.sleep(2);</span>
+<span class="nc" id="L274">      } catch (InterruptedException e) {</span>
+<span class="nc" id="L275">        throw new GrpcException(e);</span>
+<span class="nc" id="L276">      }</span>
+<span class="nc" id="L277">      List&lt;SwitchLeaderTask&gt; unfinished = new LinkedList&lt;&gt;();</span>
+<span class="nc bnc" id="L278" title="All 2 branches missed.">      for (SwitchLeaderTask task : responses) {</span>
+<span class="nc bnc" id="L279" title="All 2 branches missed.">        if (!task.task.isDone()) {</span>
+<span class="nc" id="L280">          unfinished.add(task);</span>
+<span class="nc" id="L281">          continue;</span>
+        }
+        try {
+<span class="nc" id="L284">          Kvrpcpb.RawGetResponse resp = task.task.get();</span>
+<span class="nc bnc" id="L285" title="All 2 branches missed.">          if (resp != null) {</span>
+<span class="nc bnc" id="L286" title="All 2 branches missed.">            if (!resp.hasRegionError()) {</span>
+              // the peer is leader
+<span class="nc" id="L288">              logger.info(</span>
+<span class="nc" id="L289">                  String.format(&quot;rawGet response indicates peer[%d] is leader&quot;, task.peer.getId()));</span>
+<span class="nc" id="L290">              return task.peer;</span>
+            }
+          }
+<span class="nc" id="L293">        } catch (Exception ignored) {</span>
+<span class="nc" id="L294">        }</span>
+<span class="nc" id="L295">      }</span>
+<span class="nc bnc" id="L296" title="All 2 branches missed.">      if (unfinished.isEmpty()) {</span>
+<span class="nc" id="L297">        return null;</span>
+      }
+<span class="nc" id="L299">      responses = unfinished;</span>
+<span class="nc" id="L300">    }</span>
+  }
+
+  private TiStore switchProxyStore() {
+<span class="nc" id="L304">    long forwardTimeout = conf.getForwardTimeout();</span>
+<span class="nc" id="L305">    List&lt;ForwardCheckTask&gt; responses = new LinkedList&lt;&gt;();</span>
+<span class="nc bnc" id="L306" title="All 2 branches missed.">    for (Metapb.Peer peer : region.getFollowerList()) {</span>
+<span class="nc" id="L307">      ByteString key = region.getStartKey();</span>
+<span class="nc" id="L308">      TiStore peerStore = regionManager.getStoreById(peer.getStoreId());</span>
+<span class="nc" id="L309">      ManagedChannel channel =</span>
+<span class="nc" id="L310">          channelFactory.getChannel(</span>
+<span class="nc" id="L311">              peerStore.getAddress(), regionManager.getPDClient().getHostMapping());</span>
+<span class="nc" id="L312">      TikvGrpc.TikvFutureStub stub =</span>
+<span class="nc" id="L313">          TikvGrpc.newFutureStub(channel).withDeadlineAfter(forwardTimeout, TimeUnit.MILLISECONDS);</span>
+<span class="nc" id="L314">      Metadata header = new Metadata();</span>
+<span class="nc" id="L315">      header.put(TiConfiguration.FORWARD_META_DATA_KEY, store.getStore().getAddress());</span>
+      Kvrpcpb.RawGetRequest rawGetRequest =
+<span class="nc" id="L317">          Kvrpcpb.RawGetRequest.newBuilder()</span>
+<span class="nc" id="L318">              .setContext(region.getReplicaContext(peer))</span>
+<span class="nc" id="L319">              .setKey(key)</span>
+<span class="nc" id="L320">              .build();</span>
+<span class="nc" id="L321">      ListenableFuture&lt;Kvrpcpb.RawGetResponse&gt; task =</span>
+<span class="nc" id="L322">          MetadataUtils.attachHeaders(stub, header).rawGet(rawGetRequest);</span>
+<span class="nc" id="L323">      responses.add(new ForwardCheckTask(task, peerStore.getStore()));</span>
+<span class="nc" id="L324">    }</span>
+    while (true) {
+      try {
+<span class="nc" id="L327">        Thread.sleep(2);</span>
+<span class="nc" id="L328">      } catch (InterruptedException e) {</span>
+<span class="nc" id="L329">        throw new GrpcException(e);</span>
+<span class="nc" id="L330">      }</span>
+<span class="nc" id="L331">      List&lt;ForwardCheckTask&gt; unfinished = new LinkedList&lt;&gt;();</span>
+<span class="nc bnc" id="L332" title="All 2 branches missed.">      for (ForwardCheckTask task : responses) {</span>
+<span class="nc bnc" id="L333" title="All 2 branches missed.">        if (!task.task.isDone()) {</span>
+<span class="nc" id="L334">          unfinished.add(task);</span>
+<span class="nc" id="L335">          continue;</span>
+        }
+        try {
+          // any answer will do
+<span class="nc" id="L339">          Kvrpcpb.RawGetResponse resp = task.task.get();</span>
+<span class="nc" id="L340">          logger.info(</span>
+<span class="nc" id="L341">              String.format(</span>
+                  &quot;rawGetResponse indicates forward from [%s] to [%s]&quot;,
+<span class="nc" id="L343">                  task.store.getAddress(), store.getAddress()));</span>
+<span class="nc" id="L344">          return store.withProxy(task.store);</span>
+<span class="nc" id="L345">        } catch (Exception ignored) {</span>
+        }
+<span class="nc" id="L347">      }</span>
+<span class="nc bnc" id="L348" title="All 2 branches missed.">      if (unfinished.isEmpty()) {</span>
+<span class="nc" id="L349">        return null;</span>
+      }
+<span class="nc" id="L351">      responses = unfinished;</span>
+<span class="nc" id="L352">    }</span>
+  }
+
+  private static class SwitchLeaderTask {
+    private final ListenableFuture&lt;Kvrpcpb.RawGetResponse&gt; task;
+    private final Metapb.Peer peer;
+
+<span class="nc" id="L359">    private SwitchLeaderTask(ListenableFuture&lt;Kvrpcpb.RawGetResponse&gt; task, Metapb.Peer peer) {</span>
+<span class="nc" id="L360">      this.task = task;</span>
+<span class="nc" id="L361">      this.peer = peer;</span>
+<span class="nc" id="L362">    }</span>
+  }
+
+  private static class ForwardCheckTask {
+    private final ListenableFuture&lt;Kvrpcpb.RawGetResponse&gt; task;
+    private final Metapb.Store store;
+
+<span class="nc" id="L369">    private ForwardCheckTask(ListenableFuture&lt;Kvrpcpb.RawGetResponse&gt; task, Metapb.Store store) {</span>
+<span class="nc" id="L370">      this.task = task;</span>
+<span class="nc" id="L371">      this.store = store;</span>
+<span class="nc" id="L372">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

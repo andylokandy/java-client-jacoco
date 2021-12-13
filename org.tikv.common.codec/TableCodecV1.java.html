@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TableCodecV1.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.codec</a> &gt; <span class="el_source">TableCodecV1.java</span></div><h1>TableCodecV1.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.codec;
+
+import java.util.HashMap;
+import java.util.List;
+import org.tikv.common.codec.Codec.IntegerCodec;
+import org.tikv.common.meta.TiColumnInfo;
+import org.tikv.common.meta.TiTableInfo;
+import org.tikv.common.row.ObjectRowImpl;
+import org.tikv.common.row.Row;
+import org.tikv.common.types.DataType.EncodeType;
+import org.tikv.common.types.IntegerType;
+
+<span class="nc" id="L28">public class TableCodecV1 {</span>
+  /** Row layout: colID1, value1, colID2, value2, ..... */
+  protected static byte[] encodeRow(
+      List&lt;TiColumnInfo&gt; columnInfos, Object[] values, boolean isPkHandle) {
+<span class="nc" id="L32">    CodecDataOutput cdo = new CodecDataOutput();</span>
+
+<span class="nc bnc" id="L34" title="All 2 branches missed.">    for (int i = 0; i &lt; columnInfos.size(); i++) {</span>
+<span class="nc" id="L35">      TiColumnInfo col = columnInfos.get(i);</span>
+      // skip pk is handle case
+<span class="nc bnc" id="L37" title="All 4 branches missed.">      if (col.isPrimaryKey() &amp;&amp; isPkHandle) {</span>
+<span class="nc" id="L38">        continue;</span>
+      }
+<span class="nc" id="L40">      IntegerCodec.writeLongFully(cdo, col.getId(), false);</span>
+<span class="nc" id="L41">      col.getType().encode(cdo, EncodeType.VALUE, values[i]);</span>
+    }
+
+    // We could not set nil value into kv.
+<span class="nc bnc" id="L45" title="All 2 branches missed.">    if (cdo.toBytes().length == 0) {</span>
+<span class="nc" id="L46">      return new byte[] {Codec.NULL_FLAG};</span>
+    }
+
+<span class="nc" id="L49">    return cdo.toBytes();</span>
+  }
+
+  protected static Row decodeRow(byte[] value, Long handle, TiTableInfo tableInfo) {
+<span class="nc bnc" id="L53" title="All 4 branches missed.">    if (handle == null &amp;&amp; tableInfo.isPkHandle()) {</span>
+<span class="nc" id="L54">      throw new IllegalArgumentException(&quot;when pk is handle, handle cannot be null&quot;);</span>
+    }
+
+<span class="nc" id="L57">    int colSize = tableInfo.getColumns().size();</span>
+<span class="nc" id="L58">    HashMap&lt;Long, TiColumnInfo&gt; idToColumn = new HashMap&lt;&gt;(colSize);</span>
+<span class="nc bnc" id="L59" title="All 2 branches missed.">    for (TiColumnInfo col : tableInfo.getColumns()) {</span>
+<span class="nc" id="L60">      idToColumn.put(col.getId(), col);</span>
+<span class="nc" id="L61">    }</span>
+
+    // decode bytes to Map&lt;ColumnID, Data&gt;
+<span class="nc" id="L64">    HashMap&lt;Long, Object&gt; decodedDataMap = new HashMap&lt;&gt;(colSize);</span>
+<span class="nc" id="L65">    CodecDataInput cdi = new CodecDataInput(value);</span>
+<span class="nc" id="L66">    Object[] res = new Object[colSize];</span>
+<span class="nc bnc" id="L67" title="All 2 branches missed.">    while (!cdi.eof()) {</span>
+<span class="nc" id="L68">      long colID = (long) IntegerType.BIGINT.decode(cdi);</span>
+<span class="nc" id="L69">      Object colValue = idToColumn.get(colID).getType().decodeForBatchWrite(cdi);</span>
+<span class="nc" id="L70">      decodedDataMap.put(colID, colValue);</span>
+<span class="nc" id="L71">    }</span>
+
+    // construct Row with Map&lt;ColumnID, Data&gt; &amp; handle
+<span class="nc bnc" id="L74" title="All 2 branches missed.">    for (int i = 0; i &lt; colSize; i++) {</span>
+      // skip pk is handle case
+<span class="nc" id="L76">      TiColumnInfo col = tableInfo.getColumn(i);</span>
+<span class="nc bnc" id="L77" title="All 4 branches missed.">      if (col.isPrimaryKey() &amp;&amp; tableInfo.isPkHandle()) {</span>
+<span class="nc" id="L78">        res[i] = handle;</span>
+      } else {
+<span class="nc" id="L80">        res[i] = decodedDataMap.get(col.getId());</span>
+      }
+    }
+
+<span class="nc" id="L84">    return ObjectRowImpl.create(res);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TiStore.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.region</a> &gt; <span class="el_source">TiStore.java</span></div><h1>TiStore.java</h1><pre class="source lang-java linenums">package org.tikv.common.region;
+
+import java.util.concurrent.atomic.AtomicBoolean;
+import org.tikv.kvproto.Metapb;
+
+public class TiStore {
+  private final Metapb.Store store;
+  private final Metapb.Store proxyStore;
+  private final AtomicBoolean reachable;
+  private final AtomicBoolean valid;
+
+<span class="fc" id="L12">  public TiStore(Metapb.Store store) {</span>
+<span class="fc" id="L13">    this.store = store;</span>
+<span class="fc" id="L14">    this.reachable = new AtomicBoolean(true);</span>
+<span class="fc" id="L15">    this.valid = new AtomicBoolean(true);</span>
+<span class="fc" id="L16">    this.proxyStore = null;</span>
+<span class="fc" id="L17">  }</span>
+
+<span class="nc" id="L19">  private TiStore(Metapb.Store store, Metapb.Store proxyStore) {</span>
+<span class="nc" id="L20">    this.store = store;</span>
+<span class="nc bnc" id="L21" title="All 2 branches missed.">    if (proxyStore != null) {</span>
+<span class="nc" id="L22">      this.reachable = new AtomicBoolean(false);</span>
+    } else {
+<span class="nc" id="L24">      this.reachable = new AtomicBoolean(true);</span>
+    }
+<span class="nc" id="L26">    this.valid = new AtomicBoolean(true);</span>
+<span class="nc" id="L27">    this.proxyStore = proxyStore;</span>
+<span class="nc" id="L28">  }</span>
+
+  @java.lang.Override
+  public boolean equals(final java.lang.Object obj) {
+<span class="nc bnc" id="L32" title="All 2 branches missed.">    if (obj == this) {</span>
+<span class="nc" id="L33">      return true;</span>
+    }
+<span class="nc bnc" id="L35" title="All 2 branches missed.">    if (!(obj instanceof TiStore)) {</span>
+<span class="nc" id="L36">      return super.equals(obj);</span>
+    }
+<span class="nc" id="L38">    TiStore other = (TiStore) obj;</span>
+<span class="nc bnc" id="L39" title="All 2 branches missed.">    if (!this.store.equals(other.store)) {</span>
+<span class="nc" id="L40">      return false;</span>
+    }
+
+<span class="nc bnc" id="L43" title="All 4 branches missed.">    if (proxyStore == null &amp;&amp; other.proxyStore == null) {</span>
+<span class="nc" id="L44">      return true;</span>
+    }
+<span class="nc bnc" id="L46" title="All 4 branches missed.">    if (proxyStore != null &amp;&amp; other.proxyStore != null) {</span>
+<span class="nc" id="L47">      return proxyStore.equals(other.proxyStore);</span>
+    }
+<span class="nc" id="L49">    return false;</span>
+  }
+
+  public TiStore withProxy(Metapb.Store proxyStore) {
+<span class="nc" id="L53">    return new TiStore(this.store, proxyStore);</span>
+  }
+
+  public void markUnreachable() {
+<span class="fc" id="L57">    this.reachable.set(false);</span>
+<span class="fc" id="L58">  }</span>
+
+  public void markReachable() {
+<span class="nc" id="L61">    this.reachable.set(true);</span>
+<span class="nc" id="L62">  }</span>
+
+  public boolean isReachable() {
+<span class="fc" id="L65">    return this.reachable.get();</span>
+  }
+
+  public boolean isValid() {
+<span class="fc" id="L69">    return this.valid.get();</span>
+  }
+
+  public void markInvalid() {
+<span class="fc" id="L73">    this.valid.set(false);</span>
+<span class="fc" id="L74">  }</span>
+
+  public Metapb.Store getStore() {
+<span class="fc" id="L77">    return this.store;</span>
+  }
+
+  public String getAddress() {
+<span class="fc" id="L81">    return this.store.getAddress();</span>
+  }
+
+  public Metapb.Store getProxyStore() {
+<span class="fc" id="L85">    return this.proxyStore;</span>
+  }
+
+  public long getId() {
+<span class="fc" id="L89">    return this.store.getId();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

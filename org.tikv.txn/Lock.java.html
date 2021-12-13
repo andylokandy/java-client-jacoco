@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Lock.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.txn</a> &gt; <span class="el_source">Lock.java</span></div><h1>Lock.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.txn;
+
+import com.google.protobuf.ByteString;
+import org.tikv.kvproto.Kvrpcpb;
+
+public class Lock {
+  private static final long DEFAULT_LOCK_TTL = 3000;
+  private final long txnID;
+  private final long ttl;
+  private final ByteString key;
+  private final ByteString primary;
+  private final long txnSize;
+  private final Kvrpcpb.Op lockType;
+  private final long lockForUpdateTs;
+
+<span class="nc" id="L33">  public Lock(Kvrpcpb.LockInfo l) {</span>
+<span class="nc" id="L34">    txnID = l.getLockVersion();</span>
+<span class="nc" id="L35">    key = l.getKey();</span>
+<span class="nc" id="L36">    primary = l.getPrimaryLock();</span>
+<span class="nc bnc" id="L37" title="All 2 branches missed.">    ttl = l.getLockTtl() == 0 ? DEFAULT_LOCK_TTL : l.getLockTtl();</span>
+<span class="nc" id="L38">    txnSize = l.getTxnSize();</span>
+<span class="nc" id="L39">    lockType = l.getLockType();</span>
+<span class="nc" id="L40">    lockForUpdateTs = l.getLockForUpdateTs();</span>
+<span class="nc" id="L41">  }</span>
+
+  public long getTxnID() {
+<span class="nc" id="L44">    return txnID;</span>
+  }
+
+  public long getTtl() {
+<span class="nc" id="L48">    return ttl;</span>
+  }
+
+  public ByteString getKey() {
+<span class="nc" id="L52">    return key;</span>
+  }
+
+  public ByteString getPrimary() {
+<span class="nc" id="L56">    return primary;</span>
+  }
+
+  public long getTxnSize() {
+<span class="nc" id="L60">    return txnSize;</span>
+  }
+
+  public Kvrpcpb.Op getLockType() {
+<span class="nc" id="L64">    return lockType;</span>
+  }
+
+  public long getLockForUpdateTs() {
+<span class="nc" id="L68">    return lockForUpdateTs;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

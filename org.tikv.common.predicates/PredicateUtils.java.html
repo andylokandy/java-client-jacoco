@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PredicateUtils.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.predicates</a> &gt; <span class="el_source">PredicateUtils.java</span></div><h1>PredicateUtils.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.predicates;
+
+import static java.util.Objects.requireNonNull;
+import static org.tikv.common.expression.LogicalBinaryExpression.and;
+
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Range;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import org.tikv.common.exception.TiExpressionException;
+import org.tikv.common.expression.ColumnRef;
+import org.tikv.common.expression.Expression;
+import org.tikv.common.expression.Visitor;
+import org.tikv.common.expression.visitor.DefaultVisitor;
+import org.tikv.common.expression.visitor.IndexRangeSetBuilder;
+import org.tikv.common.key.CompoundKey;
+import org.tikv.common.key.Key;
+import org.tikv.common.key.TypedKey;
+import org.tikv.common.meta.TiIndexInfo;
+import org.tikv.common.meta.TiTableInfo;
+
+<span class="nc" id="L40">public class PredicateUtils {</span>
+  public static Expression mergeCNFExpressions(List&lt;Expression&gt; exprs) {
+<span class="nc" id="L42">    requireNonNull(exprs, &quot;Expression list is null&quot;);</span>
+<span class="nc bnc" id="L43" title="All 2 branches missed.">    if (exprs.size() == 0) return null;</span>
+<span class="nc bnc" id="L44" title="All 2 branches missed.">    if (exprs.size() == 1) return exprs.get(0);</span>
+
+<span class="nc" id="L46">    return and(exprs.get(0), mergeCNFExpressions(exprs.subList(1, exprs.size())));</span>
+  }
+
+  public static Set&lt;ColumnRef&gt; extractColumnRefFromExpression(Expression expr) {
+<span class="nc" id="L50">    Set&lt;ColumnRef&gt; columnRefs = new HashSet&lt;&gt;();</span>
+<span class="nc" id="L51">    Visitor&lt;Void, Set&lt;ColumnRef&gt;&gt; visitor =</span>
+<span class="nc" id="L52">        new DefaultVisitor&lt;Void, Set&lt;ColumnRef&gt;&gt;() {</span>
+          @Override
+          protected Void visit(ColumnRef node, Set&lt;ColumnRef&gt; context) {
+<span class="nc" id="L55">            context.add(node);</span>
+<span class="nc" id="L56">            return null;</span>
+          }
+        };
+
+<span class="nc" id="L60">    expr.accept(visitor, columnRefs);</span>
+<span class="nc" id="L61">    return columnRefs;</span>
+  }
+
+  /**
+   * Build index ranges from access points and access conditions
+   *
+   * @param pointPredicates conditions converting to a single point access
+   * @param rangePredicate conditions converting to a range
+   * @return Index Range for scan
+   */
+  public static List&lt;IndexRange&gt; expressionToIndexRanges(
+      List&lt;Expression&gt; pointPredicates,
+      Optional&lt;Expression&gt; rangePredicate,
+      TiTableInfo table,
+      TiIndexInfo index) {
+<span class="nc" id="L76">    requireNonNull(pointPredicates, &quot;pointPredicates is null&quot;);</span>
+<span class="nc" id="L77">    requireNonNull(rangePredicate, &quot;rangePredicate is null&quot;);</span>
+<span class="nc" id="L78">    ImmutableList.Builder&lt;IndexRange&gt; builder = ImmutableList.builder();</span>
+<span class="nc" id="L79">    IndexRangeSetBuilder indexRangeBuilder = new IndexRangeSetBuilder(table, index);</span>
+
+<span class="nc bnc" id="L81" title="All 2 branches missed.">    if (pointPredicates.size() != 0) {</span>
+<span class="nc" id="L82">      List&lt;Key&gt; pointKeys = expressionToPoints(pointPredicates, table, index);</span>
+<span class="nc bnc" id="L83" title="All 2 branches missed.">      for (Key key : pointKeys) {</span>
+<span class="nc bnc" id="L84" title="All 2 branches missed.">        if (rangePredicate.isPresent()) {</span>
+<span class="nc" id="L85">          Set&lt;Range&lt;TypedKey&gt;&gt; ranges =</span>
+<span class="nc" id="L86">              indexRangeBuilder.buildRange(rangePredicate.get()).asRanges();</span>
+<span class="nc bnc" id="L87" title="All 2 branches missed.">          for (Range&lt;TypedKey&gt; range : ranges) {</span>
+<span class="nc" id="L88">            builder.add(new IndexRange(key, range));</span>
+<span class="nc" id="L89">          }</span>
+<span class="nc" id="L90">        } else {</span>
+          // no predicates with point keys leads to empty range encoding
+<span class="nc" id="L92">          builder.add(new IndexRange(key, null));</span>
+        }
+<span class="nc" id="L94">      }</span>
+<span class="nc" id="L95">    } else {</span>
+<span class="nc bnc" id="L96" title="All 2 branches missed.">      if (rangePredicate.isPresent()) {</span>
+<span class="nc" id="L97">        Set&lt;Range&lt;TypedKey&gt;&gt; ranges = indexRangeBuilder.buildRange(rangePredicate.get()).asRanges();</span>
+<span class="nc bnc" id="L98" title="All 2 branches missed.">        for (Range&lt;TypedKey&gt; range : ranges) {</span>
+<span class="nc" id="L99">          builder.add(new IndexRange(null, range));</span>
+<span class="nc" id="L100">        }</span>
+<span class="nc" id="L101">      } else {</span>
+        // no filter at all means full range
+<span class="nc" id="L103">        builder.add(new IndexRange(null, Range.all()));</span>
+      }
+    }
+
+<span class="nc" id="L107">    return builder.build();</span>
+  }
+
+  /**
+   * Turn access conditions into list of points Each condition is bound to single key We pick up
+   * single condition for each index key and disregard if multiple EQ conditions in DNF
+   *
+   * @param pointPredicates expressions that convertible to access points
+   * @return access points for each index
+   */
+  private static List&lt;Key&gt; expressionToPoints(
+      List&lt;Expression&gt; pointPredicates, TiTableInfo table, TiIndexInfo index) {
+<span class="nc" id="L119">    requireNonNull(pointPredicates, &quot;pointPredicates cannot be null&quot;);</span>
+
+<span class="nc" id="L121">    List&lt;Key&gt; resultKeys = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L122">    IndexRangeSetBuilder indexRangeBuilder = new IndexRangeSetBuilder(table, index);</span>
+
+<span class="nc bnc" id="L124" title="All 2 branches missed.">    for (int i = 0; i &lt; pointPredicates.size(); i++) {</span>
+<span class="nc" id="L125">      Expression predicate = pointPredicates.get(i);</span>
+      try {
+        // each expr will be expand to one or more points
+<span class="nc" id="L128">        Set&lt;Range&lt;TypedKey&gt;&gt; ranges = indexRangeBuilder.buildRange(predicate).asRanges();</span>
+<span class="nc" id="L129">        List&lt;Key&gt; points = rangesToPoint(ranges);</span>
+<span class="nc" id="L130">        resultKeys = joinKeys(resultKeys, points);</span>
+<span class="nc" id="L131">      } catch (Exception e) {</span>
+<span class="nc" id="L132">        throw new TiExpressionException(</span>
+<span class="nc" id="L133">            String.format(&quot;Error converting access points %s&quot;, predicate), e);</span>
+<span class="nc" id="L134">      }</span>
+    }
+<span class="nc" id="L136">    return resultKeys;</span>
+  }
+
+  // Convert ranges of equal condition points to List of TypedKeys
+  private static List&lt;Key&gt; rangesToPoint(Set&lt;Range&lt;TypedKey&gt;&gt; ranges) {
+<span class="nc" id="L141">    requireNonNull(ranges, &quot;ranges is null&quot;);</span>
+<span class="nc" id="L142">    ImmutableList.Builder&lt;Key&gt; builder = ImmutableList.builder();</span>
+<span class="nc bnc" id="L143" title="All 2 branches missed.">    for (Range&lt;TypedKey&gt; range : ranges) {</span>
+      // test if range is a point
+<span class="nc bnc" id="L145" title="All 2 branches missed.">      if (range.hasLowerBound()</span>
+<span class="nc bnc" id="L146" title="All 2 branches missed.">          &amp;&amp; range.hasUpperBound()</span>
+<span class="nc bnc" id="L147" title="All 2 branches missed.">          &amp;&amp; range.lowerEndpoint().equals(range.upperEndpoint())) {</span>
+<span class="nc" id="L148">        builder.add(range.lowerEndpoint());</span>
+      } else {
+<span class="nc" id="L150">        throw new TiExpressionException(&quot;Cannot convert range to point&quot;);</span>
+      }
+<span class="nc" id="L152">    }</span>
+<span class="nc" id="L153">    return builder.build();</span>
+  }
+
+  private static List&lt;Key&gt; joinKeys(List&lt;Key&gt; lhsKeys, List&lt;Key&gt; rhsKeys) {
+<span class="nc" id="L157">    requireNonNull(lhsKeys, &quot;lhsKeys is null&quot;);</span>
+<span class="nc" id="L158">    requireNonNull(rhsKeys, &quot;rhsKeys is null&quot;);</span>
+<span class="nc bnc" id="L159" title="All 2 branches missed.">    if (lhsKeys.isEmpty()) {</span>
+<span class="nc" id="L160">      return rhsKeys;</span>
+    }
+<span class="nc bnc" id="L162" title="All 2 branches missed.">    if (rhsKeys.isEmpty()) {</span>
+<span class="nc" id="L163">      return lhsKeys;</span>
+    }
+<span class="nc" id="L165">    ImmutableList.Builder&lt;Key&gt; builder = ImmutableList.builder();</span>
+<span class="nc bnc" id="L166" title="All 2 branches missed.">    for (Key lKey : lhsKeys) {</span>
+<span class="nc bnc" id="L167" title="All 2 branches missed.">      for (Key rKey : rhsKeys) {</span>
+<span class="nc" id="L168">        builder.add(CompoundKey.concat(lKey, rKey));</span>
+<span class="nc" id="L169">      }</span>
+<span class="nc" id="L170">    }</span>
+<span class="nc" id="L171">    return builder.build();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

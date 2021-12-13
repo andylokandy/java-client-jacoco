@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ArithmeticBinaryExpression.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.expression</a> &gt; <span class="el_source">ArithmeticBinaryExpression.java</span></div><h1>ArithmeticBinaryExpression.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.expression;
+
+import static java.util.Objects.requireNonNull;
+import static org.tikv.common.expression.ArithmeticBinaryExpression.Type.*;
+
+import com.google.common.collect.ImmutableList;
+import java.util.List;
+import java.util.Objects;
+import org.tikv.common.types.DataType;
+
+public class ArithmeticBinaryExpression extends Expression {
+  private final Expression left;
+  private final Expression right;
+  private final Type compType;
+
+  public ArithmeticBinaryExpression(
+      DataType dataType, Type type, Expression left, Expression right) {
+<span class="nc" id="L33">    super(dataType);</span>
+<span class="nc" id="L34">    resolved = true;</span>
+<span class="nc" id="L35">    this.left = requireNonNull(left, &quot;left expression is null&quot;);</span>
+<span class="nc" id="L36">    this.right = requireNonNull(right, &quot;right expression is null&quot;);</span>
+<span class="nc" id="L37">    this.compType = requireNonNull(type, &quot;type is null&quot;);</span>
+<span class="nc" id="L38">  }</span>
+
+  public static ArithmeticBinaryExpression plus(Expression left, Expression right) {
+<span class="nc" id="L41">    return new ArithmeticBinaryExpression(left.dataType, PLUS, left, right);</span>
+  }
+
+  public static ArithmeticBinaryExpression minus(Expression left, Expression right) {
+<span class="nc" id="L45">    return new ArithmeticBinaryExpression(left.dataType, MINUS, left, right);</span>
+  }
+
+  public static ArithmeticBinaryExpression multiply(
+      DataType dataType, Expression left, Expression right) {
+<span class="nc" id="L50">    return new ArithmeticBinaryExpression(dataType, MULTIPLY, left, right);</span>
+  }
+
+  public static ArithmeticBinaryExpression multiply(Expression left, Expression right) {
+<span class="nc" id="L54">    return new ArithmeticBinaryExpression(left.dataType, MULTIPLY, left, right);</span>
+  }
+
+  public static ArithmeticBinaryExpression divide(
+      DataType dataType, Expression left, Expression right) {
+<span class="nc" id="L59">    return new ArithmeticBinaryExpression(left.dataType, DIVIDE, left, right);</span>
+  }
+
+  public static ArithmeticBinaryExpression divide(Expression left, Expression right) {
+<span class="nc" id="L63">    return new ArithmeticBinaryExpression(left.dataType, DIVIDE, left, right);</span>
+  }
+
+  public static ArithmeticBinaryExpression bitAnd(Expression left, Expression right) {
+<span class="nc" id="L67">    return new ArithmeticBinaryExpression(left.dataType, BIT_AND, left, right);</span>
+  }
+
+  public static ArithmeticBinaryExpression bitOr(Expression left, Expression right) {
+<span class="nc" id="L71">    return new ArithmeticBinaryExpression(left.dataType, BIT_OR, left, right);</span>
+  }
+
+  public static ArithmeticBinaryExpression bitXor(Expression left, Expression right) {
+<span class="nc" id="L75">    return new ArithmeticBinaryExpression(left.dataType, BIT_XOR, left, right);</span>
+  }
+
+  public Expression getLeft() {
+<span class="nc" id="L79">    return left;</span>
+  }
+
+  public Expression getRight() {
+<span class="nc" id="L83">    return right;</span>
+  }
+
+  public Type getCompType() {
+<span class="nc" id="L87">    return compType;</span>
+  }
+
+  @Override
+  public List&lt;Expression&gt; getChildren() {
+<span class="nc" id="L92">    return ImmutableList.of(left, right);</span>
+  }
+
+  @Override
+  public &lt;R, C&gt; R accept(Visitor&lt;R, C&gt; visitor, C context) {
+<span class="nc" id="L97">    return visitor.visit(this, context);</span>
+  }
+
+  @Override
+  public boolean equals(Object other) {
+<span class="nc bnc" id="L102" title="All 2 branches missed.">    if (this == other) {</span>
+<span class="nc" id="L103">      return true;</span>
+    }
+<span class="nc bnc" id="L105" title="All 2 branches missed.">    if (!(other instanceof ArithmeticBinaryExpression)) {</span>
+<span class="nc" id="L106">      return false;</span>
+    }
+
+<span class="nc" id="L109">    ArithmeticBinaryExpression that = (ArithmeticBinaryExpression) other;</span>
+<span class="nc bnc" id="L110" title="All 2 branches missed.">    return (compType == that.compType)</span>
+<span class="nc bnc" id="L111" title="All 2 branches missed.">        &amp;&amp; Objects.equals(left, that.left)</span>
+<span class="nc bnc" id="L112" title="All 2 branches missed.">        &amp;&amp; Objects.equals(right, that.right);</span>
+  }
+
+  @Override
+  public int hashCode() {
+<span class="nc" id="L117">    return Objects.hash(compType, left, right);</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L122">    return String.format(&quot;[%s %s %s]&quot;, getLeft(), getCompType(), getRight());</span>
+  }
+
+<span class="nc" id="L125">  public enum Type {</span>
+<span class="nc" id="L126">    PLUS,</span>
+<span class="nc" id="L127">    MINUS,</span>
+<span class="nc" id="L128">    MULTIPLY,</span>
+<span class="nc" id="L129">    DIVIDE,</span>
+<span class="nc" id="L130">    BIT_AND,</span>
+<span class="nc" id="L131">    BIT_OR,</span>
+<span class="nc" id="L132">    BIT_XOR</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

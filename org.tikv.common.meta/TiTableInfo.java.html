@@ -1,0 +1,339 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TiTableInfo.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.meta</a> &gt; <span class="el_source">TiTableInfo.java</span></div><h1>TiTableInfo.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.meta;
+
+import static java.util.Objects.requireNonNull;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.common.collect.ImmutableList;
+import com.pingcap.tidb.tipb.TableInfo;
+import java.io.Serializable;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+import org.tikv.common.exception.TiClientInternalException;
+import org.tikv.common.meta.TiColumnInfo.InternalTypeHolder;
+import org.tikv.common.types.DataType;
+import org.tikv.common.types.DataTypeFactory;
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class TiTableInfo implements Serializable {
+  private final long id;
+  private final String name;
+  private final String charset;
+  private final String collate;
+  private final List&lt;org.tikv.common.meta.TiColumnInfo&gt; columns;
+  private final Map&lt;String, org.tikv.common.meta.TiColumnInfo&gt; columnsMap;
+  private final List&lt;org.tikv.common.meta.TiIndexInfo&gt; indices;
+  private final boolean pkIsHandle;
+  private final String comment;
+  private final long autoIncId;
+  private final long maxColumnId;
+  private final long maxIndexId;
+  private final long oldSchemaId;
+  private final long rowSize; // estimated row size
+  private final org.tikv.common.meta.TiPartitionInfo partitionInfo;
+  private final org.tikv.common.meta.TiColumnInfo primaryKeyColumn;
+  private final TiViewInfo viewInfo;
+  private final TiFlashReplicaInfo tiflashReplicaInfo;
+  private final long version;
+  private final long updateTimestamp;
+  private final long maxShardRowIDBits;
+  private final org.tikv.common.meta.TiSequenceInfo sequenceInfo;
+
+  @JsonCreator
+  @JsonIgnoreProperties(ignoreUnknown = true)
+<span class="nc" id="L62">  public TiTableInfo(</span>
+      @JsonProperty(&quot;id&quot;) long id,
+      @JsonProperty(&quot;name&quot;) org.tikv.common.meta.CIStr name,
+      @JsonProperty(&quot;charset&quot;) String charset,
+      @JsonProperty(&quot;collate&quot;) String collate,
+      @JsonProperty(&quot;pk_is_handle&quot;) boolean pkIsHandle,
+      @JsonProperty(&quot;cols&quot;) List&lt;org.tikv.common.meta.TiColumnInfo&gt; columns,
+      @JsonProperty(&quot;index_info&quot;) List&lt;org.tikv.common.meta.TiIndexInfo&gt; indices,
+      @JsonProperty(&quot;comment&quot;) String comment,
+      @JsonProperty(&quot;auto_inc_id&quot;) long autoIncId,
+      @JsonProperty(&quot;max_col_id&quot;) long maxColumnId,
+      @JsonProperty(&quot;max_idx_id&quot;) long maxIndexId,
+      @JsonProperty(&quot;old_schema_id&quot;) long oldSchemaId,
+      @JsonProperty(&quot;partition&quot;) org.tikv.common.meta.TiPartitionInfo partitionInfo,
+      @JsonProperty(&quot;view&quot;) TiViewInfo viewInfo,
+      @JsonProperty(&quot;tiflash_replica&quot;) TiFlashReplicaInfo tiFlashReplicaInfo,
+      @JsonProperty(&quot;version&quot;) long version,
+      @JsonProperty(&quot;update_timestamp&quot;) long updateTimestamp,
+      @JsonProperty(&quot;max_shard_row_id_bits&quot;) long maxShardRowIDBits,
+      @JsonProperty(&quot;sequence&quot;) org.tikv.common.meta.TiSequenceInfo sequenceInfo) {
+<span class="nc" id="L82">    this.id = id;</span>
+<span class="nc" id="L83">    this.name = name.getL();</span>
+<span class="nc" id="L84">    this.charset = charset;</span>
+<span class="nc" id="L85">    this.collate = collate;</span>
+<span class="nc bnc" id="L86" title="All 2 branches missed.">    if (sequenceInfo == null) {</span>
+<span class="nc" id="L87">      this.columns = ImmutableList.copyOf(requireNonNull(columns, &quot;columns is null&quot;));</span>
+<span class="nc" id="L88">      this.columnsMap = new HashMap&lt;&gt;();</span>
+<span class="nc bnc" id="L89" title="All 2 branches missed.">      for (org.tikv.common.meta.TiColumnInfo col : this.columns) {</span>
+<span class="nc" id="L90">        this.columnsMap.put(col.getName(), col);</span>
+      }
+<span class="nc" id="L92">      this.rowSize = columns.stream().mapToLong(org.tikv.common.meta.TiColumnInfo::getSize).sum();</span>
+<span class="nc" id="L93">    } else {</span>
+<span class="nc" id="L94">      this.columns = null;</span>
+<span class="nc" id="L95">      this.columnsMap = null;</span>
+      // 9 is the rowSize for type bigint
+<span class="nc" id="L97">      this.rowSize = 9;</span>
+    }
+    // TODO: Use more precise predication according to types
+<span class="nc" id="L100">    this.pkIsHandle = pkIsHandle;</span>
+<span class="nc bnc" id="L101" title="All 2 branches missed.">    this.indices = indices != null ? ImmutableList.copyOf(indices) : ImmutableList.of();</span>
+<span class="nc bnc" id="L102" title="All 2 branches missed.">    if (this.columns != null) {</span>
+<span class="nc" id="L103">      this.indices.forEach(x -&gt; x.calculateIndexSize(columns));</span>
+    }
+<span class="nc" id="L105">    this.comment = comment;</span>
+<span class="nc" id="L106">    this.autoIncId = autoIncId;</span>
+<span class="nc" id="L107">    this.maxColumnId = maxColumnId;</span>
+<span class="nc" id="L108">    this.maxIndexId = maxIndexId;</span>
+<span class="nc" id="L109">    this.oldSchemaId = oldSchemaId;</span>
+<span class="nc" id="L110">    this.partitionInfo = partitionInfo;</span>
+<span class="nc" id="L111">    this.viewInfo = viewInfo;</span>
+<span class="nc" id="L112">    this.tiflashReplicaInfo = tiFlashReplicaInfo;</span>
+<span class="nc" id="L113">    this.version = version;</span>
+<span class="nc" id="L114">    this.updateTimestamp = updateTimestamp;</span>
+<span class="nc" id="L115">    this.maxShardRowIDBits = maxShardRowIDBits;</span>
+<span class="nc" id="L116">    this.sequenceInfo = sequenceInfo;</span>
+
+<span class="nc" id="L118">    org.tikv.common.meta.TiColumnInfo primaryKey = null;</span>
+<span class="nc bnc" id="L119" title="All 2 branches missed.">    if (sequenceInfo == null) {</span>
+<span class="nc bnc" id="L120" title="All 2 branches missed.">      for (org.tikv.common.meta.TiColumnInfo col : this.columns) {</span>
+<span class="nc bnc" id="L121" title="All 2 branches missed.">        if (col.isPrimaryKey()) {</span>
+<span class="nc" id="L122">          primaryKey = col;</span>
+<span class="nc" id="L123">          break;</span>
+        }
+      }
+    }
+<span class="nc" id="L127">    primaryKeyColumn = primaryKey;</span>
+<span class="nc" id="L128">  }</span>
+
+  public boolean isView() {
+<span class="nc bnc" id="L131" title="All 2 branches missed.">    return this.viewInfo != null;</span>
+  }
+
+  public boolean isSequence() {
+<span class="nc bnc" id="L135" title="All 2 branches missed.">    return this.sequenceInfo != null;</span>
+  }
+
+  // auto increment column must be a primary key column
+  public boolean hasAutoIncrementColumn() {
+<span class="nc bnc" id="L140" title="All 2 branches missed.">    if (primaryKeyColumn != null) {</span>
+<span class="nc" id="L141">      return primaryKeyColumn.isAutoIncrement();</span>
+    }
+<span class="nc" id="L143">    return false;</span>
+  }
+
+  // auto increment column must be a primary key column
+  public org.tikv.common.meta.TiColumnInfo getAutoIncrementColInfo() {
+<span class="nc bnc" id="L148" title="All 2 branches missed.">    if (hasAutoIncrementColumn()) {</span>
+<span class="nc" id="L149">      return primaryKeyColumn;</span>
+    }
+<span class="nc" id="L151">    return null;</span>
+  }
+
+  public boolean isAutoIncColUnsigned() {
+<span class="nc" id="L155">    org.tikv.common.meta.TiColumnInfo col = getAutoIncrementColInfo();</span>
+<span class="nc bnc" id="L156" title="All 2 branches missed.">    if (col == null) return false;</span>
+<span class="nc" id="L157">    return col.getType().isUnsigned();</span>
+  }
+
+  public long getMaxShardRowIDBits() {
+<span class="nc" id="L161">    return this.maxShardRowIDBits;</span>
+  }
+
+  public long getId() {
+<span class="nc" id="L165">    return id;</span>
+  }
+
+  public String getName() {
+<span class="nc" id="L169">    return name;</span>
+  }
+
+  public String getCharset() {
+<span class="nc" id="L173">    return charset;</span>
+  }
+
+  public String getCollate() {
+<span class="nc" id="L177">    return collate;</span>
+  }
+
+  public List&lt;org.tikv.common.meta.TiColumnInfo&gt; getColumns() {
+<span class="nc" id="L181">    return columns;</span>
+  }
+
+  public long getEstimatedRowSizeInByte() {
+<span class="nc" id="L185">    return rowSize;</span>
+  }
+
+  public org.tikv.common.meta.TiColumnInfo getColumn(String name) {
+<span class="nc" id="L189">    return this.columnsMap.get(name.toLowerCase());</span>
+  }
+
+  public org.tikv.common.meta.TiColumnInfo getColumn(int offset) {
+<span class="nc bnc" id="L193" title="All 4 branches missed.">    if (offset &lt; 0 || offset &gt;= columns.size()) {</span>
+<span class="nc" id="L194">      throw new TiClientInternalException(String.format(&quot;Column offset %d out of bound&quot;, offset));</span>
+    }
+<span class="nc" id="L196">    return columns.get(offset);</span>
+  }
+
+  public boolean isPkHandle() {
+<span class="nc" id="L200">    return pkIsHandle;</span>
+  }
+
+  public List&lt;org.tikv.common.meta.TiIndexInfo&gt; getIndices() {
+<span class="nc" id="L204">    return indices;</span>
+  }
+
+  public String getComment() {
+<span class="nc" id="L208">    return comment;</span>
+  }
+
+  private long getAutoIncId() {
+<span class="nc" id="L212">    return autoIncId;</span>
+  }
+
+  private long getMaxColumnId() {
+<span class="nc" id="L216">    return maxColumnId;</span>
+  }
+
+  private long getMaxIndexId() {
+<span class="nc" id="L220">    return maxIndexId;</span>
+  }
+
+  private long getOldSchemaId() {
+<span class="nc" id="L224">    return oldSchemaId;</span>
+  }
+
+  public org.tikv.common.meta.TiPartitionInfo getPartitionInfo() {
+<span class="nc" id="L228">    return partitionInfo;</span>
+  }
+
+  public TiFlashReplicaInfo getTiflashReplicaInfo() {
+<span class="nc" id="L232">    return tiflashReplicaInfo;</span>
+  }
+
+  TableInfo toProto() {
+<span class="nc" id="L236">    return TableInfo.newBuilder()</span>
+<span class="nc" id="L237">        .setTableId(getId())</span>
+<span class="nc" id="L238">        .addAllColumns(</span>
+<span class="nc" id="L239">            getColumns().stream().map(col -&gt; col.toProto(this)).collect(Collectors.toList()))</span>
+<span class="nc" id="L240">        .build();</span>
+  }
+
+  public boolean hasPrimaryKey() {
+<span class="nc bnc" id="L244" title="All 2 branches missed.">    return primaryKeyColumn != null;</span>
+  }
+
+  // Only Integer Column will be a PK column
+  // and there exists only one PK column
+  public org.tikv.common.meta.TiColumnInfo getPKIsHandleColumn() {
+<span class="nc bnc" id="L250" title="All 2 branches missed.">    if (isPkHandle()) {</span>
+<span class="nc bnc" id="L251" title="All 2 branches missed.">      for (org.tikv.common.meta.TiColumnInfo col : getColumns()) {</span>
+<span class="nc bnc" id="L252" title="All 2 branches missed.">        if (col.isPrimaryKey()) {</span>
+<span class="nc" id="L253">          return col;</span>
+        }
+      }
+    }
+<span class="nc" id="L257">    return null;</span>
+  }
+
+  private org.tikv.common.meta.TiColumnInfo copyColumn(org.tikv.common.meta.TiColumnInfo col) {
+<span class="nc" id="L261">    DataType type = col.getType();</span>
+<span class="nc" id="L262">    InternalTypeHolder typeHolder = type.toTypeHolder();</span>
+<span class="nc" id="L263">    typeHolder.setFlag(type.getFlag() &amp; (~DataType.PriKeyFlag));</span>
+<span class="nc" id="L264">    DataType newType = DataTypeFactory.of(typeHolder);</span>
+<span class="nc" id="L265">    return new org.tikv.common.meta.TiColumnInfo(</span>
+<span class="nc" id="L266">            col.getId(),</span>
+<span class="nc" id="L267">            col.getName(),</span>
+<span class="nc" id="L268">            col.getOffset(),</span>
+<span class="nc" id="L269">            newType,</span>
+<span class="nc" id="L270">            col.getSchemaState(),</span>
+<span class="nc" id="L271">            col.getOriginDefaultValue(),</span>
+<span class="nc" id="L272">            col.getDefaultValue(),</span>
+<span class="nc" id="L273">            col.getDefaultValueBit(),</span>
+<span class="nc" id="L274">            col.getComment(),</span>
+<span class="nc" id="L275">            col.getVersion(),</span>
+<span class="nc" id="L276">            col.getGeneratedExprString())</span>
+<span class="nc" id="L277">        .copyWithoutPrimaryKey();</span>
+  }
+
+  public TiTableInfo copyTableWithRowId() {
+<span class="nc bnc" id="L281" title="All 2 branches missed.">    if (!isPkHandle()) {</span>
+<span class="nc" id="L282">      ImmutableList.Builder&lt;org.tikv.common.meta.TiColumnInfo&gt; newColumns = ImmutableList.builder();</span>
+<span class="nc bnc" id="L283" title="All 2 branches missed.">      for (org.tikv.common.meta.TiColumnInfo col : getColumns()) {</span>
+<span class="nc" id="L284">        newColumns.add(copyColumn(col));</span>
+      }
+<span class="nc" id="L286">      newColumns.add(org.tikv.common.meta.TiColumnInfo.getRowIdColumn(getColumns().size()));</span>
+<span class="nc" id="L287">      return new TiTableInfo(</span>
+<span class="nc" id="L288">          getId(),</span>
+<span class="nc" id="L289">          org.tikv.common.meta.CIStr.newCIStr(getName()),</span>
+<span class="nc" id="L290">          getCharset(),</span>
+<span class="nc" id="L291">          getCollate(),</span>
+<span class="nc" id="L292">          true,</span>
+<span class="nc" id="L293">          newColumns.build(),</span>
+<span class="nc" id="L294">          getIndices(),</span>
+<span class="nc" id="L295">          getComment(),</span>
+<span class="nc" id="L296">          getAutoIncId(),</span>
+<span class="nc" id="L297">          getMaxColumnId(),</span>
+<span class="nc" id="L298">          getMaxIndexId(),</span>
+<span class="nc" id="L299">          getOldSchemaId(),</span>
+<span class="nc" id="L300">          partitionInfo,</span>
+<span class="nc" id="L301">          null,</span>
+<span class="nc" id="L302">          getTiflashReplicaInfo(),</span>
+<span class="nc" id="L303">          version,</span>
+<span class="nc" id="L304">          updateTimestamp,</span>
+<span class="nc" id="L305">          maxShardRowIDBits,</span>
+<span class="nc" id="L306">          null);</span>
+    } else {
+<span class="nc" id="L308">      return this;</span>
+    }
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L314">    return toProto().toString();</span>
+  }
+
+  public boolean isPartitionEnabled() {
+<span class="nc bnc" id="L318" title="All 2 branches missed.">    if (partitionInfo == null) return false;</span>
+<span class="nc" id="L319">    return partitionInfo.isEnable();</span>
+  }
+
+  public boolean hasGeneratedColumn() {
+<span class="nc bnc" id="L323" title="All 2 branches missed.">    for (org.tikv.common.meta.TiColumnInfo col : getColumns()) {</span>
+<span class="nc bnc" id="L324" title="All 2 branches missed.">      if (col.isGeneratedColumn()) {</span>
+<span class="nc" id="L325">        return true;</span>
+      }
+    }
+<span class="nc" id="L328">    return false;</span>
+  }
+
+  public long getVersion() {
+<span class="nc" id="L332">    return version;</span>
+  }
+
+  public long getUpdateTimestamp() {
+<span class="nc" id="L336">    return updateTimestamp;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

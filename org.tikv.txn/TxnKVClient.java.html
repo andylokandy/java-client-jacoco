@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TxnKVClient.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.txn</a> &gt; <span class="el_source">TxnKVClient.java</span></div><h1>TxnKVClient.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2019 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.txn;
+
+import com.google.common.collect.Lists;
+import com.google.protobuf.ByteString;
+import io.grpc.StatusRuntimeException;
+import java.util.Arrays;
+import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.tikv.common.ReadOnlyPDClient;
+import org.tikv.common.TiConfiguration;
+import org.tikv.common.exception.GrpcException;
+import org.tikv.common.exception.KeyException;
+import org.tikv.common.exception.RegionException;
+import org.tikv.common.exception.TiClientInternalException;
+import org.tikv.common.exception.TiKVException;
+import org.tikv.common.meta.TiTimestamp;
+import org.tikv.common.region.RegionManager;
+import org.tikv.common.region.RegionStoreClient;
+import org.tikv.common.region.TiRegion;
+import org.tikv.common.region.TiStore;
+import org.tikv.common.util.BackOffFunction;
+import org.tikv.common.util.BackOffer;
+import org.tikv.common.util.ConcreteBackOffer;
+import org.tikv.kvproto.Kvrpcpb;
+import org.tikv.txn.type.ClientRPCResult;
+
+/** KV client of transaction APIs for GET/PUT/DELETE/SCAN */
+public class TxnKVClient implements AutoCloseable {
+<span class="nc" id="L45">  private static final Logger LOG = LoggerFactory.getLogger(TxnKVClient.class);</span>
+
+  private final RegionStoreClient.RegionStoreClientBuilder clientBuilder;
+  private final TiConfiguration conf;
+  private final RegionManager regionManager;
+  private final ReadOnlyPDClient pdClient;
+
+  public TxnKVClient(
+      TiConfiguration conf,
+      RegionStoreClient.RegionStoreClientBuilder clientBuilder,
+<span class="nc" id="L55">      ReadOnlyPDClient pdClient) {</span>
+<span class="nc" id="L56">    this.conf = conf;</span>
+<span class="nc" id="L57">    this.clientBuilder = clientBuilder;</span>
+<span class="nc" id="L58">    this.regionManager = clientBuilder.getRegionManager();</span>
+<span class="nc" id="L59">    this.pdClient = pdClient;</span>
+<span class="nc" id="L60">  }</span>
+
+  public TiConfiguration getConf() {
+<span class="nc" id="L63">    return conf;</span>
+  }
+
+  public RegionManager getRegionManager() {
+<span class="nc" id="L67">    return regionManager;</span>
+  }
+
+  public TiTimestamp getTimestamp() {
+<span class="nc" id="L71">    BackOffer bo = ConcreteBackOffer.newTsoBackOff();</span>
+<span class="nc" id="L72">    TiTimestamp timestamp = new TiTimestamp(0, 0);</span>
+    try {
+      while (true) {
+        try {
+<span class="nc" id="L76">          timestamp = pdClient.getTimestamp(bo);</span>
+<span class="nc" id="L77">          break;</span>
+<span class="nc" id="L78">        } catch (final TiKVException e) {</span>
+          // retry is exhausted
+<span class="nc" id="L80">          bo.doBackOff(BackOffFunction.BackOffFuncType.BoPDRPC, e);</span>
+<span class="nc" id="L81">        }</span>
+      }
+<span class="nc" id="L83">    } catch (GrpcException e1) {</span>
+<span class="nc" id="L84">      LOG.error(&quot;Get tso from pd failed,&quot;, e1);</span>
+<span class="nc" id="L85">    }</span>
+<span class="nc" id="L86">    return timestamp;</span>
+  }
+
+  /** when encountered region error,ErrBodyMissing, and other errors */
+  public ClientRPCResult prewrite(
+      BackOffer backOffer,
+      List&lt;Kvrpcpb.Mutation&gt; mutations,
+      ByteString primary,
+      long lockTTL,
+      long startTs,
+      TiRegion tiRegion,
+      TiStore store) {
+<span class="nc" id="L98">    ClientRPCResult result = new ClientRPCResult(true, false, null);</span>
+    // send request
+<span class="nc" id="L100">    RegionStoreClient client = clientBuilder.build(tiRegion, store);</span>
+    try {
+<span class="nc" id="L102">      client.prewrite(backOffer, primary, mutations, startTs, lockTTL);</span>
+<span class="nc" id="L103">    } catch (Exception e) {</span>
+<span class="nc" id="L104">      result.setSuccess(false);</span>
+      // mark retryable, region error, should retry prewrite again
+<span class="nc" id="L106">      result.setRetry(retryableException(e));</span>
+<span class="nc" id="L107">      result.setException(e);</span>
+<span class="nc" id="L108">    }</span>
+<span class="nc" id="L109">    return result;</span>
+  }
+
+  /** TXN Heart Beat: update primary key ttl */
+  public ClientRPCResult txnHeartBeat(
+      BackOffer backOffer,
+      ByteString primaryLock,
+      long startTs,
+      long ttl,
+      TiRegion tiRegion,
+      TiStore store) {
+<span class="nc" id="L120">    ClientRPCResult result = new ClientRPCResult(true, false, null);</span>
+    // send request
+<span class="nc" id="L122">    RegionStoreClient client = clientBuilder.build(tiRegion, store);</span>
+    try {
+<span class="nc" id="L124">      client.txnHeartBeat(backOffer, primaryLock, startTs, ttl);</span>
+<span class="nc" id="L125">    } catch (Exception e) {</span>
+<span class="nc" id="L126">      result.setSuccess(false);</span>
+      // mark retryable, region error, should retry heart beat again
+<span class="nc" id="L128">      result.setRetry(retryableException(e));</span>
+<span class="nc" id="L129">      result.setException(e);</span>
+<span class="nc" id="L130">    }</span>
+<span class="nc" id="L131">    return result;</span>
+  }
+
+  /**
+   * Commit request of 2pc, add backoff logic when encountered region error, ErrBodyMissing, and
+   * other errors
+   *
+   * @param backOffer
+   * @param keys
+   * @param startTs
+   * @param commitTs
+   * @param tiRegion
+   * @return
+   */
+  public ClientRPCResult commit(
+      BackOffer backOffer,
+      ByteString[] keys,
+      long startTs,
+      long commitTs,
+      TiRegion tiRegion,
+      TiStore store) {
+<span class="nc" id="L152">    ClientRPCResult result = new ClientRPCResult(true, false, null);</span>
+    // send request
+<span class="nc" id="L154">    RegionStoreClient client = clientBuilder.build(tiRegion, store);</span>
+<span class="nc" id="L155">    List&lt;ByteString&gt; byteList = Lists.newArrayList();</span>
+<span class="nc" id="L156">    byteList.addAll(Arrays.asList(keys));</span>
+    try {
+<span class="nc" id="L158">      client.commit(backOffer, byteList, startTs, commitTs);</span>
+<span class="nc" id="L159">    } catch (Exception e) {</span>
+<span class="nc" id="L160">      result.setSuccess(false);</span>
+      // mark retryable, region error, should retry prewrite again
+<span class="nc" id="L162">      result.setRetry(retryableException(e));</span>
+<span class="nc" id="L163">      result.setException(e);</span>
+<span class="nc" id="L164">    }</span>
+<span class="nc" id="L165">    return result;</span>
+  }
+
+  // According to TiDB's implementation, when it comes to rpc error
+  // commit status remains undecided.
+  // If we fail to receive response for the request that commits primary key, it will be
+  // undetermined whether this
+  // transaction has been successfully committed.
+  // Under this circumstance,  we can not declare the commit is complete (may lead to data lost),
+  // nor can we throw
+  // an error (may lead to the duplicated key error when upper level restarts the transaction).
+  // Currently the best
+  // solution is to populate this error and let upper layer drop the connection to the corresponding
+  // mysql client.
+  // TODO: check this logic to see are we satisfied?
+  private boolean retryableException(Exception e) {
+<span class="nc bnc" id="L181" title="All 8 branches missed.">    return e instanceof TiClientInternalException</span>
+        || e instanceof KeyException
+        || e instanceof RegionException
+        || e instanceof StatusRuntimeException;
+  }
+
+  @Override
+<span class="nc" id="L188">  public void close() throws Exception {}</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

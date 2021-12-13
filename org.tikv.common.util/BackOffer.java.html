@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BackOffer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.util</a> &gt; <span class="el_source">BackOffer.java</span></div><h1>BackOffer.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.util;
+
+import org.tikv.common.log.SlowLog;
+
+public interface BackOffer {
+  // Back off types.
+  int seconds = 1000;
+  int TSO_MAX_BACKOFF = 5 * seconds;
+  int SCANNER_NEXT_MAX_BACKOFF = 40 * seconds;
+  int BATCH_GET_MAX_BACKOFF = 40 * seconds;
+  int COP_NEXT_MAX_BACKOFF = 40 * seconds;
+  int GET_MAX_BACKOFF = 40 * seconds;
+  int RAWKV_MAX_BACKOFF = 20 * seconds;
+  int PD_INFO_BACKOFF = 5 * seconds;
+
+  /**
+   * doBackOff sleeps a while base on the BackOffType and records the error message. Will stop until
+   * max back off time exceeded and throw an exception to the caller.
+   */
+  void doBackOff(BackOffFunction.BackOffFuncType funcType, Exception err);
+
+  /** check if deadline exceeded. */
+  void checkTimeout();
+
+  /**
+   * canRetryAfterSleep sleeps a while base on the BackOffType and records the error message. Will
+   * stop until max back off time exceeded and throw an exception to the caller. It will return
+   * false if the total sleep time has exceed some limit condition.
+   */
+  boolean canRetryAfterSleep(BackOffFunction.BackOffFuncType funcType);
+
+  /**
+   * BackoffWithMaxSleep sleeps a while base on the backoffType and records the error message and
+   * never sleep more than maxSleepMs for each sleep.
+   */
+  void doBackOffWithMaxSleep(
+      BackOffFunction.BackOffFuncType funcType, long maxSleepMs, Exception err);
+
+  // Back off strategies
+<span class="fc" id="L57">  enum BackOffStrategy {</span>
+    // NoJitter makes the backoff sequence strict exponential.
+<span class="fc" id="L59">    NoJitter,</span>
+    // FullJitter applies random factors to strict exponential.
+<span class="fc" id="L61">    FullJitter,</span>
+    // EqualJitter is also randomized, but prevents very short sleeps.
+<span class="fc" id="L63">    EqualJitter,</span>
+    // DecorrJitter increases the maximum jitter based on the last random value.
+<span class="fc" id="L65">    DecorrJitter</span>
+  }
+
+  SlowLog getSlowLog();
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

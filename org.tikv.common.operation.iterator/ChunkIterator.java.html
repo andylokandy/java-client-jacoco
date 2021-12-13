@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ChunkIterator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.operation.iterator</a> &gt; <span class="el_source">ChunkIterator.java</span></div><h1>ChunkIterator.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+package org.tikv.common.operation.iterator;
+
+import com.google.protobuf.ByteString;
+import com.pingcap.tidb.tipb.Chunk;
+import java.util.Iterator;
+import java.util.List;
+import org.tikv.common.exception.TiClientInternalException;
+
+public abstract class ChunkIterator&lt;T&gt; implements Iterator&lt;T&gt; {
+
+  private final List&lt;Chunk&gt; chunks;
+  protected int chunkIndex;
+  protected int metaIndex;
+  protected int bufOffset;
+  protected boolean eof;
+
+<span class="nc" id="L34">  protected ChunkIterator(List&lt;Chunk&gt; chunks) {</span>
+    // Read and then advance semantics
+<span class="nc" id="L36">    this.chunks = chunks;</span>
+<span class="nc" id="L37">    this.chunkIndex = 0;</span>
+<span class="nc" id="L38">    this.metaIndex = 0;</span>
+<span class="nc" id="L39">    this.bufOffset = 0;</span>
+<span class="nc bnc" id="L40" title="All 2 branches missed.">    if (chunks.size() == 0</span>
+<span class="nc bnc" id="L41" title="All 2 branches missed.">        || chunks.get(0).getRowsMetaCount() == 0</span>
+<span class="nc bnc" id="L42" title="All 2 branches missed.">        || chunks.get(0).getRowsData().size() == 0) {</span>
+<span class="nc" id="L43">      eof = true;</span>
+    }
+<span class="nc" id="L45">  }</span>
+
+  public static ChunkIterator&lt;ByteString&gt; getRawBytesChunkIterator(List&lt;Chunk&gt; chunks) {
+<span class="nc" id="L48">    return new ChunkIterator&lt;ByteString&gt;(chunks) {</span>
+      @Override
+      public ByteString next() {
+<span class="nc" id="L51">        Chunk c = chunks.get(chunkIndex);</span>
+<span class="nc" id="L52">        long endOffset = c.getRowsMeta(metaIndex).getLength() + bufOffset;</span>
+<span class="nc bnc" id="L53" title="All 2 branches missed.">        if (endOffset &gt; Integer.MAX_VALUE) {</span>
+<span class="nc" id="L54">          throw new TiClientInternalException(&quot;Offset exceeded MAX_INT.&quot;);</span>
+        }
+
+<span class="nc" id="L57">        ByteString result = c.getRowsData().substring(bufOffset, (int) endOffset);</span>
+<span class="nc" id="L58">        advance();</span>
+<span class="nc" id="L59">        return result;</span>
+      }
+    };
+  }
+
+  public static ChunkIterator&lt;Long&gt; getHandleChunkIterator(List&lt;Chunk&gt; chunks) {
+<span class="nc" id="L65">    return new ChunkIterator&lt;Long&gt;(chunks) {</span>
+      @Override
+      public Long next() {
+<span class="nc" id="L68">        Chunk c = chunks.get(chunkIndex);</span>
+<span class="nc" id="L69">        long result = c.getRowsMeta(metaIndex).getHandle();</span>
+<span class="nc" id="L70">        advance();</span>
+<span class="nc" id="L71">        return result;</span>
+      }
+    };
+  }
+
+  @Override
+  public boolean hasNext() {
+<span class="nc bnc" id="L78" title="All 2 branches missed.">    return !eof;</span>
+  }
+
+  private boolean seekNextNonEmptyChunk() {
+    // loop until the end of chunk list or first non empty chunk
+    do {
+<span class="nc" id="L84">      chunkIndex += 1;</span>
+<span class="nc bnc" id="L85" title="All 4 branches missed.">    } while (chunkIndex &lt; chunks.size() &amp;&amp; chunks.get(chunkIndex).getRowsMetaCount() == 0);</span>
+    // return if remaining things left
+<span class="nc bnc" id="L87" title="All 2 branches missed.">    return chunkIndex &lt; chunks.size();</span>
+  }
+
+  protected void advance() {
+<span class="nc bnc" id="L91" title="All 2 branches missed.">    if (eof) {</span>
+<span class="nc" id="L92">      return;</span>
+    }
+<span class="nc" id="L94">    Chunk c = chunks.get(chunkIndex);</span>
+<span class="nc" id="L95">    bufOffset += c.getRowsMeta(metaIndex++).getLength();</span>
+<span class="nc bnc" id="L96" title="All 2 branches missed.">    if (metaIndex &gt;= c.getRowsMetaCount()) {</span>
+<span class="nc bnc" id="L97" title="All 2 branches missed.">      if (seekNextNonEmptyChunk()) {</span>
+<span class="nc" id="L98">        metaIndex = 0;</span>
+<span class="nc" id="L99">        bufOffset = 0;</span>
+      } else {
+<span class="nc" id="L101">        eof = true;</span>
+      }
+    }
+<span class="nc" id="L104">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>

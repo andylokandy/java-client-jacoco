@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RetryPolicy.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">TiKV Java Client</a> &gt; <a href="index.source.html" class="el_package">org.tikv.common.policy</a> &gt; <span class="el_source">RetryPolicy.java</span></div><h1>RetryPolicy.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2017 PingCAP, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.tikv.common.policy;
+
+import com.google.common.collect.ImmutableSet;
+import io.grpc.Status;
+import io.prometheus.client.Counter;
+import io.prometheus.client.Histogram;
+import java.util.concurrent.Callable;
+import org.tikv.common.exception.GrpcException;
+import org.tikv.common.log.SlowLogSpan;
+import org.tikv.common.operation.ErrorHandler;
+import org.tikv.common.util.BackOffer;
+import org.tikv.common.util.ConcreteBackOffer;
+
+public abstract class RetryPolicy&lt;RespT&gt; {
+<span class="fc" id="L30">  BackOffer backOffer = ConcreteBackOffer.newCopNextMaxBackOff();</span>
+  public static final Histogram GRPC_SINGLE_REQUEST_LATENCY =
+<span class="fc" id="L32">      Histogram.build()</span>
+<span class="fc" id="L33">          .name(&quot;client_java_grpc_single_requests_latency&quot;)</span>
+<span class="fc" id="L34">          .help(&quot;grpc request latency.&quot;)</span>
+<span class="fc" id="L35">          .labelNames(&quot;type&quot;)</span>
+<span class="fc" id="L36">          .register();</span>
+  public static final Histogram CALL_WITH_RETRY_DURATION =
+<span class="fc" id="L38">      Histogram.build()</span>
+<span class="fc" id="L39">          .name(&quot;client_java_call_with_retry_duration&quot;)</span>
+<span class="fc" id="L40">          .help(&quot;callWithRetry duration.&quot;)</span>
+<span class="fc" id="L41">          .labelNames(&quot;type&quot;)</span>
+<span class="fc" id="L42">          .register();</span>
+<span class="fc" id="L43">  public static final Counter GRPC_REQUEST_RETRY_NUM =</span>
+<span class="fc" id="L44">      Counter.build()</span>
+<span class="fc" id="L45">          .name(&quot;client_java_grpc_requests_retry_num&quot;)</span>
+<span class="fc" id="L46">          .help(&quot;grpc request retry num.&quot;)</span>
+<span class="fc" id="L47">          .labelNames(&quot;type&quot;)</span>
+<span class="fc" id="L48">          .register();</span>
+
+  // handles PD and TiKV's error.
+  private ErrorHandler&lt;RespT&gt; handler;
+
+<span class="fc" id="L53">  private ImmutableSet&lt;Status.Code&gt; unrecoverableStatus =</span>
+<span class="fc" id="L54">      ImmutableSet.of(</span>
+          Status.Code.ALREADY_EXISTS, Status.Code.PERMISSION_DENIED,
+          Status.Code.INVALID_ARGUMENT, Status.Code.NOT_FOUND,
+          Status.Code.UNIMPLEMENTED, Status.Code.OUT_OF_RANGE,
+          Status.Code.UNAUTHENTICATED, Status.Code.CANCELLED);
+
+<span class="fc" id="L60">  RetryPolicy(ErrorHandler&lt;RespT&gt; handler) {</span>
+<span class="fc" id="L61">    this.handler = handler;</span>
+<span class="fc" id="L62">  }</span>
+
+  private void rethrowNotRecoverableException(Exception e) {
+<span class="fc" id="L65">    Status status = Status.fromThrowable(e);</span>
+<span class="fc bfc" id="L66" title="All 2 branches covered.">    if (unrecoverableStatus.contains(status.getCode())) {</span>
+<span class="fc" id="L67">      throw new GrpcException(e);</span>
+    }
+<span class="fc" id="L69">  }</span>
+
+  public RespT callWithRetry(Callable&lt;RespT&gt; proc, String methodName, BackOffer backOffer) {
+<span class="fc" id="L72">    Histogram.Timer callWithRetryTimer = CALL_WITH_RETRY_DURATION.labels(methodName).startTimer();</span>
+<span class="fc" id="L73">    SlowLogSpan callWithRetrySlowLogSpan =</span>
+<span class="fc" id="L74">        backOffer.getSlowLog().start(&quot;callWithRetry &quot; + methodName);</span>
+    try {
+      while (true) {
+<span class="fc" id="L77">        RespT result = null;</span>
+        try {
+          // add single request duration histogram
+<span class="fc" id="L80">          Histogram.Timer requestTimer =</span>
+<span class="fc" id="L81">              GRPC_SINGLE_REQUEST_LATENCY.labels(methodName).startTimer();</span>
+<span class="fc" id="L82">          SlowLogSpan slowLogSpan = backOffer.getSlowLog().start(&quot;gRPC &quot; + methodName);</span>
+          try {
+<span class="fc" id="L84">            result = proc.call();</span>
+          } finally {
+<span class="fc" id="L86">            slowLogSpan.end();</span>
+<span class="fc" id="L87">            requestTimer.observeDuration();</span>
+          }
+<span class="fc" id="L89">        } catch (Exception e) {</span>
+<span class="fc" id="L90">          rethrowNotRecoverableException(e);</span>
+          // Handle request call error
+<span class="fc" id="L92">          backOffer.checkTimeout();</span>
+<span class="fc" id="L93">          boolean retry = handler.handleRequestError(backOffer, e);</span>
+<span class="pc bpc" id="L94" title="1 of 2 branches missed.">          if (retry) {</span>
+<span class="fc" id="L95">            GRPC_REQUEST_RETRY_NUM.labels(methodName).inc();</span>
+<span class="fc" id="L96">            continue;</span>
+          } else {
+<span class="nc" id="L98">            return result;</span>
+          }
+<span class="fc" id="L100">        }</span>
+
+        // Handle response error
+<span class="pc bpc" id="L103" title="1 of 2 branches missed.">        if (handler != null) {</span>
+<span class="fc" id="L104">          boolean retry = handler.handleResponseError(backOffer, result);</span>
+<span class="pc bpc" id="L105" title="1 of 2 branches missed.">          if (retry) {</span>
+<span class="nc" id="L106">            GRPC_REQUEST_RETRY_NUM.labels(methodName).inc();</span>
+<span class="nc" id="L107">            continue;</span>
+          }
+        }
+<span class="fc" id="L110">        return result;</span>
+      }
+    } finally {
+<span class="fc" id="L113">      callWithRetryTimer.observeDuration();</span>
+<span class="fc" id="L114">      callWithRetrySlowLogSpan.end();</span>
+    }
+  }
+
+  public interface Builder&lt;T&gt; {
+    RetryPolicy&lt;T&gt; create(ErrorHandler&lt;T&gt; handler);
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.3.201901230119</span></div></body></html>
